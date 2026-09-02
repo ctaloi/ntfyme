@@ -120,11 +120,30 @@ public actor ConnectionCoordinator {
         }
     }
 
+    /// `stop()`'s contract is that once it returns, this coordinator has
+    /// stopped cleanly — including that everything Ingest had already
+    /// received is durably persisted, not merely "will be, eventually." A
+    /// caller that quits or tears down the store right after `await
+    /// coordinator.stop()` must not lose a batch a pump was still holding.
+    ///
+    /// Cancelling is not enough on its own: `entry.pump.cancel()` returns
+    /// immediately, but `Ingest.pump`'s trailing flush — the durable write
+    /// of the last accumulated batch and its `caughtUpTo` — only runs after
+    /// cancellation is *observed* inside that task, which happens on its own
+    /// schedule. So every pump is awaited to completion before this returns.
+    ///
+    /// Two passes rather than one cancel-then-await per entry: cancelling
+    /// every pump first lets them all start draining concurrently in the
+    /// background, so the awaits below mostly find work already done rather
+    /// than serializing each pump's flush behind the one before it.
     public func stop() async {
         pathMonitor.cancel()
         for entry in live.values {
             entry.pump.cancel()
+        }
+        for entry in live.values {
             await entry.connection.stop()
+            await entry.pump.value
         }
         live.removeAll()
     }

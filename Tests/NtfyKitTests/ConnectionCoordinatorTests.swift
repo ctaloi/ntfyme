@@ -164,3 +164,37 @@ private func seededStore(topics: [String] = ["alerts"]) throws -> (ModelContaine
     #expect(await waitUntil { await monitor.cancelCount == 1 })
     #expect(await coordinator.state(forServer: id) == nil)
 }
+
+/// `stop()`'s contract: once it returns, everything Ingest had already
+/// received is durably persisted, not merely "will be, eventually." A caller
+/// that quits or tears down the store right after `await coordinator.stop()`
+/// must not lose a batch a pump was still holding.
+///
+/// The script ends cleanly after the message rather than hanging: the run
+/// loop only starts a second connect attempt once it has fully processed
+/// every already-buffered element from the first, so `requestCount >= 2` is
+/// an ordering guarantee — not a timing guess — that the message was already
+/// recorded and yielded onto `connection.events` before `stop()` is called.
+@Test func stoppingWaitsForThePumpsFinalFlushBeforeReturning() async throws {
+    let (container, _) = try seededStore()
+    let store = MessageStore(modelContainer: container)
+    let fake = FakeStreamClient()
+    await fake.enqueue([
+        .event(try Fixtures.decode(Fixtures.openEvent)),
+        .event(try Fixtures.decode(Fixtures.minimalMessage)),
+    ])
+
+    // A window this test's own bound can't reach: only `stop()`'s own final
+    // flush, never a tick, may be what persists this message.
+    let ingest = Ingest(store: store, batchWindow: .seconds(60))
+    let coordinator = ConnectionCoordinator(
+        store: store, keychain: KeychainStore(service: "dev.aloi.NtfyMe.tests.\(UUID())"),
+        client: fake, pathMonitor: FakePathMonitor(), ingest: ingest)
+
+    await coordinator.start()
+    #expect(await waitUntil { await fake.requestCount >= 2 })
+
+    await coordinator.stop()
+    // No waitUntil: `stop()` returning is itself the guarantee under test.
+    #expect(try await store.messageCount() == 1)
+}
