@@ -17,8 +17,17 @@ public struct Backfill: Sendable {
     }
 
     /// Fetches and stores the topic's server-cached history. Returns the number
-    /// of rows inserted. The topic's watermark is set as a side effect of the
-    /// insert, which is what makes the subsequent stream rebuild safe.
+    /// of rows inserted.
+    ///
+    /// When the poll returns at least one message, the topic's watermark is
+    /// set as a side effect of the insert (`MessageStore.advanceWatermarks`),
+    /// which is what makes the subsequent stream rebuild safe for *this*
+    /// topic. When the topic has no cached history at all, the insert has
+    /// nothing to advance the watermark from and it stays `nil` — but that is
+    /// still safe: `WatermarkResolver.resolve` ignores nil-watermark topics
+    /// entirely (`ignoresTopicsThatHaveNoWatermarkYet`), so a never-synced
+    /// topic cannot drag the shared resume point back regardless of whether
+    /// backfill found anything for it.
     @discardableResult
     public func run(topic: String, serverID: UUID) async throws -> Int {
         let request = try endpoint.pollRequest(topic: topic, since: .all)
@@ -29,7 +38,7 @@ public struct Backfill: Sendable {
             case .event(let event):
                 if event.kind == .message { events.append(event) }
             case .skippedLine(let reason):
-                Log.stream.warning("skipped line: \(reason, privacy: .public)")
+                Log.stream.warning("backfill skipped a line: \(reason, privacy: .public)")
             }
         }
 

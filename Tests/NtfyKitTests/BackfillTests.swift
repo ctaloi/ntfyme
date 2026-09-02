@@ -77,3 +77,25 @@ private func message(_ id: String, topic: String, time: Int) -> NtfyEvent {
     #expect(marks.first(where: { $0.topic == "newtopic" })?.lastMessageTime
             == Date(timeIntervalSince1970: 250))
 }
+
+/// A topic with no cached history at all (nothing was ever posted, or it all
+/// expired out of the server's cache window) must not crash and must not
+/// fabricate a watermark. `WatermarkResolver.resolve` already ignores
+/// nil-watermark topics when computing the shared resume point
+/// (`ignoresTopicsThatHaveNoWatermarkYet`), so leaving it `nil` here is safe,
+/// not merely tolerated.
+@Test func backfillOfATopicWithNoCachedHistoryLeavesTheWatermarkNil() async throws {
+    let (_, store, serverID) = try makeStore(topics: ["newtopic"])
+    let fake = FakeStreamClient()
+    await fake.enqueue([])
+
+    let backfill = Backfill(
+        endpoint: NtfyEndpoint(baseURL: URL(string: "https://ntfy.example.com")!,
+                               credential: .unauthenticated),
+        client: fake, store: store)
+    let inserted = try await backfill.run(topic: "newtopic", serverID: serverID)
+
+    #expect(inserted == 0)
+    let marks = try await store.watermarks(forServer: serverID)
+    #expect(marks.first(where: { $0.topic == "newtopic" })?.lastMessageTime == nil)
+}
