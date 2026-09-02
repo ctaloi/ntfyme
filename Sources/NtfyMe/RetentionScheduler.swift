@@ -47,13 +47,14 @@ actor RetentionScheduler {
         }
     }
 
-    /// No attachment downloader exists yet in this plan, so this path is
-    /// unverified against a real consumer. Whoever adds one must use this
-    /// exact literal (`Application Support/dev.aloi.NtfyMe/Attachments`) —
-    /// disagreement here would make `prune` silently delete nothing forever.
+    /// Delegates to `AppGraph.attachmentsDirectory()` rather than repeating
+    /// the literal. This function used to compute the path itself, with a
+    /// comment warning that whoever added a real consumer had to match it
+    /// exactly or `prune` would silently delete nothing forever. Two
+    /// consumers now exist — the downloader and the History window's Quick
+    /// Look — so the warning is retired in favour of there being one
+    /// definition to agree with.
     private func attachmentsDirectory() -> URL? {
-        guard let base = FileManager.default.urls(
-            for: .applicationSupportDirectory, in: .userDomainMask).first else { return nil }
-        return base.appending(path: "dev.aloi.NtfyMe/Attachments")
+        AppGraph.attachmentsDirectory()
     }
 }
