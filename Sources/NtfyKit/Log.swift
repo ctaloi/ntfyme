@@ -35,6 +35,10 @@ import os
 ///   non-reversible, and able to correlate one row across log lines
 ///   without leaking the topic it is derived from — never the key itself.
 ///   Not built now: one log site does not justify a hashing dependency.
+/// - `MessageStore`'s missing-subscription site
+///   (`advanceWatermarks(_:ids:serverID:)`) interpolates only `serverID`,
+///   for the same reason as the corrupt-actions site above — never the
+///   topic that has no matching `Subscription` row.
 ///
 /// `privacy: .public` is used deliberately, to keep these labels readable in
 /// `log stream`. The alternative is not a safety net: `.private` hides a value
