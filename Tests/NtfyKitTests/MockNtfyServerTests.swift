@@ -55,7 +55,7 @@ import Testing
     await server.enqueue(line: #"{"id":"a2","time":2,"event":"message","topic":"t","message":"second"}"#)
 
     let resolvedEarly = Signal()
-    let waitTask = Task {
+    Task {
         await server.waitForConnection()
         await resolvedEarly.signal()
     }
@@ -69,13 +69,42 @@ import Testing
     #expect(await resolvedEarly.hasFired == false)
 
     let (secondBytes, _) = try await URLSession.shared.bytes(from: url)
-    _ = await waitTask.value
+    // Bounded wait (Signal.waitOrTimeout(), ~1s) rather than an unbounded
+    // await on the wait task's result: if accept() ever stopped resuming
+    // waiters, this must fail the assertion below instead of hanging the
+    // whole suite — exactly the failure mode this task exists to avoid.
+    #expect(await resolvedEarly.waitOrTimeout() == true)
 
     var lines: [String] = []
     for try await line in secondBytes.lines { lines.append(line) }
     #expect(lines.count == 1)
     #expect(lines[0].contains("\"message\":\"second\""))
     #expect(await server.receivedRequestPaths.count == 2)
+}
+
+/// A `waitForConnection()` call that is still pending when `stop()` runs
+/// (no client ever connected) must not leak its continuation — an
+/// un-resumed `CheckedContinuation` prints a runtime diagnostic to stderr
+/// when it deallocates, which would break this suite's zero-warnings bar
+/// the moment a Task 9/10 test calls `waitForConnection()` and then tears
+/// its server down without a connection arriving.
+@Test func mockServerStopReleasesAPendingWaitForConnection() async throws {
+    let server = MockNtfyServer()
+    _ = try await server.start()
+
+    let resolved = Signal()
+    Task {
+        await server.waitForConnection()
+        await resolved.signal()
+    }
+
+    // Give waitForConnection() a moment to actually register its waiter
+    // before stopping the server out from under it.
+    try await Task.sleep(for: .milliseconds(50))
+
+    await server.stop()
+
+    #expect(await resolved.waitOrTimeout() == true)
 }
 
 /// A request that is not valid UTF-8 (and so cannot be parsed as an HTTP

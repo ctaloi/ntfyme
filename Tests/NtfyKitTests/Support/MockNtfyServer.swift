@@ -59,6 +59,14 @@ actor MockNtfyServer {
         listener?.cancel()
         connection = nil
         listener = nil
+        // Release any waitForConnection() call still pending (no client ever
+        // connected). Left un-resumed, that continuation would only be
+        // dropped when this actor deallocates, printing a runtime "leaked
+        // its continuation" diagnostic and leaving the caller suspended
+        // forever in the meantime.
+        let waiters = connectionWaiters
+        connectionWaiters.removeAll()
+        waiters.forEach { $0.resume() }
     }
 
     /// Queue a line to be written to the *next* connection served. Must be
