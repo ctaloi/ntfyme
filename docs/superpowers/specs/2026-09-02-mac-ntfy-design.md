@@ -289,7 +289,8 @@ The standard SwiftUI `Settings` scene, tabbed:
 - **General** — launch at login (`SMAppService.mainApp`), retention window,
   badge behavior.
 - **Servers** — add, edit, remove; credential entry; a test-connection button.
-- **Notifications** — default priority threshold, sound, critical alerts status.
+- **Notifications** — default priority threshold, sound, and a shortcut to
+  System Settings for the app's notification permission.
 - **Advanced** — export history to JSON, clear data, log level.
 
 ### Compose sheet
