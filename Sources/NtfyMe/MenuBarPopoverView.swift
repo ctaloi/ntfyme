@@ -30,6 +30,16 @@ struct MenuBarPopoverView: View {
             footer
         }
         .frame(width: Self.size.width, height: Self.size.height)
+        // An `NSPopover` normally supplies its own opaque content background,
+        // but nothing else in this view does — every other color here is a
+        // dynamic system color (`.primary`, `.secondary`, `Divider`) that
+        // resolves to a *light* value under `.dark`. Without an explicit,
+        // equally dynamic background behind it, dark mode has light text
+        // over whatever backing happens to be there, which in an offscreen
+        // render (`MenuBarSnapshotTests`) is nothing at all — confirmed by
+        // rendering without this line first: the whole popover but for the
+        // priority dots and the accent-colored link went invisible.
+        .background(Color(nsColor: .windowBackgroundColor))
         .task { await viewModel.refresh() }
     }
 
@@ -233,7 +243,7 @@ struct MenuBarPopoverView: View {
                         .truncationMode(.tail)
                 }
                 Spacer(minLength: 4)
-                Text(message.time, style: .relative)
+                Text(relativeTime(message.time))
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .fixedSize()
@@ -244,6 +254,27 @@ struct MenuBarPopoverView: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel(accessibilityLabel(for: message))
+    }
+
+    /// `Text(_:style:.relative)` was tried first and rejected: in a row this
+    /// narrow it renders as "2 min, 0 sec" / "1 hr, 0 min" rather than a
+    /// compact "2m" / "1h" — seen directly in `MenuBarSnapshotTests`'
+    /// populated render, not just suspected. `DateComponentsFormatter` with
+    /// one allowed unit gives the compact form at the cost of not
+    /// live-updating between renders — acceptable here since the popover's
+    /// own data refresh (`MenuBarViewModel.refresh()`) is what keeps this
+    /// current, the same as every other value in this row.
+    private static let relativeTimeFormatter: DateComponentsFormatter = {
+        let formatter = DateComponentsFormatter()
+        formatter.unitsStyle = .abbreviated
+        formatter.maximumUnitCount = 1
+        formatter.allowedUnits = [.day, .hour, .minute, .second]
+        formatter.zeroFormattingBehavior = .dropAll
+        return formatter
+    }()
+
+    private func relativeTime(_ date: Date) -> String {
+        Self.relativeTimeFormatter.string(from: date, to: Date()) ?? ""
     }
 
     /// `title` falling back to `topic`: ntfy messages may publish with no
