@@ -1346,6 +1346,30 @@ import Testing
     await watchdog.stop()
 }
 
+/// A reconnect calls start() on a live watchdog with no intervening stop().
+/// The second arm must supersede the first, not leave two live timers.
+@Test func startingTwiceSupersedesTheFirstTimer() async throws {
+    let sleeper = ManualSleeper()
+    let watchdog = KeepaliveWatchdog(timeout: .seconds(90), sleeper: sleeper)
+    let first = Signal()
+    let second = Signal()
+
+    await watchdog.start { await first.signal() }
+    await sleeper.waitForPendingSleeps(atLeast: 1)
+    await watchdog.start { await second.signal() }
+    await sleeper.waitForPendingSleeps(atLeast: 2)
+
+    await sleeper.advanceOnePendingSleep()
+    await sleeper.advanceOnePendingSleep()
+
+    #expect(await second.waitOrTimeout() == true)
+    try await Task.sleep(for: .milliseconds(50))
+    #expect(await first.hasFired == false)
+    // The load-bearing assertion: exactly one arm may ever call its handler.
+    #expect(await second.fireCount == 1)
+    await watchdog.stop()
+}
+
 @Test func stopPreventsAnyFurtherFiring() async throws {
     let sleeper = ManualSleeper()
     let watchdog = KeepaliveWatchdog(timeout: .seconds(90), sleeper: sleeper)
@@ -1359,10 +1383,15 @@ import Testing
     #expect(await fired.hasFired == false)
 }
 
-/// Minimal async signal used only by these tests.
+/// Minimal async signal used only by these tests. Counts invocations rather
+/// than latching a Bool: `fireIfStillArmed` looks up `currentHandler`
+/// dynamically instead of capturing it at arm time, so a stale timer invokes
+/// whatever handler is current. A Bool therefore cannot distinguish a
+/// superseded timer firing from correct behavior — only a count can.
 actor Signal {
-    private(set) var hasFired = false
-    func signal() { hasFired = true }
+    private(set) var fireCount = 0
+    var hasFired: Bool { fireCount > 0 }
+    func signal() { fireCount += 1 }
     func waitOrTimeout() async -> Bool {
         for _ in 0..<100 {
             if hasFired { return true }
@@ -1409,31 +1438,42 @@ public struct SystemSleeper: Sleeper {
 /// advance nothing, and hang. Always wait before advancing.
 public actor ManualSleeper: Sleeper {
     private var pending: [CheckedContinuation<Void, Error>] = []
-    private var waiters: [CheckedContinuation<Void, Never>] = []
+    private var waiters: [(threshold: Int, continuation: CheckedContinuation<Void, Never>)] = []
 
     public init() {}
 
     public func sleep(for duration: Duration) async throws {
         try await withCheckedThrowingContinuation { continuation in
             pending.append(continuation)
-            let toWake = waiters
-            waiters.removeAll()
-            toWake.forEach { $0.resume() }
+            let met = waiters.filter { pending.count >= $0.threshold }
+            waiters.removeAll { pending.count >= $0.threshold }
+            met.forEach { $0.continuation.resume() }
         }
     }
 
     /// Suspends until at least one sleep is registered.
     public func waitForPendingSleep() async {
-        guard pending.isEmpty else { return }
-        await withCheckedContinuation { waiters.append($0) }
+        await waitForPendingSleeps(atLeast: 1)
     }
 
-    /// Releases the oldest pending sleep, if any.
+    /// Suspends until at least `count` sleeps are registered. Needed because
+    /// `waitForPendingSleep()` returns immediately when any sleep is pending,
+    /// so it cannot prove that a SECOND timer registered.
+    public func waitForPendingSleeps(atLeast count: Int) async {
+        guard pending.count < count else { return }
+        await withCheckedContinuation { waiters.append((threshold: count, continuation: $0)) }
+    }
+
+    /// Releases the oldest pending sleep, if any. A superseded arm leaves its
+    /// continuation here unresolved, retaining one suspended Task — a
+    /// test-double artifact with no production equivalent, since
+    /// `SystemSleeper` unwinds via `Task.sleep`'s cancellation.
     public func advanceOnePendingSleep() {
         guard !pending.isEmpty else { return }
         pending.removeFirst().resume()
     }
 }
+
 ```
 
 - [ ] **Step 4: Implement the watchdog**
