@@ -120,7 +120,10 @@ inserting and **skips** rather than upserts on a hit (first-write-wins) —
 not as a backstop against duplicate rows, which the constraint already
 prevents on its own, but as the mechanism that protects locally-owned fields
 from server replay. The same protection extends to any future local-only
-field on `Message`.
+field on `Message`. This was measured against a single long-lived
+`ModelContext` on an in-memory store, not the on-disk SQLite store or
+inserts split across separate `ModelContext` instances — see the plan's
+"Measured SwiftData behavior" table for that boundary.
 
 `contentType == "text/markdown"` selects markdown rendering.
 
