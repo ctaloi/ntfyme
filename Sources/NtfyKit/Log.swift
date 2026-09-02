@@ -93,6 +93,15 @@ import os
 ///   is the one place where a value is simultaneously user-visible and
 ///   log-forbidden. Never an action's URL either: it is server-supplied, the
 ///   same category `messageID` and topic are barred for above.
+/// - `RetentionScheduler.pruneNow`'s two sites use `Log.store`, not `Log.app`
+///   — they report on `MessageStore.prune`, the same operation
+///   `MessageStore`'s own prune sites above report on, so they share its
+///   category rather than the app target's. The success site interpolates
+///   only `PruneResult`'s two counts, `Int`s this process counted — the same
+///   fixed-shape, locally-generated category as `Backfill.run`'s
+///   `result.inserted` above. The failure site interpolates only the failed
+///   `NSError`'s `domain` and `code`, the same reasoning as `Ingest.flush`'s
+///   two sites above.
 ///
 /// `privacy: .public` is used deliberately, to keep these labels readable in
 /// `log stream`. The alternative is not a safety net: `.private` hides a value
