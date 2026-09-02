@@ -37,9 +37,11 @@ public enum NotificationDecision: Sendable, Equatable {
     /// a custom scheme can launch another app. Restricting to the schemes a
     /// browser would treat as ordinary web content removes both.
     ///
-    /// Internal, not `private`: `AttachmentDownloader` rejects attachment
-    /// URLs against this same allow-list rather than keeping its own copy.
-    static let allowedURLSchemes: Set<String> = ["http", "https"]
+    /// Delegates to `NtfyURLPolicy`, the public single source of truth for
+    /// this rule — kept as its own `internal` binding (not `private`)
+    /// because `AttachmentDownloader` still reads it under this name rather
+    /// than `NtfyURLPolicy.allowedSchemes` directly.
+    static let allowedURLSchemes: Set<String> = NtfyURLPolicy.allowedSchemes
 
     /// The only methods an `http` action may use. Anything else — `TRACE`,
     /// a made-up verb — drops the action rather than being forwarded as-is.
@@ -87,8 +89,8 @@ public enum NotificationDecision: Sendable, Equatable {
             playsSound: priority.rawValue >= NtfyPriority.default.rawValue,
             categoryIdentifier: actions.isEmpty ? nil : categoryIdentifier(for: actions),
             actions: actions,
-            clickURL: sanitizedURL(event.click),
-            attachmentURL: event.attachment.flatMap { sanitizedURL($0.url) }))
+            clickURL: NtfyURLPolicy.sanitized(event.click),
+            attachmentURL: event.attachment.flatMap { NtfyURLPolicy.sanitized($0.url) }))
     }
 
     private static func interruption(for priority: NtfyPriority) -> NotificationInterruption {
@@ -103,14 +105,14 @@ public enum NotificationDecision: Sendable, Equatable {
         actions.prefix(maxActions).compactMap { action in
             switch action.kind {
             case .view:
-                guard let url = sanitizedURL(action.url) else { return nil }
+                guard let url = NtfyURLPolicy.sanitized(action.url) else { return nil }
                 return PresentableAction(id: action.id, title: action.label, kind: .view(url: url))
             case .copy:
                 guard let value = action.value else { return nil }
                 return PresentableAction(
                     id: action.id, title: action.label, kind: .copy(value: sanitizedCopyValue(value)))
             case .http:
-                guard let url = sanitizedURL(action.url) else { return nil }
+                guard let url = NtfyURLPolicy.sanitized(action.url) else { return nil }
                 let method = (action.method ?? "POST").uppercased()
                 guard allowedHTTPMethods.contains(method) else { return nil }
                 return PresentableAction(
@@ -123,16 +125,6 @@ public enum NotificationDecision: Sendable, Equatable {
                 return nil
             }
         }
-    }
-
-    /// `nil` for a missing, unparseable, or unsafely-schemed URL — see
-    /// `allowedURLSchemes`'s doc comment. Used for both action URLs (drops
-    /// the action) and `clickURL` (nulls the click, keeps the notification).
-    private static func sanitizedURL(_ raw: String?) -> URL? {
-        guard let raw, let url = URL(string: raw),
-              let scheme = url.scheme?.lowercased(), allowedURLSchemes.contains(scheme)
-        else { return nil }
-        return url
     }
 
     /// Drops any header a message should not be able to set — see
