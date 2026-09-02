@@ -19,7 +19,7 @@ public struct KeychainStore: Sendable {
     }
 
     public func save(_ credential: AuthCredential, forServer id: UUID) throws {
-        guard let payload = Self.encode(credential) else {
+        guard let payload = try Self.encode(credential) else {
             try delete(forServer: id)
             return
         }
@@ -78,31 +78,51 @@ public struct KeychainStore: Sendable {
 
     private struct Stored: Codable {
         let kind: String
-        let a: String
-        let b: String?
+        let primary: String
+        let secondary: String?
     }
 
-    private static func encode(_ credential: AuthCredential) -> Data? {
+    /// Returns `nil` only for `.none` — nothing to store, which `save`
+    /// interprets as "delete any existing credential". A genuine encoding
+    /// failure must never collapse to that same `nil`, or a real credential
+    /// that failed to encode would silently vanish exactly as if the caller
+    /// had asked to clear it. So encoding failure throws `.malformedData`
+    /// instead of returning `nil`. `Stored`'s fields are plain
+    /// `String`/`String?`, which `JSONEncoder` cannot fail to encode in
+    /// practice, but the distinction is structural, not just documentation:
+    /// even if that ever changed, callers could not mistake one case for
+    /// the other.
+    private static func encode(_ credential: AuthCredential) throws -> Data? {
         let stored: Stored
         switch credential {
         case .none:
             return nil
         case .bearer(let token):
-            stored = Stored(kind: "bearer", a: token, b: nil)
+            stored = Stored(kind: "bearer", primary: token, secondary: nil)
         case .basic(let user, let password):
-            stored = Stored(kind: "basic", a: user, b: password)
+            stored = Stored(kind: "basic", primary: user, secondary: password)
         }
-        return try? JSONEncoder().encode(stored)
+        do {
+            return try JSONEncoder().encode(stored)
+        } catch {
+            throw Error.malformedData
+        }
     }
 
+    /// A decoding failure (malformed bytes, unrecognized `kind`, a missing
+    /// `secondary` for `basic`) is collapsed to `nil` rather than propagated
+    /// with the underlying `Swift.Error`: `load` already turns `nil` into
+    /// `Error.malformedData`, which is the only distinction its callers need.
+    /// The specific decoding failure reason is not actionable, and keychain
+    /// payload contents should not end up embedded in a thrown error.
     private static func decode(_ data: Data) -> AuthCredential? {
         guard let stored = try? JSONDecoder().decode(Stored.self, from: data) else { return nil }
         switch stored.kind {
         case "bearer":
-            return .bearer(token: stored.a)
+            return .bearer(token: stored.primary)
         case "basic":
-            guard let password = stored.b else { return nil }
-            return .basic(user: stored.a, password: password)
+            guard let password = stored.secondary else { return nil }
+            return .basic(user: stored.primary, password: password)
         default:
             return nil
         }
