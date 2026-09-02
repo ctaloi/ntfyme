@@ -246,7 +246,12 @@ SIGN_IDENTITY="${SIGN_IDENTITY:-Apple Development}"
 NOTARIZE="${NOTARIZE:-0}"
 NOTARY_PROFILE="${NOTARY_PROFILE:-}"
 
-[ -f "$(dirname "${BASH_SOURCE[0]}")/local.sh" ] && . "$(dirname "${BASH_SOURCE[0]}")/local.sh"
+# An `if` guard, not `[ -f x ] && . x`: a failing left side of a top-level
+# `&&` list makes the sourced file return non-zero, which aborts build-app.sh
+# under `set -euo pipefail` — and local.sh being absent is the normal case.
+if [ -f "$(dirname "${BASH_SOURCE[0]}")/local.sh" ]; then
+    . "$(dirname "${BASH_SOURCE[0]}")/local.sh"
+fi
 ```
 
 `Scripts/Info.plist.in`:
@@ -382,7 +387,7 @@ git commit -m "feat: package skeleton, build script, and launchable menu-bar she
 
 **Interfaces:**
 - Consumes: nothing.
-- Produces: `NtfyEvent` (`Sendable`, `Decodable`) with `id: String`, `time: Int`, `expires: Int?`, `event: String`, `topic: String`, `title: String?`, `message: String?`, `priority: Int?`, `tags: [String]?`, `click: String?`, `icon: String?`, `contentType: String?`, `actions: [NtfyAction]?`, `attachment: NtfyAttachment?`, and computed `kind: NtfyEvent.Kind?`, `date: Date`. `NtfyEvent.Kind` enum: `.open`, `.message`, `.keepalive`, `.pollRequest`. `NtfyPriority` enum with `.min`/`.low`/`.default`/`.high`/`.max` and `init?(rawValue: Int)`. `NtfyAction`, `NtfyAttachment`.
+- Produces: `NtfyEvent` (`Sendable`, `Decodable`) with `id: String`, `time: Int`, `expires: Int?`, `event: String`, `topic: String`, `title: String?`, `message: String?`, `priority: Int?`, `tags: [String]?`, `click: String?`, `icon: String?`, `contentType: String?`, `actions: [NtfyAction]?`, `attachment: NtfyAttachment?`, and computed `kind: NtfyEvent.Kind?`, `date: Date`, `resolvedPriority: NtfyPriority`, `isMarkdown: Bool`. `NtfyEvent.Kind` enum: `.open`, `.message`, `.keepalive`, `.pollRequest`. `NtfyPriority` enum with `.min`/`.low`/`.default`/`.high`/`.max` and `init?(rawValue: Int)`. `NtfyAction`, `NtfyAttachment`.
 
 - [ ] **Step 1: Write sanitized fixtures**
 
@@ -820,6 +825,17 @@ private func wm(_ topic: String, _ offset: TimeInterval?) -> TopicWatermark {
     #expect(r.hasHistoryGap == true)
 }
 
+/// The boundary sliver: a watermark inside the cache window whose `since`
+/// value — watermark minus margin — falls outside it. Measuring the gap from
+/// the watermark instead of from the value actually sent reports no gap here.
+@Test func flagsAGapWhenTheMarginPushesSinceOutsideTheWindow() {
+    let r = WatermarkResolver.resolve(
+        watermarks: [wm("a", -(window - 2))],
+        cacheWindow: window, now: now, margin: 5
+    )
+    #expect(r.hasHistoryGap == true)
+}
+
 @Test func doesNotFlagAGapForARecentWatermark() {
     let r = WatermarkResolver.resolve(watermarks: [wm("a", -60)], cacheWindow: window, now: now)
     #expect(r.hasHistoryGap == false)
@@ -908,9 +924,15 @@ public enum WatermarkResolver {
             return Resolution(since: .all, hasHistoryGap: false)
         }
 
-        let gap = now.timeIntervalSince(oldest) > cacheWindow
-        let since = Int((oldest.timeIntervalSince1970 - margin).rounded(.down))
-        return Resolution(since: .unixTime(since), hasHistoryGap: gap)
+        // The gap is measured against the value actually sent, which is
+        // `oldest - margin`, not against `oldest`. Measuring from `oldest`
+        // leaves a margin-wide sliver where the request predates the cache
+        // window but the client reports no gap — a false negative in exactly
+        // the signal spec section 10 relies on to distinguish a clean resume
+        // from a silent full-cache replay.
+        let sinceDate = oldest.addingTimeInterval(-margin)
+        let gap = now.timeIntervalSince(sinceDate) > cacheWindow
+        return Resolution(since: .unixTime(Int(sinceDate.timeIntervalSince1970.rounded(.down))), hasHistoryGap: gap)
     }
 }
 ```
@@ -1164,8 +1186,12 @@ import Testing
 @testable import NtfyKit
 
 /// Randomness is injected so the schedule is asserted exactly, not sampled.
-private let noJitter: () -> Double = { 0.0 }
-private let maxJitter: () -> Double = { 1.0 }
+/// The `@Sendable` annotations are required: a `private let` closure at file
+/// scope is global state, which Swift 6 strict concurrency rejects unless the
+/// closure type is Sendable. Note this belongs on the test globals only —
+/// `BackoffPolicy.delay`'s parameter stays unannotated.
+private let noJitter: @Sendable () -> Double = { 0.0 }
+private let maxJitter: @Sendable () -> Double = { 1.0 }
 
 @Test func firstAttemptWaitsTheBaseDelay() {
     let p = BackoffPolicy.standard
@@ -1300,6 +1326,7 @@ import Testing
     let fired = Signal()
 
     await watchdog.start { await fired.signal() }
+    await sleeper.waitForPendingSleep()
     await sleeper.advanceOnePendingSleep()
 
     #expect(await fired.waitOrTimeout() == true)
@@ -1311,10 +1338,35 @@ import Testing
     let fired = Signal()
 
     await watchdog.start { await fired.signal() }
+    await sleeper.waitForPendingSleep()
     await watchdog.pet()
     await sleeper.advanceOnePendingSleep()
 
     #expect(await fired.hasFired == false)
+    await watchdog.stop()
+}
+
+/// A reconnect calls start() on a live watchdog with no intervening stop().
+/// The second arm must supersede the first, not leave two live timers.
+@Test func startingTwiceSupersedesTheFirstTimer() async throws {
+    let sleeper = ManualSleeper()
+    let watchdog = KeepaliveWatchdog(timeout: .seconds(90), sleeper: sleeper)
+    let first = Signal()
+    let second = Signal()
+
+    await watchdog.start { await first.signal() }
+    await sleeper.waitForPendingSleeps(atLeast: 1)
+    await watchdog.start { await second.signal() }
+    await sleeper.waitForPendingSleeps(atLeast: 2)
+
+    await sleeper.advanceOnePendingSleep()
+    await sleeper.advanceOnePendingSleep()
+
+    #expect(await second.waitOrTimeout() == true)
+    try await Task.sleep(for: .milliseconds(50))
+    #expect(await first.hasFired == false)
+    // The load-bearing assertion: exactly one arm may ever call its handler.
+    #expect(await second.fireCount == 1)
     await watchdog.stop()
 }
 
@@ -1324,16 +1376,22 @@ import Testing
     let fired = Signal()
 
     await watchdog.start { await fired.signal() }
+    await sleeper.waitForPendingSleep()
     await watchdog.stop()
     await sleeper.advanceOnePendingSleep()
 
     #expect(await fired.hasFired == false)
 }
 
-/// Minimal async signal used only by these tests.
+/// Minimal async signal used only by these tests. Counts invocations rather
+/// than latching a Bool: `fireIfStillArmed` looks up `currentHandler`
+/// dynamically instead of capturing it at arm time, so a stale timer invokes
+/// whatever handler is current. A Bool therefore cannot distinguish a
+/// superseded timer firing from correct behavior — only a count can.
 actor Signal {
-    private(set) var hasFired = false
-    func signal() { hasFired = true }
+    private(set) var fireCount = 0
+    var hasFired: Bool { fireCount > 0 }
+    func signal() { fireCount += 1 }
     func waitOrTimeout() async -> Bool {
         for _ in 0..<100 {
             if hasFired { return true }
@@ -1373,21 +1431,49 @@ public struct SystemSleeper: Sleeper {
 }
 
 /// Test sleeper: every `sleep` suspends until `advanceOnePendingSleep()` is called.
+///
+/// `waitForPendingSleep()` exists to remove a start-order race: the watchdog
+/// arms its timer inside a detached `Task`, so a test that advances the sleeper
+/// immediately after `start()` can run before any sleep has been registered,
+/// advance nothing, and hang. Always wait before advancing.
 public actor ManualSleeper: Sleeper {
     private var pending: [CheckedContinuation<Void, Error>] = []
+    private var waiters: [(threshold: Int, continuation: CheckedContinuation<Void, Never>)] = []
 
     public init() {}
 
     public func sleep(for duration: Duration) async throws {
-        try await withCheckedThrowingContinuation { pending.append($0) }
+        try await withCheckedThrowingContinuation { continuation in
+            pending.append(continuation)
+            let met = waiters.filter { pending.count >= $0.threshold }
+            waiters.removeAll { pending.count >= $0.threshold }
+            met.forEach { $0.continuation.resume() }
+        }
     }
 
-    /// Releases the oldest pending sleep, if any.
+    /// Suspends until at least one sleep is registered.
+    public func waitForPendingSleep() async {
+        await waitForPendingSleeps(atLeast: 1)
+    }
+
+    /// Suspends until at least `count` sleeps are registered. Needed because
+    /// `waitForPendingSleep()` returns immediately when any sleep is pending,
+    /// so it cannot prove that a SECOND timer registered.
+    public func waitForPendingSleeps(atLeast count: Int) async {
+        guard pending.count < count else { return }
+        await withCheckedContinuation { waiters.append((threshold: count, continuation: $0)) }
+    }
+
+    /// Releases the oldest pending sleep, if any. A superseded arm leaves its
+    /// continuation here unresolved, retaining one suspended Task — a
+    /// test-double artifact with no production equivalent, since
+    /// `SystemSleeper` unwinds via `Task.sleep`'s cancellation.
     public func advanceOnePendingSleep() {
         guard !pending.isEmpty else { return }
         pending.removeFirst().resume()
     }
 }
+
 ```
 
 - [ ] **Step 4: Implement the watchdog**
@@ -1476,7 +1562,13 @@ A real loopback HTTP server. Tests for Tasks 9 and 10 run over an actual socket,
 
 **Interfaces:**
 - Consumes: nothing from `NtfyKit`.
-- Produces: `actor MockNtfyServer` with `init()`, `func start() async throws -> URL`, `func stop() async`, `func enqueue(line: String) async`, `func closeCurrentConnection() async`, `func setResponse(status: Int, body: String) async`, and `var receivedRequestPaths: [String]`.
+- Produces: `actor MockNtfyServer` with `init()`, `func start() async throws -> URL`, `func stop() async`, `func enqueue(line: String) async`, `func setCloseAfterSending(_:) async`, `func waitForConnection() async`, `func closeCurrentConnection() async`, `func setResponse(status: Int, body: String) async`, and `var receivedRequestPaths: [String]`.
+
+**Framing note.** The server closes the connection after writing its queued
+lines by default (`closeAfterSending = true`). Without that, a client reading
+with `bytes.lines` never sees end-of-stream and the test hangs rather than
+fails. Tests that need a mid-stream drop instead call `setCloseAfterSending(false)`
+and then `closeCurrentConnection()` at the moment they choose.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1491,7 +1583,6 @@ import Testing
 
     await server.enqueue(line: #"{"id":"a1","time":1,"event":"open","topic":"t"}"#)
     await server.enqueue(line: #"{"id":"a2","time":2,"event":"message","topic":"t","message":"hi"}"#)
-    await server.closeCurrentConnection()
 
     let url = base.appending(path: "t").appending(path: "json")
     let (bytes, response) = try await URLSession.shared.bytes(from: url)
@@ -1541,6 +1632,10 @@ actor MockNtfyServer {
     private var pendingLines: [String] = []
     private var status = 200
     private var errorBody: String?
+    /// Close the socket once the queued lines are written. Required for a
+    /// client using `bytes.lines` to observe end-of-stream at all.
+    private var closeAfterSending = true
+    private var connectionWaiters: [CheckedContinuation<Void, Never>] = []
     private(set) var receivedRequestPaths: [String] = []
 
     func start() async throws -> URL {
@@ -1579,6 +1674,16 @@ actor MockNtfyServer {
 
     func enqueue(line: String) { pendingLines.append(line) }
 
+    /// Pass `false` to hold the connection open after writing, so a test can
+    /// drop it mid-stream with `closeCurrentConnection()`.
+    func setCloseAfterSending(_ value: Bool) { closeAfterSending = value }
+
+    /// Suspends until a client has connected.
+    func waitForConnection() async {
+        guard connection == nil else { return }
+        await withCheckedContinuation { connectionWaiters.append($0) }
+    }
+
     func setResponse(status: Int, body: String) {
         self.status = status
         self.errorBody = body
@@ -1591,6 +1696,9 @@ actor MockNtfyServer {
 
     private func accept(_ conn: NWConnection) {
         connection = conn
+        let toWake = connectionWaiters
+        connectionWaiters.removeAll()
+        toWake.forEach { $0.resume() }
         conn.start(queue: .global())
         conn.receive(minimumIncompleteLength: 1, maximumLength: 8192) { [weak self] data, _, _, _ in
             guard let self, let data, let request = String(data: data, encoding: .utf8) else { return }
@@ -1630,7 +1738,10 @@ actor MockNtfyServer {
         """
         let body = pendingLines.map { $0 + "\n" }.joined()
         pendingLines.removeAll()
-        conn.send(content: Data((head + body).utf8), completion: .contentProcessed { _ in })
+        let shouldClose = closeAfterSending
+        conn.send(content: Data((head + body).utf8), completion: .contentProcessed { _ in
+            if shouldClose { conn.cancel() }
+        })
     }
 }
 ```
@@ -1680,7 +1791,6 @@ private func endpoint(_ base: URL) -> NtfyEndpoint {
 
     await server.enqueue(line: Fixtures.openEvent)
     await server.enqueue(line: Fixtures.minimalMessage)
-    await server.closeCurrentConnection()
 
     let request = try endpoint(base).streamRequest(topics: ["alerts"], since: nil)
     var kinds: [NtfyEvent.Kind?] = []
@@ -1699,7 +1809,6 @@ private func endpoint(_ base: URL) -> NtfyEndpoint {
     await server.enqueue(line: Fixtures.openEvent)
     await server.enqueue(line: #"{"id":"broken"#)
     await server.enqueue(line: Fixtures.minimalMessage)
-    await server.closeCurrentConnection()
 
     let request = try endpoint(base).streamRequest(topics: ["alerts"], since: nil)
     var events = 0
@@ -1890,7 +1999,7 @@ private func makeConnection(
     let connection = makeConnection(base: base)
     var received: [NtfyEvent] = []
     let collector = Task {
-        for await event in await connection.events where event.kind == .message {
+        for await event in connection.events where event.kind == .message {
             received.append(event)
             break
         }
@@ -1947,9 +2056,8 @@ private func makeConnection(
     let sleeper = ManualSleeper()
     let connection = makeConnection(base: base, sleeper: sleeper)
     await connection.start()
-    try await Task.sleep(for: .milliseconds(300))
-    await server.closeCurrentConnection()
-    try await Task.sleep(for: .milliseconds(300))
+    // The server closes after writing, so the stream ends on its own.
+    try await Task.sleep(for: .milliseconds(500))
 
     if case .backoff = await connection.state {} else {
         Issue.record("expected .backoff, got \(await connection.state)")
@@ -1968,9 +2076,7 @@ private func makeConnection(
     let sleeper = ManualSleeper()
     let connection = makeConnection(base: base, sleeper: sleeper)
     await connection.start()
-    try await Task.sleep(for: .milliseconds(300))
-    await server.closeCurrentConnection()
-    try await Task.sleep(for: .milliseconds(300))
+    try await Task.sleep(for: .milliseconds(500))
 
     await server.enqueue(line: Fixtures.openEvent)
     await connection.reconnectNow()
@@ -2028,12 +2134,14 @@ public actor ServerConnection {
 
     private var runTask: Task<Void, Never>?
     private var attempt = 0
-    private var continuation: AsyncStream<NtfyEvent>.Continuation?
-    private lazy var eventStream: AsyncStream<NtfyEvent> = {
-        AsyncStream { self.continuation = $0 }
-    }()
 
-    public var events: AsyncStream<NtfyEvent> { eventStream }
+    /// Created eagerly in `init`, not lazily on first access. A lazy stream
+    /// leaves `continuation` nil until something reads `events`, so any message
+    /// arriving before the first read is silently dropped — and whether that
+    /// happens depends on task scheduling. `AsyncStream` buffers by default, so
+    /// an eager stream loses nothing.
+    private let continuation: AsyncStream<NtfyEvent>.Continuation
+    public nonisolated let events: AsyncStream<NtfyEvent>
 
     public init(
         endpoint: NtfyEndpoint,
@@ -2045,6 +2153,10 @@ public actor ServerConnection {
         watchdogTimeout: Duration = .seconds(90),
         cacheWindow: TimeInterval = 12 * 3600
     ) {
+        var capturedContinuation: AsyncStream<NtfyEvent>.Continuation!
+        self.events = AsyncStream { capturedContinuation = $0 }
+        self.continuation = capturedContinuation
+
         self.endpoint = endpoint
         self.topics = topics
         self.watermarks = watermarks
@@ -2061,15 +2173,25 @@ public actor ServerConnection {
     }
 
     public func stop() async {
+        // The suspension comes FIRST so the tail is suspension-free. With the
+        // await in the middle, a concurrent start() serviced during it sees
+        // runTask == nil, passes its guard, and installs a live loop that the
+        // resuming stop() never clears — a stopped connection reconnecting
+        // forever while reporting .idle.
+        await watchdog.stop()
         runTask?.cancel()
         runTask = nil
-        await watchdog.stop()
         state = .idle
     }
 
     /// Called on wake from sleep and when the network path becomes satisfied.
     /// Cancels any pending backoff so the reconnect is immediate.
     public func reconnectNow() {
+        // A deliberately stopped connection stays stopped. The sleep/wake
+        // coordinator is a thin fan-out over this method, so without the
+        // guard a server the user stopped silently restarts when the lid
+        // opens. start() covers starting; this only resumes a live loop.
+        guard runTask != nil else { return }
         guard state != .unauthorized else { return }
         attempt = 0
         runTask?.cancel()
@@ -2113,10 +2235,25 @@ public actor ServerConnection {
         await watchdog.start { [weak self] in
             await self?.handleWatchdogTimeout()
         }
-        defer { Task { await watchdog.stop() } }
+        // NOT `defer { Task { await watchdog.stop() } }`. A detached Task
+        // starts uncancelled, so a superseded connection's teardown runs
+        // unconditionally — and lands AFTER its own replacement has armed the
+        // watchdog, disarming it. The result is a watchdog that fires exactly
+        // once per process: the app silently stops detecting dead connections
+        // after the first recovery. Measured 0/20 with the detached form.
+        // A superseded loop must leave the arm to its replacement; stop() and
+        // reconnectNow() own their own teardown.
+        defer { if !Task.isCancelled { Task { await watchdog.stop() } } }
 
         for try await element in client.stream(request) {
             await watchdog.pet()
+            // `pet()` is a cross-actor hop, and it is non-async and
+            // non-throwing, so a loop suspended here is not stopped by
+            // cancellation. Without this guard a loop resuming after stop()
+            // has returned writes state and yields events to subscribers,
+            // leaving state == .open permanently with no loop left to move it.
+            // Every suspension point preceding a state write needs one of these.
+            guard !Task.isCancelled else { return }
             guard case .event(let event) = element else { continue }
 
             switch event.kind {
@@ -2125,7 +2262,7 @@ public actor ServerConnection {
                 attempt = 0
             case .message:
                 record(event)
-                continuation?.yield(event)
+                continuation.yield(event)
             case .keepalive, .pollRequest, nil:
                 continue
             }
@@ -2457,7 +2594,8 @@ Expected: all tests pass — 57 tests across 13 test files.
 Nothing personal or secret may have crept into a fixture or a test name:
 
 ```bash
-git grep -inE "vaspian|aloi\.dev/|tk_[A-Za-z0-9]{8}|10\.[0-9]+\.[0-9]+\.[0-9]+" -- . ':!docs/' || echo "clean"
+# Add your own employer/org names and internal hostnames to this pattern.
+git grep -inE "<your-org>|tk_[A-Za-z0-9]{8}|gh[pousr]_[A-Za-z0-9]{16}|10\.[0-9]+\.[0-9]+\.[0-9]+|192\.168\." -- . ':!docs/' || echo "clean"
 ```
 
 Expected: `clean`. Any hit must be sanitized before this task is considered done. (`docs/` is excluded because the spec legitimately discusses the `aloi.dev`-derived bundle identifier.)

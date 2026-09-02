@@ -1,0 +1,86 @@
+import Foundation
+
+/// Decodes a single ndjson line. Never throws: a bad line is data to report,
+/// not a reason to tear down a live connection.
+public struct NtfyEventDecoder: Sendable {
+    public enum Outcome: Sendable, Equatable {
+        case event(NtfyEvent)
+        /// An event type this build does not know, bounded to
+        /// `unknownEventTypeLimit` characters. It is the only value in this
+        /// enum that comes off the wire verbatim, and it reaches a `.public`
+        /// log line through `NtfyStreamClient.skippedLine`, so it is capped
+        /// here rather than at each place it might be interpolated.
+        ///
+        /// It is not a message body — `event` is a protocol field the server
+        /// sets, not something a publisher can put text into — so bounding it
+        /// is about not putting an unbounded wire string in a log, not about
+        /// spec §9's body rule.
+        case ignoredUnknownEvent(String)
+        case empty
+        /// The line could not be decoded.
+        ///
+        /// The line itself is deliberately not carried. It may contain a
+        /// message body, which spec §9 treats as sensitive, and a public type
+        /// that carries one invites the next caller to log it — the reason the
+        /// only current consumer strips it is not a property the type enforces.
+        /// `reason` is drawn from a closed vocabulary describing the decoding
+        /// failure's *shape*: the expected key name, and the top-level field it
+        /// occurred under, both of which are schema rather than content.
+        case malformed(reason: String)
+    }
+
+    /// Generous for a real event type — the longest ntfy defines is
+    /// `poll_request`, at twelve.
+    static let unknownEventTypeLimit = 32
+
+    private let json = JSONDecoder()
+
+    public init() {}
+
+    public func decode(line: String) -> Outcome {
+        let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return .empty }
+
+        do {
+            let event = try json.decode(NtfyEvent.self, from: Data(trimmed.utf8))
+            guard event.kind != nil else {
+                return .ignoredUnknownEvent(String(event.event.prefix(Self.unknownEventTypeLimit)))
+            }
+            return .event(event)
+        } catch {
+            return .malformed(reason: Self.reason(for: error))
+        }
+    }
+
+    /// Describes a decoding failure without quoting the line.
+    ///
+    /// `String(describing:)` on a `DecodingError` is not safe to keep: for a
+    /// truncated or non-JSON line the underlying `NSError` quotes the offending
+    /// character and its column out of the input (measured: "Unexpected
+    /// character 'o' in expected null value around line 1, column 2."). That is
+    /// a fragment of the payload, so it is dropped in favour of a fixed label.
+    private static func reason(for error: Swift.Error) -> String {
+        guard let decoding = error as? DecodingError else { return "decode failure" }
+        switch decoding {
+        case .dataCorrupted:
+            return "not valid JSON"
+        case .keyNotFound(let key, _):
+            return "missing key: \(key.stringValue)"
+        case .typeMismatch(_, let context):
+            return "type mismatch at \(path(context))"
+        case .valueNotFound(_, let context):
+            return "missing value at \(path(context))"
+        @unknown default:
+            return "decode failure"
+        }
+    }
+
+    /// Only the *first* component of the coding path, never the whole thing.
+    /// A full path descends into `actions[].headers` and `actions[].extras`,
+    /// which are `[String: String]` — so it would name a server-supplied
+    /// dictionary key, which is content, not schema. The first component is
+    /// always one of `NtfyEvent`'s own `CodingKeys` by construction.
+    private static func path(_ context: DecodingError.Context) -> String {
+        context.codingPath.first.map(\.stringValue) ?? "top level"
+    }
+}

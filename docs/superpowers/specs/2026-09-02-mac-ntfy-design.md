@@ -58,7 +58,7 @@ Three SwiftPM targets:
 - **`NtfyKit`** (library) — models, REST client, streaming client, connection
   state machine, Keychain access, retention. No AppKit, no SwiftUI. This is
   where the interesting logic lives and where the tests point.
-- **`NtfyApp`** (executable) — menu bar, windows, notification presentation.
+- **`NtfyMe`** (executable) — menu bar, windows, notification presentation.
   Thin; it renders `NtfyKit` state.
 - **`NtfyKitTests`** — unit tests plus `MockNtfyServer`, a loopback HTTP server
   that streams canned newline-delimited JSON including keepalives and
@@ -228,6 +228,32 @@ guards only the boundary case of a message whose timestamp equals the watermark.
 `lastMessageID` is still recorded on `Subscription` for diagnostics and log
 correlation; it is not used to construct `since`.
 
+### 5.2 The resume point is "caught up to", not "last message"
+
+**Decided 2026-09-02, to be implemented with the persisted watermark model in
+the persistence plan.** The Stage 1–2 code implements the simpler rule below
+and is knowingly incomplete on this point.
+
+Resuming from `min(lastMessageTime)` across topics is wrong for a quiet topic.
+A topic that merely received no messages for longer than the server's cache
+window drags the shared `since` outside that window on *every* reconnect — every
+lid-open — producing a full-cache replay of every topic and a `hasHistoryGap`
+that is false: nothing was missed, the topic was simply quiet.
+
+The connection already receives a better signal and currently discards it. Every
+`open` and `keepalive` line carries a server `time`, and receiving one means
+everything up to that time has been delivered on *all* subscribed topics. So the
+correct resume point is:
+
+    since = max(min(topic watermarks), lastLineTime) − margin
+
+where `lastLineTime` is the server timestamp of the most recent line of any kind.
+This makes `hasHistoryGap` true only after a genuinely long disconnect.
+
+The persisted `Subscription` model must therefore store a per-server "caught up
+to" time alongside the per-topic message watermarks. Deciding this now is what
+keeps the persistence schema from freezing the wrong shape.
+
 ### `ConnectionCoordinator`
 
 Owns one `ServerConnection` per server. Subscribes to workspace sleep/wake and
@@ -394,7 +420,7 @@ Entitlements:
 | Entitlement | Why |
 |---|---|
 | `com.apple.security.network.client` | Outbound connections to ntfy servers |
-| `com.apple.developer.usernotifications.time-sensitive` | Priorities 4–5; self-enabled, no Apple approval |
+| `com.apple.developer.usernotifications.time-sensitive` | Priorities 4–5. **Measured 2026-09-02: cannot be used with local Apple Development signing.** `codesign` embeds it successfully, but the app is killed at launch — AMFI reports "no eligible provisioning profiles found" and launchd reports spawn failure. It needs an App ID with the capability enabled and an embedded provisioning profile, so it ships only in the Developer ID release build. Local development builds omit it, which means priorities 4–5 degrade to `.active` during development. |
 
 Critical alerts are not requested; see §6.
 
@@ -421,11 +447,29 @@ no `sudo xcode-select` is required.
 CI (GitHub Actions, macOS runner) builds and runs the test suite unsigned. No
 signing secrets are present in CI.
 
-**Unverified assumption**, to be confirmed in stage 2 before the test suite
-grows around it: that an unsigned binary on a hosted macOS runner can bind and
-connect to loopback for `MockNtfyServer` without a signature or entitlement.
-This is expected to work, but it gates stage 2, which gates everything after it.
-If it does not, CI signs ad-hoc (`codesign -s -`) before running tests.
+**Confirmed 2026-09-02, on `macos-26`:** an unsigned binary on a hosted macOS
+runner can bind and connect to loopback for `MockNtfyServer` without a
+signature or entitlement. `.github/workflows/ci.yml` runs `swift build -v`
+and `swift test -v`, unsigned, no `codesign` step, no signing secrets in the
+repository.
+
+The first real run, on `macos-15`, never reached the loopback question at
+all: it failed in 15 seconds with `package 'ntfyme' is using Swift tools
+version 6.2.0 but the installed version is 6.1.0` — `macos-15` ships Swift
+6.1, which cannot even parse this package's `swift-tools-version: 6.2` or
+its `.macOS(.v26)` platform floor. The workflow was switched to `macos-26`
+(the run's toolchain: Xcode 26.6, Apple Swift 6.3.3, `MacOSX26.5.sdk`),
+re-pushed, and that run
+([`33649713749`](https://github.com/ctaloi/ntfyme/actions/runs/33649713749),
+`feat/foundation` at `87053b2`) went green: 66/66 tests, including every
+loopback-socket test in `MockNtfyServer` and `ServerConnectionTests`
+(`reachesOpenStateAndEmitsMessages`, `stopIsFinalEvenWithEventsInFlight`,
+`reconnectNowBypassesTheBackoffDelay`, and the rest) — no binding or
+permission error, no ad-hoc signing needed. This matches what was already
+observed locally on macOS 26.6.2 against an unsigned SwiftPM test binary.
+The ad-hoc-signing fallback (`codesign -s - --force` on the test bundle
+before `swift test`) remains available in principle but was not needed and
+is not part of the workflow.
 
 ## 12. Testing
 

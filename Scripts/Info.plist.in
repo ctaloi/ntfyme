@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key><string>__PRODUCT_NAME__</string>
+    <key>CFBundleDisplayName</key><string>__PRODUCT_NAME__</string>
+    <key>CFBundleExecutable</key><string>__PRODUCT_NAME__</string>
+    <key>CFBundleIdentifier</key><string>__BUNDLE_ID__</string>
+    <key>CFBundleShortVersionString</key><string>__MARKETING_VERSION__</string>
+    <key>CFBundleVersion</key><string>__BUILD_VERSION__</string>
+    <key>CFBundlePackageType</key><string>APPL</string>
+    <key>LSMinimumSystemVersion</key><string>__MINIMUM_MACOS__</string>
+    <key>LSUIElement</key><true/>
+    <key>NSHumanReadableCopyright</key><string>MIT licensed</string>
+</dict>
+</plist>
