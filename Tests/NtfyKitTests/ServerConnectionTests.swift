@@ -162,14 +162,36 @@ private func waitUntil(
     )
     await connection.start()
 
-    #expect(await waitUntil { await server.receivedRequestPaths.isEmpty == false })
+    // Wait for `.backoff`, not merely for the request to be recorded. The mock
+    // appends the path at request receipt, so at that moment the 400 may not
+    // have been processed yet and the watchdog armed for this attempt is still
+    // live — advancing the sleeper then fires it, reconnecting before
+    // `forceSinceAll` has been set. Observed flaking 1 run in 3 that way.
+    // `.backoff` is reached only after the catch has run and `connectOnce`'s
+    // own teardown has disarmed the watchdog, so from here the only pending
+    // sleep that can do anything is the backoff delay.
+    #expect(await waitUntil { await isInBackoff(connection) })
     let first = await server.receivedRequestPaths[0]
     #expect(first.contains("since=1788353317"))
+
+    // Advance exactly twice rather than using `advanceUntilRequestCount`. That
+    // helper advances on a timer until the count is reached, and the second
+    // attempt's request is recorded some time *after* its watchdog is armed —
+    // so a further blind advance lands on that live arm, fires it, and replaces
+    // the in-flight `since=all` attempt with a fresh loop that has already
+    // consumed the fallback. Observed as a rare flake exactly that way.
+    //
+    // Two sleeps are pending here and their order is fixed: the first attempt's
+    // watchdog arm, disarmed by `connectOnce`'s teardown and therefore inert,
+    // then the backoff delay.
+    await sleeper.waitForPendingSleeps(atLeast: 2)
+    await sleeper.advanceOnePendingSleep()
+    await sleeper.advanceOnePendingSleep()
 
     // The mock keeps answering 400, so if the fallback did not exist the second
     // request would repeat `since=1788353317` rather than fail to happen — the
     // assertion below distinguishes the two.
-    #expect(await advanceUntilRequestCount(server: server, sleeper: sleeper, count: 2),
+    #expect(await waitUntil { await server.receivedRequestPaths.count >= 2 },
             "no second attempt was made")
     let second = await server.receivedRequestPaths[1]
     #expect(second.contains("since=all"))
