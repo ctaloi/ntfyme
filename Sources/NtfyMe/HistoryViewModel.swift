@@ -38,6 +38,13 @@ final class HistoryViewModel {
     /// a wiring pass replaces this closure with one backed by
     /// `ConnectionCoordinator`.
     var statusProvider: (UUID) -> HistoryConnectionStatus = { _ in .unknown }
+    /// Where `AttachmentDownloader` writes files, for resolving a Quick Look
+    /// preview from `MessageSnapshot.attachment?.localFilename`. `nil` until
+    /// a wiring pass sets it (`HistoryWindowController.init`) — that must be
+    /// the exact same directory `RetentionScheduler.attachmentsDirectory()`
+    /// uses, or a preview would either fail to resolve or, worse, resolve
+    /// against the wrong directory.
+    let attachmentsDirectory: URL?
 
     // MARK: List / filters
     var searchText: String = "" {
@@ -84,8 +91,9 @@ final class HistoryViewModel {
     private var nextOffset = 0
     private var debounceTask: Task<Void, Never>?
 
-    init(store: MessageStore) {
+    init(store: MessageStore, attachmentsDirectory: URL? = nil) {
         self.store = store
+        self.attachmentsDirectory = attachmentsDirectory
     }
 
     // MARK: Loading
@@ -255,16 +263,11 @@ final class HistoryViewModel {
     }
 
     /// Opens `snapshot.click` in the default browser. `click` is
-    /// server-supplied — the same untrusted category `NotificationDecision`
-    /// documents for action URLs — so only `http`/`https` are honoured,
-    /// never a custom scheme that could hand another app attacker-chosen
-    /// input.
+    /// server-supplied — spec §9: a message is attacker-controlled — so this
+    /// goes through `NtfyURLPolicy`, the one place that rule is expressed,
+    /// rather than a second local scheme check.
     func openClickURL(_ snapshot: MessageSnapshot) {
-        guard let click = snapshot.click,
-              let url = URL(string: click),
-              let scheme = url.scheme?.lowercased(),
-              scheme == "http" || scheme == "https"
-        else { return }
+        guard let url = NtfyURLPolicy.sanitized(snapshot.click) else { return }
         NSWorkspace.shared.open(url)
     }
 

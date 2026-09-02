@@ -14,8 +14,13 @@ final class HistoryWindowController {
     private let viewModel: HistoryViewModel
     private var window: NSWindow?
 
-    init(store: MessageStore) {
-        viewModel = HistoryViewModel(store: store)
+    /// - Parameter attachmentsDirectory: must be the exact same directory
+    ///   `RetentionScheduler.attachmentsDirectory()` uses
+    ///   (`Application Support/dev.aloi.NtfyMe/Attachments`), or Quick Look
+    ///   previews resolve against the wrong place. `nil` — the default —
+    ///   disables Quick Look entirely rather than guessing at the path.
+    init(store: MessageStore, attachmentsDirectory: URL? = nil) {
+        viewModel = HistoryViewModel(store: store, attachmentsDirectory: attachmentsDirectory)
     }
 
     /// Injected by the wiring pass once `ConnectionCoordinator` (or an
