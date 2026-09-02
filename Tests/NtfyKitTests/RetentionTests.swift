@@ -47,6 +47,40 @@ private func makeStore() throws -> (MessageStore, UUID) {
         now: now, attachmentsDirectory: nil)
     #expect(result.messagesDeleted == 6)
     #expect(try await store.messageCount() == 4)
+    // Identity, not just count: the SURVIVING four must be the newest four
+    // (m9..m6), not merely four of them — a "keep the oldest N" bug would
+    // satisfy both assertions above without this one.
+    let left = try await store.messages(forServer: serverID, topic: nil, limit: 10)
+    #expect(left.map(\.messageID) == ["m9", "m8", "m7", "m6"])
+}
+
+/// Two servers can both carry a topic named "alerts" (spec §4: a
+/// `Subscription` belongs to a `Server`, exactly so two servers' same-named
+/// topics never share state). The cap must key on (server, topic), not the
+/// topic string alone, or a busy "alerts" on one server would evict a quiet
+/// "alerts" on the other.
+@Test func theCountCapIsScopedPerServerNotJustPerTopicName() async throws {
+    let container = try StoreFixtures.inMemoryContainer()
+    let serverA = UUID()
+    let serverB = UUID()
+    let context = ModelContext(container)
+    let a = Server(id: serverA, name: "A", baseURLString: "https://a.example.com")
+    let b = Server(id: serverB, name: "B", baseURLString: "https://b.example.com")
+    context.insert(a)
+    context.insert(b)
+    context.insert(Subscription(topic: "alerts", server: a))
+    context.insert(Subscription(topic: "alerts", server: b))
+    try context.save()
+    let store = MessageStore(modelContainer: container)
+
+    _ = try await store.insert((0..<5).map { event("a\($0)", topic: "alerts", ageDays: Double(5 - $0) * 0.1) },
+                               serverID: serverA)
+    _ = try await store.insert((0..<5).map { event("b\($0)", topic: "alerts", ageDays: Double(5 - $0) * 0.1) },
+                               serverID: serverB)
+
+    _ = try await store.prune(policy: RetentionPolicy(maxAge: 30 * 86_400, maxMessagesPerTopic: 3),
+                              now: now, attachmentsDirectory: nil)
+    #expect(try await store.messageCount() == 6)  // 3 per (server, topic), two servers
 }
 
 /// The per-topic cap is PER TOPIC, not global.

@@ -191,10 +191,16 @@ public actor MessageStore {
             FetchDescriptor<Message>(sortBy: [SortDescriptor(\.time, order: .reverse)])
         ).filter { !doomedKeys.contains($0.uniqueKey) }
 
+        // Keyed on (server, topic), not the topic string alone: two servers
+        // may both carry a topic named "alerts" (spec §4 models `Subscription`
+        // as belonging to a `Server` for exactly this reason), and a shared
+        // key would let a busy topic on one server evict a quiet one on
+        // another.
         var seenPerTopic: [String: Int] = [:]
         for message in survivors {
-            let count = (seenPerTopic[message.topic] ?? 0) + 1
-            seenPerTopic[message.topic] = count
+            let key = "\(message.serverID.uuidString)/\(message.topic)"
+            let count = (seenPerTopic[key] ?? 0) + 1
+            seenPerTopic[key] = count
             if count > policy.maxMessagesPerTopic { doomed.append(message) }
         }
 
