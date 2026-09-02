@@ -33,7 +33,10 @@ private func makeStore() throws -> (MessageStore, UUID) {
 }
 
 /// The invariant the whole reconnect design rests on: an overlapping replay
-/// window must upsert, not duplicate.
+/// window must **skip** the rows it already holds, not duplicate them and not
+/// overwrite them. (An earlier version of this comment said "upsert", which is
+/// the opposite of what the code does and of what
+/// `replayingDoesNotResetIsReadToFalse` below depends on.)
 @Test func replayingAnOverlappingWindowDoesNotDuplicateRows() async throws {
     let (store, serverID) = try makeStore()
     _ = try await store.insert([event("a", time: 100, body: "one"),
@@ -97,6 +100,55 @@ private func makeStore() throws -> (MessageStore, UUID) {
     let t = Date(timeIntervalSince1970: 1_788_353_322)
     try await store.setCaughtUpTo(t, forServer: serverID)
     #expect(try await store.caughtUpTo(forServer: serverID) == t)
+
+    // The monotonic guard, which a round trip alone does not exercise: a
+    // regression to last-write-wins passes every assertion above. An older
+    // value must be refused, or a late flush from a superseded connection
+    // could rewind the resume point and replay everything after it.
+    try await store.setCaughtUpTo(t.addingTimeInterval(-3600), forServer: serverID)
+    #expect(try await store.caughtUpTo(forServer: serverID) == t)
+    try await store.setCaughtUpTo(t.addingTimeInterval(60), forServer: serverID)
+    #expect(try await store.caughtUpTo(forServer: serverID) == t.addingTimeInterval(60))
+}
+
+/// The topic filter has to live IN the `#Predicate`, not be applied to the
+/// rows a `fetchLimit` already truncated. A `#Predicate` with two captured
+/// values and `&&` compiles fine and fails at *runtime*, so this branch had no
+/// coverage at all despite looking obviously correct.
+///
+/// The two topics are interleaved in time and the limit is smaller than the
+/// number of matching rows, which is the only shape that tells the two
+/// implementations apart: filtering after the fetch would take the two newest
+/// rows overall — one of them a `deploys` row — and return a single `alerts`
+/// message for a page that asked for two.
+@Test func aTopicFilteredPageIsFilteredBeforeTheLimit() async throws {
+    let container = try StoreFixtures.inMemoryContainer()
+    let serverID = UUID()
+    let context = ModelContext(container)
+    let server = Server(id: serverID, name: "Example",
+                        baseURLString: "https://ntfy.example.com")
+    context.insert(server)
+    context.insert(Subscription(topic: "alerts", server: server))
+    context.insert(Subscription(topic: "deploys", server: server))
+    try context.save()
+    let store = MessageStore(modelContainer: container)
+
+    _ = try await store.insert([
+        event("a1", topic: "alerts", time: 100, body: "alerts-oldest"),
+        event("d1", topic: "deploys", time: 200, body: "deploys-old"),
+        event("a2", topic: "alerts", time: 300, body: "alerts-middle"),
+        event("d2", topic: "deploys", time: 400, body: "deploys-mid"),
+        event("a3", topic: "alerts", time: 500, body: "alerts-newest"),
+        event("d3", topic: "deploys", time: 600, body: "deploys-newest"),
+    ], serverID: serverID)
+
+    let page = try await store.messages(forServer: serverID, topic: "alerts", limit: 2)
+    #expect(page.map(\.body) == ["alerts-newest", "alerts-middle"])
+
+    // And the unfiltered branch still sees everything, so the assertion above
+    // is about the predicate rather than about the rows that exist.
+    let all = try await store.messages(forServer: serverID, topic: nil, limit: 2)
+    #expect(all.map(\.body) == ["deploys-newest", "alerts-newest"])
 }
 
 @Test func messagesComeBackNewestFirst() async throws {

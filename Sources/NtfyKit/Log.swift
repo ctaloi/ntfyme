@@ -53,6 +53,24 @@ import os
 ///   attachment-name content, and here it is additionally the value that
 ///   just failed a path-component check, making it worth no more trust in a
 ///   log line than anywhere else.
+/// - `Ingest.flush`'s two failure sites — the batch insert and the
+///   `caughtUpTo` persist — interpolate only the failed `NSError`'s `domain`
+///   and `code`, for the same reason as `prune`'s deletion-failure site. A
+///   SwiftData or Cocoa error's description can embed a stored value, and
+///   every stored value in this library is a message body, a topic, or a
+///   `messageID`.
+/// - `Ingest.Buffer`'s overflow site is a string literal only. It reports
+///   that events were dropped, never which ones.
+/// - `Backfill.run`'s success site interpolates only `result.inserted`, an
+///   `Int` this process counted — the same fixed-shape, locally-generated
+///   category as `serverID` above. It deliberately does not name the topic
+///   being backfilled, which is precisely the value a caller would find most
+///   useful and is barred for it.
+/// - `Backfill.collectEvents`'s skipped-line site interpolates
+///   `NtfyEventDecoder`'s `reason`, the same closed vocabulary (and the same
+///   bounded `ignoredUnknownEvent` carve-out) as `ServerConnection`'s
+///   skipped-line site. The two are worded differently on purpose, so a log
+///   read can tell a one-shot poll's bad line from a subscription's.
 ///
 /// `privacy: .public` is used deliberately, to keep these labels readable in
 /// `log stream`. The alternative is not a safety net: `.private` hides a value

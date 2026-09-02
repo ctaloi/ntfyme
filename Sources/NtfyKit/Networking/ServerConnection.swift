@@ -63,6 +63,13 @@ public actor ServerConnection {
     /// is: a lazily-created stream leaves its continuation nil until
     /// something first reads it, silently dropping anything emitted before
     /// that.
+    ///
+    /// Bounded, unlike `events`. Nothing consumes this until the UI lands, and
+    /// a server emitting malformed lines yields a `.skippedLine` for each one,
+    /// so an unbounded buffer would grow for the life of the process against a
+    /// consumer that may never arrive. The newest 64 are what a status surface
+    /// would show anyway; `events` stays unbounded because losing a message is
+    /// not a display concern, and it has a consumer.
     private let diagnosticContinuation: AsyncStream<ConnectionDiagnostic>.Continuation
     public nonisolated let diagnostics: AsyncStream<ConnectionDiagnostic>
 
@@ -96,7 +103,9 @@ public actor ServerConnection {
         self.continuation = capturedContinuation
 
         var capturedDiagnostics: AsyncStream<ConnectionDiagnostic>.Continuation!
-        self.diagnostics = AsyncStream { capturedDiagnostics = $0 }
+        self.diagnostics = AsyncStream(bufferingPolicy: .bufferingNewest(64)) {
+            capturedDiagnostics = $0
+        }
         self.diagnosticContinuation = capturedDiagnostics
 
         self.endpoint = endpoint

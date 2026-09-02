@@ -78,8 +78,8 @@ private func message(_ id: String, topic: String, time: Int) -> NtfyEvent {
     _ = try await backfill.run(topic: "newtopic", serverID: serverID)
 
     let marks = try await store.watermarks(forServer: serverID)
-    #expect(marks.first(where: { $0.topic == "newtopic" })?.lastMessageTime
-            == Date(timeIntervalSince1970: 250))
+    let mark = try #require(marks.first(where: { $0.topic == "newtopic" }))
+    #expect(mark.lastMessageTime == Date(timeIntervalSince1970: 250))
 }
 
 /// A topic with no cached history at all (nothing was ever posted, or it all
@@ -100,8 +100,13 @@ private func message(_ id: String, topic: String, time: Int) -> NtfyEvent {
     let inserted = try await backfill.run(topic: "newtopic", serverID: serverID)
 
     #expect(inserted == 0)
+    // `#require` the mark before reading it: `first(where:)?.lastMessageTime
+    // == nil` also passes when `watermarks(forServer:)` returns nothing at
+    // all, which would make this assert the absence of the subscription
+    // rather than the absence of a fabricated watermark.
     let marks = try await store.watermarks(forServer: serverID)
-    #expect(marks.first(where: { $0.topic == "newtopic" })?.lastMessageTime == nil)
+    let mark = try #require(marks.first(where: { $0.topic == "newtopic" }))
+    #expect(mark.lastMessageTime == nil)
 }
 
 /// A server that accepts the connection and then never responds — no data,

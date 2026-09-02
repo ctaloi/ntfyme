@@ -61,6 +61,26 @@ private func wm(_ topic: String, _ offset: TimeInterval?) -> TopicWatermark {
         cacheWindow: window, now: now, margin: 5
     )
     #expect(r.since == .unixTime(Int(now.timeIntervalSince1970) - 90 - 5))
+    // A 90-second-old resume point is comfortably inside the window, so the
+    // caller must not be told history was lost. Asserted rather than assumed:
+    // `since` alone would pass just as well if `hasHistoryGap` were hardwired
+    // true for the no-watermark case.
+    #expect(r.hasHistoryGap == false)
+}
+
+/// The mirror of the case above, and the reason `hasHistoryGap` is not simply
+/// "did any topic have a stale watermark". With no watermarks at all, a
+/// `caughtUpTo` older than the cache window is still a gap: messages could
+/// have arrived on any of these topics while the app was off and been evicted
+/// before it came back, and the client has no way to tell that they did not.
+@Test func aStaleCaughtUpToWithNoWatermarksStillReportsAGap() {
+    let r = WatermarkResolver.resolve(
+        watermarks: [wm("a", nil)],
+        caughtUpTo: now.addingTimeInterval(-(window + 3600)),
+        cacheWindow: window, now: now, margin: 5
+    )
+    #expect(r.since == .unixTime(Int(now.timeIntervalSince1970 - window) - 3600 - 5))
+    #expect(r.hasHistoryGap == true)
 }
 
 /// ntfy sends the `open` line *before* it replays cached history — its

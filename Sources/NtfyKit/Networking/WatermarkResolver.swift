@@ -23,8 +23,17 @@ public struct TopicWatermark: Sendable, Equatable {
 public enum WatermarkResolver {
     public struct Resolution: Sendable, Equatable {
         public let since: SinceParameter
-        /// True when the oldest watermark predates the server's cache window,
-        /// so some messages are unrecoverable and the caller must surface it.
+        /// True when the resume point this resolution actually asks for —
+        /// `max(min(watermarks), caughtUpTo) − margin`, i.e. the value in
+        /// `since` — predates the server's cache window, so some messages are
+        /// unrecoverable and the caller must surface it.
+        ///
+        /// Not "the oldest watermark predates the cache window", which is what
+        /// this said before §5.2 landed. Two things changed. A topic that was
+        /// merely quiet no longer drags the measurement out of the window on
+        /// its own, because `caughtUpTo` can be newer than its watermark; and
+        /// the margin is included, because a resume point inside the window
+        /// can still produce a `since` outside it.
         public let hasHistoryGap: Bool
     }
 
