@@ -101,7 +101,16 @@ public enum NotificationDecision: Sendable, Equatable {
         }
     }
 
-    private static func presentableActions(from actions: [NtfyAction]) -> [PresentableAction] {
+    /// The sanitized, presentable subset of a message's actions.
+    ///
+    /// Applies the same rules as notification presentation: URL scheme
+    /// allow-list (`NtfyURLPolicy`), HTTP method allow-list, header
+    /// deny-list, `broadcast` and unknown kinds dropped, at most
+    /// `maxActions`. Any UI that renders action buttons — not just
+    /// notification presentation — must go through this: the rules are
+    /// security rules (spec §9 — a message is attacker-controlled), and a
+    /// second copy will drift from this one.
+    public static func presentableActions(from actions: [NtfyAction]) -> [PresentableAction] {
         actions.prefix(maxActions).compactMap { action in
             switch action.kind {
             case .view:

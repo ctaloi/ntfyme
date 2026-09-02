@@ -1,5 +1,30 @@
 import Foundation
 
+/// A `Sendable` view of one `Attachment`.
+///
+/// Deliberately omits the remote URL (`Attachment.urlString`): the UI has no
+/// business fetching it directly. `AttachmentDownloader` owns that, with its
+/// scheme allow-list, size cap, and credential-stripped session — leaving
+/// the URL off this snapshot makes that safe path the only path available
+/// to a caller that only has a `MessageSnapshot`.
+public struct AttachmentSnapshot: Sendable, Equatable {
+    public let name: String
+    public let type: String?
+    public let size: Int?
+    /// Set only once the file has actually been downloaded. `nil` means
+    /// metadata exists but no local file does — the UI must not attempt a
+    /// Quick Look preview (or anything else that reads a local file) when
+    /// this is `nil`.
+    public let localFilename: String?
+
+    public init(name: String, type: String?, size: Int?, localFilename: String?) {
+        self.name = name
+        self.type = type
+        self.size = size
+        self.localFilename = localFilename
+    }
+}
+
 /// A `Sendable` view of one `Message`.
 ///
 /// `@Model` classes are not `Sendable` and must never cross an actor boundary
@@ -25,6 +50,7 @@ public struct MessageSnapshot: Sendable, Equatable, Identifiable {
     /// there, and never reaches here silently disguised as the same `[]`.
     public let actions: [NtfyAction]
     public let isRead: Bool
+    public let attachment: AttachmentSnapshot?
 
     public var isMarkdown: Bool { contentType == "text/markdown" }
     public var resolvedPriority: NtfyPriority { NtfyPriority(rawValue: priority) ?? .default }
@@ -53,10 +79,16 @@ extension Message {
             actions = []
         }
 
+        let attachmentSnapshot = attachment.map {
+            AttachmentSnapshot(name: $0.name, type: $0.type, size: $0.size,
+                              localFilename: $0.localFilename)
+        }
+
         return MessageSnapshot(id: uniqueKey, messageID: messageID, topic: topic,
                         serverID: serverID, time: time, title: title, body: body,
                         priority: priority, tags: tags, click: click,
                         iconURL: iconURL, contentType: contentType,
-                        actionsJSON: actionsJSON, actions: actions, isRead: isRead)
+                        actionsJSON: actionsJSON, actions: actions, isRead: isRead,
+                        attachment: attachmentSnapshot)
     }
 }
