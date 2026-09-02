@@ -61,6 +61,11 @@ import os
 ///   `messageID`.
 /// - `Ingest.Buffer`'s overflow site is a string literal only. It reports
 ///   that events were dropped, never which ones.
+/// - `MessageStore.servers`'s skipped-row site is a string literal only. It
+///   reports that a server row's base URL did not parse, never the string
+///   that failed to parse — that value is the same server-configuration
+///   content a user could set to a personal hostname, so it is withheld the
+///   same way a topic or `messageID` is.
 /// - `Backfill.run`'s success site interpolates only `result.inserted`, an
 ///   `Int` this process counted — the same fixed-shape, locally-generated
 ///   category as `serverID` above. It deliberately does not name the topic
