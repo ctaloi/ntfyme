@@ -90,7 +90,16 @@ final class NotificationPresenter: NSObject, UNUserNotificationCenterDelegate {
         content.interruptionLevel = level(for: request.interruption)
         if request.playsSound { content.sound = .default }
         if let categoryID = request.categoryIdentifier { content.categoryIdentifier = categoryID }
-        if let clickURL = request.clickURL { content.userInfo = ["clickURL": clickURL.absoluteString] }
+        // Everything an activation needs travels with the notification. A
+        // banner can be tapped long after this launch has ended, so nothing
+        // here may depend on in-memory state.
+        var userInfo: [String: Any] = [Self.messageKeyKey: request.identifier]
+        if let clickURL = request.clickURL { userInfo[Self.clickURLKey] = clickURL.absoluteString }
+        if !request.actions.isEmpty,
+           let encoded = try? JSONEncoder().encode(request.actions) {
+            userInfo[Self.actionsKey] = encoded
+        }
+        content.userInfo = userInfo
 
         do {
             try await center.add(UNNotificationRequest(
@@ -151,4 +160,83 @@ final class NotificationPresenter: NSObject, UNUserNotificationCenterDelegate {
         case .timeSensitive: .timeSensitive
         }
     }
+
+    // MARK: - Activation
+
+    nonisolated static let clickURLKey = "clickURL"
+    nonisolated static let actionsKey = "actions"
+    nonisolated static let messageKeyKey = "messageKey"
+
+    /// What the user did to a delivered notification. Resolved here from the
+    /// notification's own payload; acted on by `AppDelegate`, which owns the
+    /// windows and the URL opening.
+    nonisolated enum Activation: Sendable, Equatable {
+        /// The body was clicked and the message carried a `click` URL.
+        case openURL(URL)
+        /// The body was clicked and it did not — spec §6 opens History at
+        /// that message instead.
+        case openHistory(messageKey: String)
+        /// One of the message's own action buttons.
+        case perform(PresentableAction)
+    }
+
+    /// Set by `AppDelegate`. Left as a no-op default so a presenter built in
+    /// a test does nothing rather than reaching for windows that do not exist.
+    var onActivation: (Activation) -> Void = { _ in }
+
+    /// Resolves a tap into an `Activation`. Pure and `static` so the routing
+    /// rules are testable without a notification centre — the delegate method
+    /// below is then only plumbing.
+    ///
+    /// Returns `nil` for a dismissal, and for an action identifier that is not
+    /// in the payload: a category identifier is a hash of the action set, so a
+    /// notification from a previous launch whose actions have since changed
+    /// can deliver an identifier this payload does not contain. Doing nothing
+    /// is correct there — the alternative is performing the wrong action.
+    nonisolated static func activation(
+        forActionIdentifier identifier: String, userInfo: [AnyHashable: Any]
+    ) -> Activation? {
+        if identifier == UNNotificationDismissActionIdentifier { return nil }
+
+        if identifier == UNNotificationDefaultActionIdentifier {
+            if let raw = userInfo[clickURLKey] as? String,
+               let url = NtfyURLPolicy.sanitized(raw) {
+                return .openURL(url)
+            }
+            if let key = userInfo[messageKeyKey] as? String {
+                return .openHistory(messageKey: key)
+            }
+            return nil
+        }
+
+        guard let data = userInfo[actionsKey] as? Data,
+              let actions = try? JSONDecoder().decode([PresentableAction].self, from: data),
+              let action = actions.first(where: { $0.id == identifier })
+        else { return nil }
+        return .perform(action)
+    }
+
+    /// `nonisolated` for the same reason as `willPresent`: the protocol
+    /// requirement is not main-actor isolated and neither argument is
+    /// `Sendable`, so the payload is resolved off the actor and only the
+    /// resulting value — which is `Sendable` — crosses back.
+    nonisolated func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        didReceive response: UNNotificationResponse,
+        withCompletionHandler completionHandler: @escaping () -> Void
+    ) {
+        let resolved = Self.activation(
+            forActionIdentifier: response.actionIdentifier,
+            userInfo: response.notification.request.content.userInfo)
+        // The completion handler is called synchronously, on the thread the
+        // delegate was invoked on, rather than captured into the `Task`: it is
+        // not `Sendable`, and it only tells the system this delegate is done
+        // deciding — which it is, since `activation` resolved above. The
+        // window work then proceeds on the main actor without holding it up.
+        if let resolved {
+            Task { @MainActor in self.onActivation(resolved) }
+        }
+        completionHandler()
+    }
+
 }

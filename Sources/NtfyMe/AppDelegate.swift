@@ -50,6 +50,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             UNUserNotificationCenter.current().delegate = graph.presenter
             settingsModel = graph.makeSettingsModel()
 
+            // Spec §6 activation. The presenter resolves what the tap meant
+            // from the notification's own payload; this decides what to do
+            // with the answer, because windows and URL opening live here.
+            graph.presenter.onActivation = { [weak self] activation in
+                switch activation {
+                case .openURL(let url):
+                    NSWorkspace.shared.open(url)
+                case .openHistory:
+                    // Opens the window. Scrolling to the specific message
+                    // needs a selection API `HistoryViewModel` does not expose
+                    // yet, so the message key is deliberately unused rather
+                    // than half-implemented.
+                    self?.openHistory()
+                case .perform(let action):
+                    Task { await NotificationActionHandler.perform(action) }
+                }
+            }
+
             let history = HistoryWindowController(
                 store: graph.store,
                 attachmentsDirectory: AppGraph.attachmentsDirectory())
