@@ -24,6 +24,17 @@ import os
 ///   to `unknownEventTypeLimit` characters so an unbounded wire string cannot
 ///   either. A new log site interpolating anything else off the wire needs
 ///   its own argument, not this one.
+/// - `MessageSnapshot`'s corrupt-actions site (`Log.store`, in
+///   `Message.snapshot`) interpolates only a literal plus `serverID` — a
+///   UUID this app generated locally, fixed-shape, never wire content. It
+///   deliberately omits `messageID`: that value comes off the wire in the
+///   server's `id` field, is not protocol like `event` is, and is not
+///   length-bounded the way `event` is, so it does not qualify for the
+///   carve-out above. If row-level correlation is ever actually needed,
+///   the answer is a truncated digest of `uniqueKey` — fixed-shape,
+///   non-reversible, and able to correlate one row across log lines
+///   without leaking the topic it is derived from — never the key itself.
+///   Not built now: one log site does not justify a hashing dependency.
 ///
 /// `privacy: .public` is used deliberately, to keep these labels readable in
 /// `log stream`. The alternative is not a safety net: `.private` hides a value
@@ -38,4 +49,7 @@ enum Log {
 
     /// Wire-level events: lines that could not be used.
     static let stream = Logger(subsystem: subsystem, category: "stream")
+
+    /// Persistence: inserts, watermark advances, retention.
+    static let store = Logger(subsystem: subsystem, category: "store")
 }

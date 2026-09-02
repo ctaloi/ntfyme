@@ -19,25 +19,44 @@ public struct MessageSnapshot: Sendable, Equatable, Identifiable {
     public let iconURL: String?
     public let contentType: String?
     public let actionsJSON: Data?
+    /// Decoded once, when the snapshot is built — not a computed property
+    /// re-decoding on every access. Empty means "no actions", full stop: a
+    /// decode failure is handled at construction (`Message.snapshot`), logged
+    /// there, and never reaches here silently disguised as the same `[]`.
+    public let actions: [NtfyAction]
     public let isRead: Bool
 
     public var isMarkdown: Bool { contentType == "text/markdown" }
     public var resolvedPriority: NtfyPriority { NtfyPriority(rawValue: priority) ?? .default }
-    public var actions: [NtfyAction] {
-        guard let actionsJSON else { return [] }
-        // A stored blob this app wrote itself; a decode failure means the row
-        // is corrupt, and an empty action list degrades the UI rather than
-        // losing the message. Logged by the caller, not swallowed silently.
-        return (try? JSONDecoder().decode([NtfyAction].self, from: actionsJSON)) ?? []
-    }
 }
 
 extension Message {
     public var snapshot: MessageSnapshot {
-        MessageSnapshot(id: uniqueKey, messageID: messageID, topic: topic,
+        let actions: [NtfyAction]
+        if let actionsJSON {
+            do {
+                actions = try JSONDecoder().decode([NtfyAction].self, from: actionsJSON)
+            } catch {
+                // A stored blob this app wrote itself; a decode failure means
+                // the row is corrupt rather than "no actions were attached" —
+                // those two cases must not collapse into the same silent `[]`.
+                // The error itself is never logged: `DecodingError`'s
+                // description quotes the offending data, which can carry an
+                // action's `url`, `label`, or `body` — exactly the message
+                // content spec §9 forbids in logs (see Log.swift).
+                Log.store.error(
+                    "failed to decode stored actions for message on server \(self.serverID.uuidString, privacy: .public)"
+                )
+                actions = []
+            }
+        } else {
+            actions = []
+        }
+
+        return MessageSnapshot(id: uniqueKey, messageID: messageID, topic: topic,
                         serverID: serverID, time: time, title: title, body: body,
                         priority: priority, tags: tags, click: click,
                         iconURL: iconURL, contentType: contentType,
-                        actionsJSON: actionsJSON, isRead: isRead)
+                        actionsJSON: actionsJSON, actions: actions, isRead: isRead)
     }
 }

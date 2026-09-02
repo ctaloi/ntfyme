@@ -95,3 +95,31 @@ import Testing
     #expect(snapshot.resolvedPriority == .default)
     #expect(snapshot.tags == ["white_check_mark"])
 }
+
+@Test func aSnapshotDecodesValidStoredActions() throws {
+    let json = Data("""
+    [{"id":"1","action":"view","label":"Open","url":"https://example.com"}]
+    """.utf8)
+    let message = Message(
+        serverID: UUID(), topic: "alerts", messageID: "abc",
+        time: Date(timeIntervalSince1970: 1), body: "body",
+        actionsJSON: json
+    )
+    let snapshot = message.snapshot
+    #expect(snapshot.actions.count == 1)
+    #expect(snapshot.actions.first?.label == "Open")
+}
+
+@Test func aSnapshotDegradesToNoActionsRatherThanCrashingOnACorruptStoredBlob() throws {
+    let corrupt = Data("not valid json".utf8)
+    let message = Message(
+        serverID: UUID(), topic: "alerts", messageID: "abc",
+        time: Date(timeIntervalSince1970: 1), body: "body",
+        actionsJSON: corrupt
+    )
+    let snapshot = message.snapshot
+    #expect(snapshot.actions.isEmpty)
+    // Fidelity is retained even though decoding failed, so a later repair
+    // path could still inspect or re-decode the original bytes.
+    #expect(snapshot.actionsJSON == corrupt)
+}
