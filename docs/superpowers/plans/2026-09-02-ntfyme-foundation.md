@@ -246,7 +246,12 @@ SIGN_IDENTITY="${SIGN_IDENTITY:-Apple Development}"
 NOTARIZE="${NOTARIZE:-0}"
 NOTARY_PROFILE="${NOTARY_PROFILE:-}"
 
-[ -f "$(dirname "${BASH_SOURCE[0]}")/local.sh" ] && . "$(dirname "${BASH_SOURCE[0]}")/local.sh"
+# An `if` guard, not `[ -f x ] && . x`: a failing left side of a top-level
+# `&&` list makes the sourced file return non-zero, which aborts build-app.sh
+# under `set -euo pipefail` — and local.sh being absent is the normal case.
+if [ -f "$(dirname "${BASH_SOURCE[0]}")/local.sh" ]; then
+    . "$(dirname "${BASH_SOURCE[0]}")/local.sh"
+fi
 ```
 
 `Scripts/Info.plist.in`:

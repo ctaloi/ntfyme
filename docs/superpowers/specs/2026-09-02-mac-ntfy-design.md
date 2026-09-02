@@ -394,7 +394,7 @@ Entitlements:
 | Entitlement | Why |
 |---|---|
 | `com.apple.security.network.client` | Outbound connections to ntfy servers |
-| `com.apple.developer.usernotifications.time-sensitive` | Priorities 4–5; self-enabled, no Apple approval |
+| `com.apple.developer.usernotifications.time-sensitive` | Priorities 4–5. **Measured 2026-09-02: cannot be used with local Apple Development signing.** `codesign` embeds it successfully, but the app is killed at launch — AMFI reports "no eligible provisioning profiles found" and launchd reports spawn failure. It needs an App ID with the capability enabled and an embedded provisioning profile, so it ships only in the Developer ID release build. Local development builds omit it, which means priorities 4–5 degrade to `.active` during development. |
 
 Critical alerts are not requested; see §6.
 
