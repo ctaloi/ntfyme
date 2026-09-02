@@ -39,6 +39,14 @@ import os
 ///   (`advanceWatermarks(_:ids:serverID:)`) interpolates only `serverID`,
 ///   for the same reason as the corrupt-actions site above — never the
 ///   topic that has no matching `Subscription` row.
+/// - `MessageStore.prune`'s attachment-deletion-failure site interpolates
+///   only the failed `NSError`'s `domain` and `code` — a closed, fixed-shape
+///   vocabulary, like `DegradedReason.logLabel` above. Never
+///   `error.localizedDescription`: Cocoa's file-removal errors embed the
+///   display name of the file they failed on, which is
+///   `Attachment.localFilename` — content that ultimately traces back to a
+///   server-provided attachment name, the same category `messageID` is
+///   barred for above.
 ///
 /// `privacy: .public` is used deliberately, to keep these labels readable in
 /// `log stream`. The alternative is not a safety net: `.private` hides a value

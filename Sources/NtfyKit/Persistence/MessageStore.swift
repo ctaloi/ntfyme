@@ -171,4 +171,60 @@ public actor MessageStore {
         }
         return server.subscriptions
     }
+
+    /// Applies both retention bounds and deletes the attachment files of every
+    /// pruned message. Runs at launch and daily thereafter (spec §8).
+    ///
+    /// - Parameter attachmentsDirectory: where downloaded files live. `nil`
+    ///   skips file deletion, for tests and for a build with no downloader.
+    @discardableResult
+    public func prune(policy: RetentionPolicy, now: Date = Date(),
+                      attachmentsDirectory: URL?) throws -> PruneResult {
+        let cutoff = now.addingTimeInterval(-policy.maxAge)
+        var doomed: [Message] = []
+
+        let tooOld = FetchDescriptor<Message>(predicate: #Predicate { $0.time < cutoff })
+        doomed.append(contentsOf: try modelContext.fetch(tooOld))
+
+        let doomedKeys = Set(doomed.map(\.uniqueKey))
+        let survivors = try modelContext.fetch(
+            FetchDescriptor<Message>(sortBy: [SortDescriptor(\.time, order: .reverse)])
+        ).filter { !doomedKeys.contains($0.uniqueKey) }
+
+        var seenPerTopic: [String: Int] = [:]
+        for message in survivors {
+            let count = (seenPerTopic[message.topic] ?? 0) + 1
+            seenPerTopic[message.topic] = count
+            if count > policy.maxMessagesPerTopic { doomed.append(message) }
+        }
+
+        var filesDeleted = 0
+        for message in doomed {
+            if let directory = attachmentsDirectory,
+               let filename = message.attachment?.localFilename {
+                let url = directory.appendingPathComponent(filename)
+                do {
+                    try FileManager.default.removeItem(at: url)
+                    filesDeleted += 1
+                } catch CocoaError.fileNoSuchFile {
+                    // Already gone: the row outlived its file. Not an error —
+                    // the goal is that the file is absent, and it is.
+                } catch {
+                    // Not `error.localizedDescription`: Cocoa's file-removal
+                    // errors embed the display name of the file they failed
+                    // on, which is `Attachment.localFilename` — content that
+                    // reached this device from a server-provided attachment
+                    // name, the same category `Log.store`'s doc comment bars
+                    // (see the topic/messageID reasoning there). Domain and
+                    // code are a closed, fixed-shape vocabulary instead.
+                    let nsError = error as NSError
+                    Log.store.error("attachment file deletion failed: \(nsError.domain, privacy: .public) \(nsError.code, privacy: .public)")
+                }
+            }
+            modelContext.delete(message)
+        }
+
+        try modelContext.save()
+        return PruneResult(messagesDeleted: doomed.count, attachmentFilesDeleted: filesDeleted)
+    }
 }
