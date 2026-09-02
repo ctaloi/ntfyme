@@ -7,6 +7,19 @@ import NtfyKit
 /// Deliberately contains no policy: which action a message maps to is
 /// decided in `NotificationDecision`. This file only executes the result.
 enum NotificationActionHandler {
+    /// A dedicated session for `http` actions, not `.shared`: the target is
+    /// attacker-chosen (see `NotificationDecision`'s header/method/scheme
+    /// constraints), so the request must not ride the user's ambient
+    /// credentials toward it — no shared cookie jar, no cookies set from
+    /// responses, no additional headers merged in from anywhere else.
+    private static let session: URLSession = {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.httpCookieStorage = nil
+        configuration.httpShouldSetCookies = false
+        configuration.httpAdditionalHeaders = [:]
+        return URLSession(configuration: configuration)
+    }()
+
     static func perform(_ action: PresentableAction) async {
         switch action.kind {
         case .view(let url):
@@ -22,7 +35,7 @@ enum NotificationActionHandler {
             for (key, value) in headers { request.setValue(value, forHTTPHeaderField: key) }
             if let body { request.httpBody = Data(body.utf8) }
             do {
-                let (_, response) = try await URLSession.shared.data(for: request)
+                let (_, response) = try await session.data(for: request)
                 let status = (response as? HTTPURLResponse)?.statusCode ?? 0
                 // Reported, not swallowed: a user pressing a button deserves to
                 // know it failed. The URL is never logged — it is server-supplied.
