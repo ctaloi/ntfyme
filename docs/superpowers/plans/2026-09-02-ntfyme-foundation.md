@@ -387,7 +387,7 @@ git commit -m "feat: package skeleton, build script, and launchable menu-bar she
 
 **Interfaces:**
 - Consumes: nothing.
-- Produces: `NtfyEvent` (`Sendable`, `Decodable`) with `id: String`, `time: Int`, `expires: Int?`, `event: String`, `topic: String`, `title: String?`, `message: String?`, `priority: Int?`, `tags: [String]?`, `click: String?`, `icon: String?`, `contentType: String?`, `actions: [NtfyAction]?`, `attachment: NtfyAttachment?`, and computed `kind: NtfyEvent.Kind?`, `date: Date`. `NtfyEvent.Kind` enum: `.open`, `.message`, `.keepalive`, `.pollRequest`. `NtfyPriority` enum with `.min`/`.low`/`.default`/`.high`/`.max` and `init?(rawValue: Int)`. `NtfyAction`, `NtfyAttachment`.
+- Produces: `NtfyEvent` (`Sendable`, `Decodable`) with `id: String`, `time: Int`, `expires: Int?`, `event: String`, `topic: String`, `title: String?`, `message: String?`, `priority: Int?`, `tags: [String]?`, `click: String?`, `icon: String?`, `contentType: String?`, `actions: [NtfyAction]?`, `attachment: NtfyAttachment?`, and computed `kind: NtfyEvent.Kind?`, `date: Date`, `resolvedPriority: NtfyPriority`, `isMarkdown: Bool`. `NtfyEvent.Kind` enum: `.open`, `.message`, `.keepalive`, `.pollRequest`. `NtfyPriority` enum with `.min`/`.low`/`.default`/`.high`/`.max` and `init?(rawValue: Int)`. `NtfyAction`, `NtfyAttachment`.
 
 - [ ] **Step 1: Write sanitized fixtures**
 
