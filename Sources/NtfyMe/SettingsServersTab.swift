@@ -109,9 +109,13 @@ private struct ServerRow: View {
     let onSetAlertSettings: (String, TopicAlertSettings) -> Void
 
     @State private var newTopic = ""
+    // Expanded by default: a server's topics are this row's actual content,
+    // and with only a handful of servers ever configured there is little
+    // reason to make every one of them a click to see.
+    @State private var isExpanded = true
 
     var body: some View {
-        DisclosureGroup {
+        DisclosureGroup(isExpanded: $isExpanded) {
             VStack(alignment: .leading, spacing: 10) {
                 ForEach(topics) { topic in
                     topicRow(topic)

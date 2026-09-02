@@ -34,9 +34,17 @@ struct SettingsGeneralTab: View {
             }
 
             Section("History") {
+                // Empty title, not "Days"/"Messages": on macOS a `Form`
+                // shows a `TextField`'s title as a persistent inline label,
+                // not an empty-state placeholder the way it would on iOS —
+                // with a title here it rendered as a second, wrapped label
+                // stacked next to the value instead of standing in for it.
+                // The visible label is `LabeledContent`'s own title plus the
+                // trailing unit `Text`; `.accessibilityLabel` still names
+                // the field for VoiceOver.
                 LabeledContent("Keep messages for") {
                     HStack {
-                        TextField("Days", text: $retentionDaysText)
+                        TextField("", text: $retentionDaysText)
                             .frame(width: 56)
                             .multilineTextAlignment(.trailing)
                             .onSubmit(applyRetention)
@@ -46,7 +54,7 @@ struct SettingsGeneralTab: View {
                 }
                 LabeledContent("Keep up to") {
                     HStack {
-                        TextField("Messages", text: $maxPerTopicText)
+                        TextField("", text: $maxPerTopicText)
                             .frame(width: 72)
                             .multilineTextAlignment(.trailing)
                             .onSubmit(applyRetention)
