@@ -205,7 +205,14 @@ struct MenuBarPopoverView: View {
     private func messageRow(_ message: MessageSnapshot) -> some View {
         Button {
             viewModel.markRead(message)
-            if let click = message.click, let url = URL(string: click) {
+            // `message.click` is attacker-controlled (spec §9 — a topic name
+            // is effectively a password on public ntfy.sh), so it goes
+            // through the shared `NtfyURLPolicy` rather than `URL(string:)`
+            // directly: a `file://` or custom-scheme click would otherwise
+            // read a local file or launch another app. `nil` means the row
+            // still marks read but opens nothing — never logged, since
+            // `Log.swift` bars action/click URLs as message content.
+            if let url = NtfyURLPolicy.sanitized(message.click) {
                 openURL(url)
             }
         } label: {
