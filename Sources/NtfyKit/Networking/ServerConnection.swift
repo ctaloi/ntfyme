@@ -4,6 +4,10 @@ import Foundation
 /// topic on that server (spec §5).
 public actor ServerConnection {
     public private(set) var state: ConnectionState = .idle
+    /// Server timestamp of the most recent line of any kind. Receiving a line
+    /// proves the server has delivered everything up to that point on every
+    /// subscribed topic, which is what makes §5.2's resume rule correct.
+    public private(set) var caughtUpTo: Date?
 
     private let endpoint: NtfyEndpoint
     private let topics: [String]
@@ -175,7 +179,11 @@ public actor ServerConnection {
             // close, so it must not be reintroduced by the fix.
             since = .all
         } else {
-            let resolution = WatermarkResolver.resolve(watermarks: watermarks, cacheWindow: cacheWindow)
+            let resolution = WatermarkResolver.resolve(
+                watermarks: watermarks,
+                caughtUpTo: caughtUpTo,
+                cacheWindow: cacheWindow
+            )
             since = resolution.since
             if resolution.hasHistoryGap {
                 // Surfaced rather than swallowed: the server will replay its
@@ -188,11 +196,11 @@ public actor ServerConnection {
                 // milliseconds later, so a consumer polling state can miss it.
                 // Carrying the gap where a consumer can latch it — a
                 // diagnostics stream, or a flag on `.open` — is deferred to the
-                // persistence plan. So is the resume point this gap is measured
-                // from: spec §5.2 decides it should be
-                // `max(min(watermarks), lastLineTime)`, so that a merely quiet
-                // topic stops reporting a gap that did not happen, and says
-                // this stage is knowingly incomplete on that point.
+                // persistence plan. The resume point this gap is measured from
+                // is no longer the naive `min(watermarks)`: spec §5.2's
+                // `max(min(watermarks), caughtUpTo)` is implemented above, so
+                // a merely quiet topic no longer reports a gap that did not
+                // happen.
                 Log.connection.notice(
                     "history gap: resume watermark predates the server cache window; the server will replay its cache"
                 )
@@ -245,6 +253,16 @@ public actor ServerConnection {
                 // loop is left running to correct it, so a stopped connection
                 // reports itself connected forever.
                 guard !Task.isCancelled else { return }
+
+                // §5.2: any line carrying a server time — not just messages —
+                // proves the server has delivered everything up to that time
+                // on every subscribed topic. `open` and `keepalive` lines
+                // both qualify and arrive far more often than messages do,
+                // which is what keeps a quiet topic from looking stale.
+                if case .event(let line) = element, line.time > 0 {
+                    let lineTime = line.date
+                    if caughtUpTo == nil || lineTime > caughtUpTo! { caughtUpTo = lineTime }
+                }
 
                 guard case .event(let event) = element else {
                     if case .skippedLine(let reason) = element {

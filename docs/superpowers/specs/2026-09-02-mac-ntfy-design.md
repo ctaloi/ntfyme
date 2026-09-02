@@ -230,9 +230,9 @@ correlation; it is not used to construct `since`.
 
 ### 5.2 The resume point is "caught up to", not "last message"
 
-**Decided 2026-09-02, to be implemented with the persisted watermark model in
-the persistence plan.** The Stage 1–2 code implements the simpler rule below
-and is knowingly incomplete on this point.
+**Decided 2026-09-02, implemented 2026-09-02** in `WatermarkResolver.resolve`
+and `ServerConnection.caughtUpTo` (commit "feat: resume from 'caught up to',
+not the oldest message watermark", persistence plan Task 3).
 
 Resuming from `min(lastMessageTime)` across topics is wrong for a quiet topic.
 A topic that merely received no messages for longer than the server's cache
@@ -240,10 +240,10 @@ window drags the shared `since` outside that window on *every* reconnect — eve
 lid-open — producing a full-cache replay of every topic and a `hasHistoryGap`
 that is false: nothing was missed, the topic was simply quiet.
 
-The connection already receives a better signal and currently discards it. Every
-`open` and `keepalive` line carries a server `time`, and receiving one means
-everything up to that time has been delivered on *all* subscribed topics. So the
-correct resume point is:
+The connection receives a better signal: every `open` and `keepalive` line
+carries a server `time`, and receiving one means everything up to that time has
+been delivered on *all* subscribed topics. `ServerConnection` now records it as
+`caughtUpTo`, and the correct resume point is:
 
     since = max(min(topic watermarks), lastLineTime) − margin
 
