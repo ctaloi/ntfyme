@@ -10,7 +10,7 @@ private func makeStore() -> KeychainStore {
 
 @Test func returnsNoneWhenNothingIsStored() throws {
     let store = makeStore()
-    #expect(try store.load(forServer: UUID()) == .none)
+    #expect(try store.load(forServer: UUID()) == .unauthenticated)
 }
 
 @Test func roundTripsABearerToken() throws {
@@ -43,7 +43,7 @@ private func makeStore() -> KeychainStore {
     let id = UUID()
     try store.save(.bearer(token: "tk"), forServer: id)
     try store.delete(forServer: id)
-    #expect(try store.load(forServer: id) == .none)
+    #expect(try store.load(forServer: id) == .unauthenticated)
 }
 
 @Test func deletingSomethingAbsentIsNotAnError() throws {
@@ -55,6 +55,6 @@ private func makeStore() -> KeychainStore {
     let store = makeStore()
     let id = UUID()
     try store.save(.bearer(token: "tk"), forServer: id)
-    try store.save(.none, forServer: id)
-    #expect(try store.load(forServer: id) == .none)
+    try store.save(.unauthenticated, forServer: id)
+    #expect(try store.load(forServer: id) == .unauthenticated)
 }

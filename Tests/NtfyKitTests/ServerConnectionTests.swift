@@ -13,7 +13,7 @@ private func makeConnection(
     cacheWindow: TimeInterval = 12 * 3600
 ) -> ServerConnection {
     ServerConnection(
-        endpoint: NtfyEndpoint(baseURL: base, credential: .none),
+        endpoint: NtfyEndpoint(baseURL: base, credential: .unauthenticated),
         watermarks: watermarks ?? topics.map { TopicWatermark(topic: $0, lastMessageTime: nil) },
         client: NtfyStreamClient(),
         backoff: .standard,

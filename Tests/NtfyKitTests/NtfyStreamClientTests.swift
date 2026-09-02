@@ -3,7 +3,7 @@ import Testing
 @testable import NtfyKit
 
 private func endpoint(_ base: URL) -> NtfyEndpoint {
-    NtfyEndpoint(baseURL: base, credential: .none)
+    NtfyEndpoint(baseURL: base, credential: .unauthenticated)
 }
 
 @Test func yieldsDecodedEventsFromTheStream() async throws {

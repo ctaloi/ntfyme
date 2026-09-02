@@ -52,7 +52,7 @@ public struct KeychainStore: Sendable {
 
         switch status {
         case errSecItemNotFound:
-            return .none
+            return .unauthenticated
         case errSecSuccess:
             guard let data = result as? Data else { throw Error.malformedData }
             guard let credential = Self.decode(data) else { throw Error.malformedData }
@@ -82,7 +82,7 @@ public struct KeychainStore: Sendable {
         let secondary: String?
     }
 
-    /// Returns `nil` only for `.none` — nothing to store, which `save`
+    /// Returns `nil` only for `.unauthenticated` — nothing to store, which `save`
     /// interprets as "delete any existing credential". A genuine encoding
     /// failure must never collapse to that same `nil`, or a real credential
     /// that failed to encode would silently vanish exactly as if the caller
@@ -95,7 +95,7 @@ public struct KeychainStore: Sendable {
     private static func encode(_ credential: AuthCredential) throws -> Data? {
         let stored: Stored
         switch credential {
-        case .none:
+        case .unauthenticated:
             return nil
         case .bearer(let token):
             stored = Stored(kind: "bearer", primary: token, secondary: nil)
