@@ -26,6 +26,23 @@ final class NotificationPresenter: NSObject, UNUserNotificationCenterDelegate {
     /// first time this launch registers any category at all.
     private var registeredCategories: [String: UNNotificationCategory]?
 
+    /// Serializes every `registerCategory` call so no two ever race on the
+    /// read-modify-write of `registeredCategories`. `@MainActor` alone does
+    /// not close this: `currentCategories()` suspends at
+    /// `await center.notificationCategories()`, and the actor is reentrant
+    /// across that suspension. Two `present()` calls for *distinct*
+    /// category IDs arriving in the same launch-time burst — before the
+    /// first seed completes — would both see `registeredCategories == nil`,
+    /// both build their own merged dictionary from the same stale snapshot,
+    /// and the second caller's write would silently clobber the first's,
+    /// dropping a category (and that message's buttons) from the next
+    /// `setNotificationCategories` call, which replaces rather than merges.
+    /// Chaining every call after the previous one's completion — the same
+    /// fix this project already applied to `Ingest.flush`'s equivalent race
+    /// — guarantees each call's merge is built on the previous call's
+    /// finished result, never a snapshot racing against it.
+    private var pendingRegistration: Task<Void, Never>?
+
     /// Requested after an explanatory pane, never as a cold prompt (spec §6).
     func requestAuthorization() async -> Bool {
         do {
@@ -63,8 +80,21 @@ final class NotificationPresenter: NSObject, UNUserNotificationCenterDelegate {
     /// Registers a category, retaining every category registered so far —
     /// including ones seeded from a previous launch — since
     /// `setNotificationCategories` replaces rather than merges (see
-    /// `registeredCategories`'s doc comment).
+    /// `registeredCategories`'s doc comment). Chained through
+    /// `pendingRegistration` (see its doc comment) rather than performed
+    /// directly, so concurrent calls never race on the merge.
     func registerCategory(for id: String, actions: [PresentableAction]) async {
+        let previous = pendingRegistration
+        let work = Task { [weak self] in
+            await previous?.value
+            guard let self else { return }
+            await self.performRegistration(id: id, actions: actions)
+        }
+        pendingRegistration = work
+        await work.value
+    }
+
+    private func performRegistration(id: String, actions: [PresentableAction]) async {
         var categories = await currentCategories()
         guard categories[id] == nil else { return }
 
