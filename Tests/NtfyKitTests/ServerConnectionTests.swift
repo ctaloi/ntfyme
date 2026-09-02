@@ -54,21 +54,26 @@ private func waitUntil(
     await server.enqueue(line: Fixtures.minimalMessage)
 
     let connection = makeConnection(base: base)
-    // The collected events are the task's *return value* rather than a captured
-    // local `var`: under Swift 6 strict concurrency, mutating a caller-owned
-    // local from inside a `Task` is a data race and does not compile.
-    let collector = Task { () -> [NtfyEvent] in
-        var received: [NtfyEvent] = []
+    // Events are collected into an actor rather than a local `var` (mutating a
+    // caller-owned local from a `Task` is a data race under Swift 6 and does
+    // not compile) — and, more importantly, awaited via `waitUntil` rather than
+    // `await collector.value`. The connection is deliberately held open, so
+    // there is no end-of-stream to end that `for await`: if the message never
+    // arrived, awaiting the task's value would hang the entire suite instead of
+    // failing this one test. Every wait in this file is bounded.
+    let collected = EventCollector()
+    let collector = Task {
         for await event in connection.events where event.kind == .message {
-            received.append(event)
+            await collected.append(event)
             break
         }
-        return received
     }
+    defer { collector.cancel() }
 
     await connection.start()
-    let received = await collector.value
+    #expect(await waitUntil { await collected.events.isEmpty == false })
 
+    let received = await collected.events
     #expect(received.count == 1)
     #expect(received.first?.message == "A1")
     #expect(await connection.state == .open)
@@ -185,6 +190,36 @@ private func waitUntil(
     await connection.stop()
 }
 
+/// A stopped connection must stay stopped. Sleep/wake and network-path changes
+/// fan `reconnectNow()` out across every server without filtering, so a server
+/// the user deliberately turned off would otherwise silently come back the
+/// moment the lid opens — invisible today, user-visible the day the UI lands.
+@Test func reconnectNowDoesNotRestartAStoppedConnection() async throws {
+    let server = MockNtfyServer()
+    let base = try await server.start()
+    defer { Task { await server.stop() } }
+    await server.setCloseAfterSending(false)
+    await server.enqueue(line: Fixtures.openEvent)
+
+    let connection = makeConnection(base: base)
+    await connection.start()
+    #expect(await waitUntil { await server.receivedRequestPaths.count >= 1 })
+
+    await connection.stop()
+    #expect(await connection.state == .idle)
+
+    await connection.reconnectNow()
+
+    // A negative assertion, so it has to be given a real chance to fail rather
+    // than asserted immediately: wait out a window many times longer than the
+    // ~10ms a loopback connect takes here, and require no second request in it.
+    let reconnected = await waitUntil(timeout: .milliseconds(500)) {
+        await server.receivedRequestPaths.count >= 2
+    }
+    #expect(reconnected == false)
+    #expect(await connection.state == .idle)
+}
+
 /// Keepalives, not socket errors, are the liveness signal: after a Mac sleeps a
 /// dead TCP connection usually goes silent rather than erroring. So the watchdog
 /// has to keep working *after* it has already fired once — a watchdog that fires
@@ -234,6 +269,13 @@ private func fireWatchdog(
         do { try await Task.sleep(for: .milliseconds(5)) } catch { break }
     }
     return await server.receivedRequestPaths.count >= count
+}
+
+/// Somewhere for a collecting `Task` to put events that is not a caller-owned
+/// local `var`, which Swift 6 strict concurrency rejects as a data race.
+private actor EventCollector {
+    private(set) var events: [NtfyEvent] = []
+    func append(_ event: NtfyEvent) { events.append(event) }
 }
 
 private func isInBackoff(_ connection: ServerConnection) async -> Bool {

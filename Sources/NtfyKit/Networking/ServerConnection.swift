@@ -55,15 +55,27 @@ public actor ServerConnection {
     }
 
     public func stop() async {
+        // The one suspension point goes FIRST, so everything after it runs
+        // without releasing this actor. Cancelling before the await instead
+        // leaves a window in which anything serviced during it — a watchdog
+        // fire, or a concurrent `start()` — installs a fresh run loop that the
+        // resuming `stop()` never clears, leaving `state == .idle` while a live
+        // loop reconnects forever. With the suspension-free tail below, any
+        // such loop is cancelled and cleared on the way out.
+        await watchdog.stop()
         runTask?.cancel()
         runTask = nil
-        await watchdog.stop()
         state = .idle
     }
 
     /// Called on wake from sleep and when the network path becomes satisfied.
     /// Cancels any pending backoff so the reconnect is immediate.
     public func reconnectNow() {
+        // Wake and network-path changes fan out to every server's
+        // `reconnectNow()` without filtering, so this has to decline for
+        // itself: a server the user deliberately stopped must not come back
+        // when the lid opens. `start()` is how a stopped connection resumes.
+        guard runTask != nil else { return }
         guard state != .unauthorized else { return }
         attempt = 0
         runTask?.cancel()
