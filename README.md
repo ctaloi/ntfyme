@@ -65,6 +65,8 @@ Developer Program account and Developer ID are available.
 
 ## Development
 
+[![CI](https://github.com/ctaloi/ntfyme/actions/workflows/ci.yml/badge.svg)](https://github.com/ctaloi/ntfyme/actions/workflows/ci.yml)
+
 `swift test` runs the full `NtfyKit` suite, including socket-level tests
 against a loopback `MockNtfyServer`:
 
@@ -74,8 +76,6 @@ swift test
 ```
 
 `.github/workflows/ci.yml` builds and tests the package unsigned on a hosted
-`macos-15` runner on every push to `main` and every pull request, with no
-signing secrets configured. This repository has no git remote yet, so that
-workflow has never run — there is no build-status badge here because there is
-no run to point one at. See spec §11 for what is and isn't established about
-loopback networking on an unsigned CI binary.
+`macos-26` runner on every push to `main` and every pull request, with no
+signing secrets configured. See spec §11 for what CI has established about
+loopback networking on an unsigned binary.

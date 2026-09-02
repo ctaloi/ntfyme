@@ -421,27 +421,29 @@ no `sudo xcode-select` is required.
 CI (GitHub Actions, macOS runner) builds and runs the test suite unsigned. No
 signing secrets are present in CI.
 
-**Open assumption, not yet CI-verified:** that an unsigned binary on a hosted
-macOS runner can bind and connect to loopback for `MockNtfyServer` without a
-signature or entitlement. `.github/workflows/ci.yml` is written and committed
-(`macos-15`, unsigned `swift build` / `swift test`), but this repository has
-no git remote yet, so no CI run has ever executed — the workflow has not
-produced evidence either way.
+**Confirmed 2026-09-02, on `macos-26`:** an unsigned binary on a hosted macOS
+runner can bind and connect to loopback for `MockNtfyServer` without a
+signature or entitlement. `.github/workflows/ci.yml` runs `swift build -v`
+and `swift test -v`, unsigned, no `codesign` step, no signing secrets in the
+repository.
 
-What *is* established: on this development machine, macOS 26.6.2, the full
-suite including every loopback-socket test in `MockNtfyServer` and
-`ServerConnectionTests` passes locally against an unsigned SwiftPM test
-binary (`swift test`, no `codesign` step, no signing entitlement present) —
-66 tests, zero failures. That is real evidence that an unsigned binary can
-bind and connect to loopback on this OS version, but it is not runner
-evidence: `ci.yml` targets `macos-15`, a different OS version than this
-machine's 26.6.2, and a hosted GitHub Actions image may also differ in
-firewall configuration, System Integrity Protection posture, or other
-sandboxing that only a real CI run will expose. This assumption remains open
-until this repository gets a remote and the workflow actually runs. If that
-run fails with a binding or permission error, the fallback is to add a
-workflow step that ad-hoc signs the test bundle (`codesign -s - --force`)
-before `swift test`.
+The first real run, on `macos-15`, never reached the loopback question at
+all: it failed in 15 seconds with `package 'ntfyme' is using Swift tools
+version 6.2.0 but the installed version is 6.1.0` — `macos-15` ships Swift
+6.1, which cannot even parse this package's `swift-tools-version: 6.2` or
+its `.macOS(.v26)` platform floor. The workflow was switched to `macos-26`
+(the run's toolchain: Xcode 26.6, Apple Swift 6.3.3, `MacOSX26.5.sdk`),
+re-pushed, and that run
+([`33649713749`](https://github.com/ctaloi/ntfyme/actions/runs/33649713749),
+`feat/foundation` at `87053b2`) went green: 66/66 tests, including every
+loopback-socket test in `MockNtfyServer` and `ServerConnectionTests`
+(`reachesOpenStateAndEmitsMessages`, `stopIsFinalEvenWithEventsInFlight`,
+`reconnectNowBypassesTheBackoffDelay`, and the rest) — no binding or
+permission error, no ad-hoc signing needed. This matches what was already
+observed locally on macOS 26.6.2 against an unsigned SwiftPM test binary.
+The ad-hoc-signing fallback (`codesign -s - --force` on the test bundle
+before `swift test`) remains available in principle but was not needed and
+is not part of the workflow.
 
 ## 12. Testing
 
