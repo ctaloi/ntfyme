@@ -33,6 +33,14 @@ public actor ServerConnection {
     private let continuation: AsyncStream<NtfyEvent>.Continuation
     public nonisolated let events: AsyncStream<NtfyEvent>
 
+    /// One-shot facts a level-triggered `state` cannot carry — see
+    /// `ConnectionDiagnostic`. Created eagerly for the same reason `events`
+    /// is: a lazily-created stream leaves its continuation nil until
+    /// something first reads it, silently dropping anything emitted before
+    /// that.
+    private let diagnosticContinuation: AsyncStream<ConnectionDiagnostic>.Continuation
+    public nonisolated let diagnostics: AsyncStream<ConnectionDiagnostic>
+
     /// `topics` is derived from `watermarks` rather than passed alongside it.
     /// They were two inputs to one truth, and they could disagree: a topic
     /// present in `topics` but absent from `watermarks` was subscribed to on
@@ -52,6 +60,10 @@ public actor ServerConnection {
         var capturedContinuation: AsyncStream<NtfyEvent>.Continuation!
         self.events = AsyncStream { capturedContinuation = $0 }
         self.continuation = capturedContinuation
+
+        var capturedDiagnostics: AsyncStream<ConnectionDiagnostic>.Continuation!
+        self.diagnostics = AsyncStream { capturedDiagnostics = $0 }
+        self.diagnosticContinuation = capturedDiagnostics
 
         self.endpoint = endpoint
         self.topics = watermarks.map(\.topic)
@@ -125,6 +137,7 @@ public actor ServerConnection {
                 // path cancels this task first, the guard above observes it,
                 // and there is no suspension point between the guard and here.
                 runTask = nil
+                diagnosticContinuation.yield(.unauthorized)
                 return
             } catch NtfyStreamClient.Error.rateLimited(let retryAfter) {
                 guard !Task.isCancelled else { return }
@@ -156,6 +169,7 @@ public actor ServerConnection {
                 )
                 forceSinceAll = true
                 degrade(.invalidSince)
+                diagnosticContinuation.yield(.invalidSinceRejected)
                 await waitBeforeRetry()
             } catch {
                 guard !Task.isCancelled else { return }
@@ -191,13 +205,13 @@ public actor ServerConnection {
                 // (spec §10), and that must never look like a clean resume.
                 //
                 // The log is the durable half of "surfaced". The state write
-                // below is a one-shot diagnostic in a level-triggered enum: the
-                // first line on the stream replaces it with `.open` tens of
-                // milliseconds later, so a consumer polling state can miss it.
-                // Carrying the gap where a consumer can latch it — a
-                // diagnostics stream, or a flag on `.open` — is deferred to the
-                // persistence plan. The resume point this gap is measured from
-                // is no longer the naive `min(watermarks)`: spec §5.2's
+                // below is still a one-shot value in a level-triggered enum —
+                // the first line on the stream replaces it with `.open` tens
+                // of milliseconds later — so the diagnostic below is what a
+                // consumer actually latches onto; `degrade` here only drives
+                // the menu bar icon for the brief window before `.open`. The
+                // resume point this gap is measured from is no longer the
+                // naive `min(watermarks)`: spec §5.2's
                 // `max(min(watermarks), caughtUpTo)` is implemented above, so
                 // a merely quiet topic no longer reports a gap that did not
                 // happen.
@@ -205,6 +219,15 @@ public actor ServerConnection {
                     "history gap: resume watermark predates the server cache window; the server will replay its cache"
                 )
                 degrade(.historyGap)
+                // `hasHistoryGap` is only ever true alongside `since` resolved
+                // to `.unixTime` — the `.all` branch above always pairs with
+                // `hasHistoryGap: false`, and there is no other case. Matched
+                // rather than force-unwrapped so a future resolver change that
+                // breaks the invariant silently drops the diagnostic instead
+                // of crashing the connection.
+                if case .unixTime(let seconds) = since {
+                    diagnosticContinuation.yield(.historyGap(since: Date(timeIntervalSince1970: TimeInterval(seconds))))
+                }
             }
         }
 
@@ -271,6 +294,7 @@ public actor ServerConnection {
                         // vocabulary and never quotes the line, which is what
                         // makes `.public` safe here (spec §9).
                         Log.stream.warning("skipped line: \(reason, privacy: .public)")
+                        diagnosticContinuation.yield(.skippedLine(reason: reason))
                     }
                     continue
                 }
@@ -292,6 +316,10 @@ public actor ServerConnection {
         }
         if !Task.isCancelled { await watchdog.stop() }
     }
+
+    /// Watermarks as currently known, for persistence and for rebuilding the
+    /// connection after a topic is added. Previously write-only.
+    public func watermarkSnapshot() -> [TopicWatermark] { watermarks }
 
     private func record(_ event: NtfyEvent) {
         guard let index = watermarks.firstIndex(where: { $0.topic == event.topic }) else { return }

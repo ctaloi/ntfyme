@@ -233,7 +233,10 @@ correct one. With a timestamp, an out-of-window value produces the same full
 replay, but the client already knows the watermark predates the window and can
 say so. Deduplication by `uniqueKey` makes either correct; only the timestamp
 lets the app tell the difference between "resumed cleanly" and "replayed
-everything," which §10 requires it to surface.
+everything," which §10 requires it to surface — delivered as
+`ConnectionDiagnostic.historyGap(since:)` on `ServerConnection.diagnostics`,
+since the state enum's `.degraded(.historyGap)` is overwritten by `.open`
+within milliseconds and no consumer polling state can observe it there.
 
 Timestamps also carry no clock-skew risk, because the values come from the
 server's own `time` field rather than the local clock. The 5-second margin
@@ -417,7 +420,7 @@ No silent failures. Every condition below is visible in the UI:
 | Attachment download failure | Keep the message; offer retry. |
 | Keychain read failure | Treat as no credential; surface in Settings. |
 | Network unreachable | `offline` status in the menu bar icon; resume on path-satisfied. |
-| Watermark older than the server cache window | Detectable client-side before the request. Log it, surface "history gap" on the topic, and reconnect anyway. A silent full-cache replay must never be mistaken for a clean resume. |
+| Watermark older than the server cache window | Detectable client-side before the request. Log it, deliver `.historyGap(since:)` on `ServerConnection.diagnostics` — a one-shot latched diagnostic, not the transient `.degraded(.historyGap)` state the next line overwrites — and reconnect anyway. A silent full-cache replay must never be mistaken for a clean resume. |
 | HTTP 400 `40008` invalid since | A client bug, not a server condition. Log loudly, fall back to `since=all`, and do not retry the malformed value. |
 
 ## 11. Build and distribution
