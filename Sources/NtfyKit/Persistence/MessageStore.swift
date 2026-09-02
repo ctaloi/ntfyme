@@ -279,6 +279,23 @@ public actor MessageStore {
             FetchDescriptor<Message>(sortBy: [SortDescriptor(\.time, order: .reverse)])
         ).filter { !doomedKeys.contains($0.uniqueKey) }
 
+        // One-time migration for rows written before `tagsJoined` existed:
+        // `search`'s tag filter matches `tagsJoined`, not `tags`, and a
+        // stale (or default-empty) `tagsJoined` is not otherwise
+        // repairable — there is no query that can find "rows whose
+        // `tagsJoined` needs recomputing" using `tagsJoined` itself. This
+        // piggybacks on `prune`'s already-scheduled full-table scan (spec
+        // §8: launch and daily) instead of a bespoke migration pass; a
+        // message about to be deleted below gets recomputed too, which is
+        // wasted but harmless. The comparison keeps this cheap for the
+        // overwhelming majority of rows, which already match.
+        for message in survivors {
+            let expected = Message.joinTags(message.tags)
+            if message.tagsJoined != expected {
+                message.tagsJoined = expected
+            }
+        }
+
         // Keyed on (server, topic), not the topic string alone: two servers
         // may both carry a topic named "alerts" (spec §4 models `Subscription`
         // as belonging to a `Server` for exactly this reason), and a shared
@@ -349,15 +366,22 @@ public actor MessageStore {
 extension MessageStore {
     /// Newest first. Honours every non-nil field of the query.
     ///
-    /// Every field except `tag` is folded into one `#Predicate` and pushed to
-    /// SQL — the same reasoning as `messages(forServer:topic:limit:)`:
-    /// applying `fetchLimit`/`fetchOffset` before a filter silently truncates
-    /// or mis-pages a result. `tag` cannot join that predicate — see the
-    /// comment below — so when it is set, this fetches every SQL-filtered
-    /// row unpaged, filters those by tag in Swift, and only then slices by
-    /// `offset`/`limit`. That ordering (tag filter strictly before
-    /// pagination) is what avoids the exact truncation bug the SQL-pushed
-    /// path avoids by construction.
+    /// Every field is folded into one `#Predicate` and pushed to SQL — the
+    /// same reasoning as `messages(forServer:topic:limit:)`: applying
+    /// `fetchLimit`/`fetchOffset` before a filter silently truncates or
+    /// mis-pages a result. `tag` matches against `Message.tagsJoined`, the
+    /// denormalized form of `tags` — never `tags` itself. `Message.tags`
+    /// (`[String]`) is stored as a transformable blob, not a SQL-queryable
+    /// column: CoreData cannot generate SQL for `Array.contains` against it
+    /// at all on this platform — confirmed by spiking even the plainest
+    /// possible form, `message.tags.contains("literal")`, with no captured
+    /// variable and no optional handling involved. It does not throw a
+    /// catchable error; it crashes the process
+    /// (`NSInvalidArgumentException`, "unimplemented SQL generation ... (bad
+    /// LHS)"). `tagsJoined.contains(...)` is a plain `String.contains`
+    /// predicate — the same shape `searchText` already pushes to SQL
+    /// successfully — so this needs no in-memory fallback and no
+    /// unpaged fetch: `tag` pages exactly like every other filter.
     public func search(_ query: MessageQuery) throws -> [MessageSnapshot] {
         let serverID = query.serverID
         let topic = query.topic
@@ -366,6 +390,12 @@ extension MessageStore {
         let unreadOnly = query.unreadOnly
         let since = query.since
         let until = query.until
+        // See `Message.joinTags`'s doc comment for why both delimiters are
+        // required: `"|alert|"` must not match inside `"|alerts|"`. A tag
+        // containing `"|"` never appears in a real `tagsJoined` value (that
+        // tag is dropped when `tagsJoined` is built), so searching for one
+        // here simply matches nothing rather than something unintended.
+        let tagMatch = query.tag.map { "|\($0)|" }
 
         // Split into small sub-predicates composed via `.evaluate(_:)`
         // rather than one large `&&` chain: the single-expression form times
@@ -384,6 +414,9 @@ extension MessageStore {
             (since == nil || message.time >= since!) &&
             (until == nil || message.time <= until!)
         }
+        let tagFilter = #Predicate<Message> { message in
+            tagMatch == nil || message.tagsJoined.contains(tagMatch!)
+        }
         let searchTextFilter = #Predicate<Message> { message in
             // `message.title!` (force-unwrapping a *model* optional, as
             // opposed to `searchText!` above, which force-unwraps a
@@ -401,28 +434,13 @@ extension MessageStore {
                 scopeFilter.evaluate(message) &&
                 priorityAndReadFilter.evaluate(message) &&
                 dateFilter.evaluate(message) &&
+                tagFilter.evaluate(message) &&
                 searchTextFilter.evaluate(message)
             },
             sortBy: [SortDescriptor(\.time, order: .reverse)])
-
-        guard let tag = query.tag else {
-            descriptor.fetchLimit = query.limit
-            descriptor.fetchOffset = query.offset
-            return try modelContext.fetch(descriptor).map(\.snapshot)
-        }
-
-        // `Message.tags` (`[String]`) is stored as a transformable blob, not
-        // a SQL-queryable column: CoreData cannot generate SQL for
-        // `Array.contains` against it at all on this platform — confirmed by
-        // spiking even the plainest possible form,
-        // `message.tags.contains("literal")`, with no captured variable and
-        // no optional handling involved. It does not throw a catchable
-        // error; it crashes the process (`NSInvalidArgumentException`,
-        // "unimplemented SQL generation ... (bad LHS)"), so there is no
-        // fallback-and-recover option — the filter must not reach SQL.
-        let matches = try modelContext.fetch(descriptor).filter { $0.tags.contains(tag) }
-        let page = matches.dropFirst(query.offset).prefix(query.limit)
-        return page.map(\.snapshot)
+        descriptor.fetchLimit = query.limit
+        descriptor.fetchOffset = query.offset
+        return try modelContext.fetch(descriptor).map(\.snapshot)
     }
 
     /// One row per (server, topic) that has a `Subscription`, for the

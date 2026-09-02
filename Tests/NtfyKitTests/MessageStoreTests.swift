@@ -406,6 +406,52 @@ private func makeSearchStore() throws -> (MessageStore, ModelContext, UUID) {
     #expect(results.map(\.id) == [Message.uniqueKey(serverID: serverID, topic: "alerts", messageID: "tagged")])
 }
 
+/// A tag containing `"|"` would break the delimiter scheme, so `joinTags`
+/// drops it from the joined form rather than escaping it — see its doc
+/// comment for why. This does not touch `tags` itself or the rest of the
+/// row; the message is simply not findable by *that* tag via `search`.
+@Test func joinTagsDropsATagContainingThePipeDelimiter() {
+    #expect(Message.joinTags(["safe", "bad|tag", "also-safe"]) == "|safe|also-safe|")
+    #expect(Message.joinTags(["bad|tag"]) == "")
+    #expect(Message.joinTags([]) == "")
+}
+
+/// `Message.joinTags` delimits with a leading AND trailing `"|"` precisely
+/// so a search for `"alert"` cannot match a message tagged only `"alerts"`
+/// — pins the reason those delimiters exist, not just that tag filtering
+/// works at all.
+@Test func searchTagFilterDoesNotMatchATagThatMerelyStartsWithTheQuery() async throws {
+    let (store, context, serverID) = try makeSearchStore()
+    insertMessage(context, serverID: serverID, id: "longer", time: 100, body: "a", tags: ["alerts"])
+    insertMessage(context, serverID: serverID, id: "exact", time: 200, body: "b", tags: ["alert"])
+    try context.save()
+
+    let results = try await store.search(MessageQuery(tag: "alert"))
+    #expect(results.map(\.id) == [Message.uniqueKey(serverID: serverID, topic: "alerts", messageID: "exact")])
+}
+
+/// Mutation-verified (see the tag-denormalization report): `tag` is now
+/// folded into the same SQL predicate as every other filter, so it must
+/// page exactly like they do — the same shape `aTopicFilteredPageIsFiltered
+/// BeforeTheLimit`/`searchLimitIsAppliedAfterFilteringNotBefore` pin for
+/// `topic`, exercised here for `tag` since it used to be the one field that
+/// could not join that predicate at all.
+@Test func searchTagFilterRespectsLimitAndOffset() async throws {
+    let (store, context, serverID) = try makeSearchStore()
+    insertMessage(context, serverID: serverID, id: "u1", time: 100, body: "urgent-oldest", tags: ["urgent"])
+    insertMessage(context, serverID: serverID, id: "d1", time: 200, body: "deploys-old", tags: ["deploy"])
+    insertMessage(context, serverID: serverID, id: "u2", time: 300, body: "urgent-middle", tags: ["urgent"])
+    insertMessage(context, serverID: serverID, id: "d2", time: 400, body: "deploys-mid", tags: ["deploy"])
+    insertMessage(context, serverID: serverID, id: "u3", time: 500, body: "urgent-newest", tags: ["urgent"])
+    try context.save()
+
+    let page = try await store.search(MessageQuery(tag: "urgent", limit: 2))
+    #expect(page.map(\.body) == ["urgent-newest", "urgent-middle"])
+
+    let secondPage = try await store.search(MessageQuery(tag: "urgent", limit: 2, offset: 2))
+    #expect(secondPage.map(\.body) == ["urgent-oldest"])
+}
+
 @Test func searchAppliesUnreadOnly() async throws {
     let (store, context, serverID) = try makeSearchStore()
     insertMessage(context, serverID: serverID, id: "read", time: 100, body: "a", isRead: true)
@@ -460,6 +506,32 @@ private func makeSearchStore() throws -> (MessageStore, ModelContext, UUID) {
 
     let page = try await store.search(MessageQuery(limit: 2, offset: 1))
     #expect(page.map(\.body) == ["two", "one"])
+}
+
+/// `search`'s tag filter matches `tagsJoined`, not `tags`, and there is no
+/// query that can find "rows whose `tagsJoined` needs recomputing" using
+/// `tagsJoined` itself — `prune`'s already-scheduled full-table scan is
+/// what repairs a row written (or, here, corrupted) before `tagsJoined` was
+/// kept in sync. This is the actual transition the migration exists for:
+/// unfindable by tag before `prune` runs, findable after, with no other
+/// change to the row.
+@Test func pruneBackfillsAStaleTagsJoinedSoTheRowBecomesTagSearchable() async throws {
+    let (store, context, serverID) = try makeSearchStore()
+    let message = insertMessage(context, serverID: serverID, id: "a", time: 100,
+                                body: "x", tags: ["urgent"])
+    // Simulate a row written before `tagsJoined` existed (or one that
+    // otherwise fell out of sync with `tags`).
+    message.tagsJoined = ""
+    try context.save()
+
+    let before = try await store.search(MessageQuery(tag: "urgent"))
+    #expect(before.isEmpty)
+
+    _ = try await store.prune(policy: RetentionPolicy(maxAge: 999_999, maxMessagesPerTopic: 999),
+                              now: Date(timeIntervalSince1970: 100), attachmentsDirectory: nil)
+
+    let after = try await store.search(MessageQuery(tag: "urgent"))
+    #expect(after.map(\.id) == [Message.uniqueKey(serverID: serverID, topic: "alerts", messageID: "a")])
 }
 
 // MARK: - topicSummaries / unreadCount
