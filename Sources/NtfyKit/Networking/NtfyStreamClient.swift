@@ -21,7 +21,7 @@ public struct NtfyStreamClient: Sendable {
     private let session: URLSession
     private let decoder = NtfyEventDecoder()
 
-    public init(session: URLSession = .shared) {
+    public init(session: URLSession = StreamingSession.make()) {
         self.session = session
     }
 

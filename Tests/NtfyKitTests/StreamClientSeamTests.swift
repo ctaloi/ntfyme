@@ -44,3 +44,21 @@ import Testing
     #expect(await fake.lastRequest?.url?.absoluteString.hasPrefix("https://ntfy.example.com/alerts/json") == true)
     await connection.stop()
 }
+
+@Test func theStreamingSessionOutlastsTheKeepaliveWatchdog() {
+    let session = StreamingSession.make()
+    // The watchdog fires at 90s. A request timeout shorter than that would
+    // make URLError, not the keepalive gap, the primary liveness signal —
+    // inverting what spec §5 says the design depends on.
+    #expect(session.configuration.timeoutIntervalForRequest > 90)
+}
+
+@Test func theStreamingSessionDoesNotExpireLongLivedStreams() {
+    let session = StreamingSession.make()
+    // The default is 7 days, which silently ends every stream weekly.
+    #expect(session.configuration.timeoutIntervalForResource >= 365 * 86_400)
+}
+
+@Test func theStreamingSessionWaitsForConnectivity() {
+    #expect(StreamingSession.make().configuration.waitsForConnectivity == true)
+}
