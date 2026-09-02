@@ -2173,15 +2173,25 @@ public actor ServerConnection {
     }
 
     public func stop() async {
+        // The suspension comes FIRST so the tail is suspension-free. With the
+        // await in the middle, a concurrent start() serviced during it sees
+        // runTask == nil, passes its guard, and installs a live loop that the
+        // resuming stop() never clears — a stopped connection reconnecting
+        // forever while reporting .idle.
+        await watchdog.stop()
         runTask?.cancel()
         runTask = nil
-        await watchdog.stop()
         state = .idle
     }
 
     /// Called on wake from sleep and when the network path becomes satisfied.
     /// Cancels any pending backoff so the reconnect is immediate.
     public func reconnectNow() {
+        // A deliberately stopped connection stays stopped. The sleep/wake
+        // coordinator is a thin fan-out over this method, so without the
+        // guard a server the user stopped silently restarts when the lid
+        // opens. start() covers starting; this only resumes a live loop.
+        guard runTask != nil else { return }
         guard state != .unauthorized else { return }
         attempt = 0
         runTask?.cancel()
@@ -2225,10 +2235,25 @@ public actor ServerConnection {
         await watchdog.start { [weak self] in
             await self?.handleWatchdogTimeout()
         }
-        defer { Task { await watchdog.stop() } }
+        // NOT `defer { Task { await watchdog.stop() } }`. A detached Task
+        // starts uncancelled, so a superseded connection's teardown runs
+        // unconditionally — and lands AFTER its own replacement has armed the
+        // watchdog, disarming it. The result is a watchdog that fires exactly
+        // once per process: the app silently stops detecting dead connections
+        // after the first recovery. Measured 0/20 with the detached form.
+        // A superseded loop must leave the arm to its replacement; stop() and
+        // reconnectNow() own their own teardown.
+        defer { if !Task.isCancelled { Task { await watchdog.stop() } } }
 
         for try await element in client.stream(request) {
             await watchdog.pet()
+            // `pet()` is a cross-actor hop, and it is non-async and
+            // non-throwing, so a loop suspended here is not stopped by
+            // cancellation. Without this guard a loop resuming after stop()
+            // has returned writes state and yields events to subscribers,
+            // leaving state == .open permanently with no loop left to move it.
+            // Every suspension point preceding a state write needs one of these.
+            guard !Task.isCancelled else { return }
             guard case .event(let event) = element else { continue }
 
             switch event.kind {
