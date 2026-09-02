@@ -267,7 +267,24 @@ private func waitUntil(
 
     let connection = makeConnection(base: base)
     await connection.start()
-    #expect(await waitUntil { await server.receivedRequestPaths.count >= 1 })
+
+    // Wait for `.open`, NOT for `receivedRequestPaths` — this test asserts
+    // `.idle` after `stop()`, so its precondition has to establish where the
+    // run loop *is*, not merely that a request arrived. The mock appends the
+    // path at request receipt, before it sends the body, so a path can be
+    // recorded while the `open` line is still in flight and the loop is parked
+    // at `await watchdog.pet()`, from which it resumes after `stop()` and
+    // writes `state = .open` over the `.idle` asserted below.
+    //
+    // `.open` is the stronger precondition and is deterministic: the loop
+    // writes it only after `pet()` has returned for that line, and with exactly
+    // one line enqueued the next `next()` blocks forever on the held-open
+    // connection. So once `.open` is observed the loop is parked in `next()`,
+    // where cancellation is handled correctly, and it can never be at `pet()`
+    // again. That holds independently of the production guard, which is the
+    // point: this test should not depend on the defect it is not testing.
+    #expect(await waitUntil { await connection.state == .open })
+    #expect(await server.receivedRequestPaths.count == 1)
 
     await connection.stop()
     #expect(await connection.state == .idle)
