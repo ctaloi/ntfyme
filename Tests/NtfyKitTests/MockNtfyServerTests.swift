@@ -127,12 +127,41 @@ import Testing
     let conn = NWConnection(host: NWEndpoint.Host("127.0.0.1"), port: nwPort, using: .tcp)
     conn.start(queue: .global())
 
+    // Force the connection closed after a bounded wait. Created before the
+    // very first await below (the `.ready` wait) rather than after it: a raw
+    // TCP connection can stick in `.waiting`/`.preparing` with no guaranteed
+    // transition to `.ready` or `.failed` on its own — confirmed empirically
+    // against a non-routable address, where the connection sat in
+    // `.preparing` indefinitely until force-cancelled. Every await in this
+    // test must be covered by this one bound, not just the ones after it.
+    //
+    // `try?` here discards only `CancellationError` from the `defer` below
+    // cancelling this task once the test has its answer — the watchdog's
+    // one job (force-closing `conn` on a timeout) still runs either way.
+    let watchdog = Task {
+        try? await Task.sleep(for: .seconds(3))
+        conn.cancel()
+    }
+    defer { watchdog.cancel() }
+
     try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Swift.Error>) in
         conn.stateUpdateHandler = { state in
             switch state {
-            case .ready: cont.resume()
-            case .failed(let error): cont.resume(throwing: error)
-            default: break
+            case .ready:
+                conn.stateUpdateHandler = { _ in }
+                cont.resume()
+            case .failed(let error):
+                conn.stateUpdateHandler = { _ in }
+                cont.resume(throwing: error)
+            case .cancelled:
+                // Only reachable here if the watchdog force-closed the
+                // connection before it ever became ready. `stateUpdateHandler`
+                // is cleared before each resume, so this and the two cases
+                // above can never resume the same continuation twice.
+                conn.stateUpdateHandler = { _ in }
+                cont.resume(throwing: MockNtfyServerTestError.connectionNeverBecameReady)
+            default:
+                break
             }
         }
     }
@@ -143,15 +172,6 @@ import Testing
     // failing or the watchdog firing, so there is no distinct failure mode
     // this test would otherwise miss.
     conn.send(content: Data([0xFF, 0xFE, 0x00, 0x01, 0x02, 0x03]), completion: .contentProcessed { _ in })
-
-    // `try?` here discards only `CancellationError` from the `defer` below
-    // cancelling this task once the test has its answer — the watchdog's
-    // one job (force-closing `conn` on a timeout) still runs either way.
-    let watchdog = Task {
-        try? await Task.sleep(for: .seconds(3))
-        conn.cancel()
-    }
-    defer { watchdog.cancel() }
 
     let responseText = try await withCheckedThrowingContinuation { (cont: CheckedContinuation<String, Swift.Error>) in
         conn.receive(minimumIncompleteLength: 1, maximumLength: 8192) { data, _, _, error in
@@ -169,4 +189,5 @@ import Testing
 
 private enum MockNtfyServerTestError: Swift.Error {
     case noResponseReceived
+    case connectionNeverBecameReady
 }
