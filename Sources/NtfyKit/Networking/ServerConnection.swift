@@ -181,8 +181,11 @@ public actor ServerConnection {
                 // milliseconds later, so a consumer polling state can miss it.
                 // Carrying the gap where a consumer can latch it — a
                 // diagnostics stream, or a flag on `.open` — is deferred to the
-                // persistence plan, which is also where the resume point itself
-                // is being reconsidered.
+                // persistence plan. So is the resume point this gap is measured
+                // from: spec §5.2 decides it should be
+                // `max(min(watermarks), lastLineTime)`, so that a merely quiet
+                // topic stops reporting a gap that did not happen, and says
+                // this stage is knowingly incomplete on that point.
                 Log.connection.notice(
                     "history gap: resume watermark predates the server cache window; the server will replay its cache"
                 )
