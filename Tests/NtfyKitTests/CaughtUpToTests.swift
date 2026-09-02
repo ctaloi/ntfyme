@@ -105,6 +105,47 @@ private func wm(_ topic: String, _ offset: TimeInterval?) -> TopicWatermark {
     await connection.stop()
 }
 
+/// The persisted `caughtUpTo` has to be able to reach the resolver, or §5.2
+/// only ever applies within a single process. Before `init` took it, every
+/// launch resolved `max(min(watermarks), nil)` — the pre-§5.2 rule — so a
+/// topic that was merely quiet for longer than the cache window produced a
+/// full-cache replay and a false history gap on *every* app start.
+///
+/// The watermark here is 24 hours old against a 12-hour window, so the naive
+/// rule would both resolve `since` to it and report a gap. The seeded resume
+/// point is two minutes old, so the correct answer does neither.
+@Test func aSeededCaughtUpToDrivesTheFirstRequest() async throws {
+    let fake = FakeStreamClient()
+    // Hangs rather than finishing, so the connection cannot reconnect and
+    // the request under test is unambiguously the first one.
+    await fake.enqueueHang()
+
+    let quiet = Date().addingTimeInterval(-24 * 3600)
+    let resumed = Date().addingTimeInterval(-120)
+
+    let connection = ServerConnection(
+        endpoint: NtfyEndpoint(baseURL: URL(string: "https://ntfy.example.com")!,
+                               credential: .unauthenticated),
+        watermarks: [TopicWatermark(topic: "alerts", lastMessageTime: quiet)],
+        caughtUpTo: resumed,
+        client: fake,
+        sleeper: ManualSleeper()
+    )
+
+    let seen = DiagnosticCollector()
+    let consumer = Task { for await d in connection.diagnostics { await seen.add(d) } }
+    defer { consumer.cancel() }
+
+    await connection.start()
+    #expect(await waitUntil { await fake.requestCount == 1 })
+
+    let expected = Int(resumed.addingTimeInterval(-5).timeIntervalSince1970.rounded(.down))
+    let url = await fake.lastRequest?.url?.absoluteString ?? ""
+    #expect(url.contains("since=\(expected)"))
+    #expect(await seen.contains { if case .historyGap = $0 { return true }; return false } == false)
+    await connection.stop()
+}
+
 /// A keepalive carries no message but does advance the resume point.
 @Test func aKeepaliveAdvancesCaughtUpTo() async throws {
     let fake = FakeStreamClient()

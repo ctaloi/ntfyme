@@ -61,9 +61,18 @@ public actor ServerConnection {
     /// so that topic never advanced its resume point and replayed on every
     /// reconnect. A subscription with no watermark yet is represented by a
     /// `TopicWatermark` whose `lastMessageTime` is `nil`.
+    ///
+    /// `caughtUpTo` seeds the resume point from the store (`Server.caughtUpTo`,
+    /// written by `Ingest`). Without it the property could only ever start
+    /// `nil`, so §5.2's `max(min(watermarks), caughtUpTo)` collapsed back to
+    /// the pre-§5.2 `min(watermarks)` on every launch — and a topic that had
+    /// merely been quiet for longer than the cache window produced a
+    /// full-cache replay and a false history gap every time the app started,
+    /// which is the exact defect §5.2 exists to remove.
     public init(
         endpoint: NtfyEndpoint,
         watermarks: [TopicWatermark],
+        caughtUpTo: Date? = nil,
         client: any StreamClient = NtfyStreamClient(),
         backoff: BackoffPolicy = .standard,
         sleeper: Sleeper = SystemSleeper(),
@@ -81,6 +90,7 @@ public actor ServerConnection {
         self.endpoint = endpoint
         self.topics = watermarks.map(\.topic)
         self.watermarks = watermarks
+        self.caughtUpTo = caughtUpTo
         self.client = client
         self.backoff = backoff
         self.sleeper = sleeper
