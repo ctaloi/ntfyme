@@ -107,9 +107,23 @@ Mirrors the ntfy message JSON:
 `actionsJSON: Data?`, `attachment: Attachment?`, `isRead: Bool`.
 
 `uniqueKey` is what makes replay-on-reconnect safe: overlapping windows
-upsert rather than duplicate. The store actor queries existing keys for a batch
-before inserting rather than relying solely on unique-constraint upsert
-semantics.
+deduplicate rather than duplicate. Measured against this project's toolchain
+(Plan 2 Task 4): `@Attribute(.unique)` alone already prevents a duplicate-key
+insert from producing a second row — the row count never exceeds one — but
+its raw behavior is last-write-wins, letting the replayed row's values
+overwrite the stored one. That is wrong here: `Message.isRead` is local
+state the server knows nothing about, and reconnect deliberately re-requests
+an overlapping window, so an unconditional upsert would silently reset
+`isRead` to `false` on every reconnect, undoing what the user had already
+read. The store actor therefore queries existing keys for a batch before
+inserting and **skips** rather than upserts on a hit (first-write-wins) —
+not as a backstop against duplicate rows, which the constraint already
+prevents on its own, but as the mechanism that protects locally-owned fields
+from server replay. The same protection extends to any future local-only
+field on `Message`. This was measured against a single long-lived
+`ModelContext` on an in-memory store, not the on-disk SQLite store or
+inserts split across separate `ModelContext` instances — see the plan's
+"Measured SwiftData behavior" table for that boundary.
 
 `contentType == "text/markdown"` selects markdown rendering.
 
@@ -219,7 +233,10 @@ correct one. With a timestamp, an out-of-window value produces the same full
 replay, but the client already knows the watermark predates the window and can
 say so. Deduplication by `uniqueKey` makes either correct; only the timestamp
 lets the app tell the difference between "resumed cleanly" and "replayed
-everything," which §10 requires it to surface.
+everything," which §10 requires it to surface — delivered as
+`ConnectionDiagnostic.historyGap(since:)` on `ServerConnection.diagnostics`,
+since the state enum's `.degraded(.historyGap)` is overwritten by `.open`
+within milliseconds and no consumer polling state can observe it there.
 
 Timestamps also carry no clock-skew risk, because the values come from the
 server's own `time` field rather than the local clock. The 5-second margin
@@ -230,9 +247,9 @@ correlation; it is not used to construct `since`.
 
 ### 5.2 The resume point is "caught up to", not "last message"
 
-**Decided 2026-09-02, to be implemented with the persisted watermark model in
-the persistence plan.** The Stage 1–2 code implements the simpler rule below
-and is knowingly incomplete on this point.
+**Decided 2026-09-02, implemented 2026-09-02** in `WatermarkResolver.resolve`
+and `ServerConnection.caughtUpTo` (commit "feat: resume from 'caught up to',
+not the oldest message watermark", persistence plan Task 3).
 
 Resuming from `min(lastMessageTime)` across topics is wrong for a quiet topic.
 A topic that merely received no messages for longer than the server's cache
@@ -240,15 +257,34 @@ window drags the shared `since` outside that window on *every* reconnect — eve
 lid-open — producing a full-cache replay of every topic and a `hasHistoryGap`
 that is false: nothing was missed, the topic was simply quiet.
 
-The connection already receives a better signal and currently discards it. Every
-`open` and `keepalive` line carries a server `time`, and receiving one means
-everything up to that time has been delivered on *all* subscribed topics. So the
-correct resume point is:
+The connection receives a better signal, but **only the `keepalive` line carries
+it**. An earlier revision of this section said "every `open` and `keepalive`
+line", and that was wrong in a way that silently lost history.
 
-    since = max(min(topic watermarks), lastLineTime) − margin
+ntfy sends the `open` line *before* it replays cached messages — its subscribe
+handler calls `sub(v, NewOpenMessage(...))` and only then `sendOldMessages(...)`
+— and `open` carries `time = now`. So `open`'s timestamp does not prove delivery;
+it proves the replay has not started. Treating it as a delivery proof meant that
+a socket drop mid-replay advanced the resume point past every message the replay
+had not yet sent, and nothing ever asked for them again.
 
-where `lastLineTime` is the server timestamp of the most recent line of any kind.
+Demonstrated 2026-09-02 in the Stage 3 whole-branch review: scripting
+`open(t=1788352812)`, then `message(t=1788335966)`, then a drop, produced a
+reconnect asking `since=1788352807` rather than `1788335961` — about 4.7 hours
+of history skipped, with `hasHistoryGap` reporting `false`.
+
+Keepalives are emitted only after `sendOldMessages` returns, which is exactly
+what makes them the line that proves delivery. So `caughtUpTo` advances on
+`keepalive`, and the correct resume point is:
+
+    since = max(min(topic watermarks), caughtUpTo) − margin
+
 This makes `hasHistoryGap` true only after a genuinely long disconnect.
+
+**Resume state must advance on persisted, not received.** `caughtUpTo` is only
+safe to persist for a batch that has actually been written to the store: if a
+write fails and the resume point has already moved past it, the messages are
+permanently absent from the archive and no reconnect will ask for them again.
 
 The persisted `Subscription` model must therefore store a per-server "caught up
 to" time alongside the per-topic message watermarks. Deciding this now is what
@@ -403,7 +439,7 @@ No silent failures. Every condition below is visible in the UI:
 | Attachment download failure | Keep the message; offer retry. |
 | Keychain read failure | Treat as no credential; surface in Settings. |
 | Network unreachable | `offline` status in the menu bar icon; resume on path-satisfied. |
-| Watermark older than the server cache window | Detectable client-side before the request. Log it, surface "history gap" on the topic, and reconnect anyway. A silent full-cache replay must never be mistaken for a clean resume. |
+| Watermark older than the server cache window | Detectable client-side before the request. Log it, deliver `.historyGap(since:)` on `ServerConnection.diagnostics` — a one-shot latched diagnostic, not the transient `.degraded(.historyGap)` state the next line overwrites — and reconnect anyway. A silent full-cache replay must never be mistaken for a clean resume. |
 | HTTP 400 `40008` invalid since | A client bug, not a server condition. Log loudly, fall back to `since=all`, and do not retry the malformed value. |
 
 ## 11. Build and distribution

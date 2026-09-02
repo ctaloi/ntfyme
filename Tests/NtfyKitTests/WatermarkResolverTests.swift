@@ -11,7 +11,7 @@ private func wm(_ topic: String, _ offset: TimeInterval?) -> TopicWatermark {
 
 /// No watermark anywhere: a fresh install must not replay the world.
 @Test func resolvesToAllWhenNothingHasAWatermark() {
-    let r = WatermarkResolver.resolve(watermarks: [wm("a", nil), wm("b", nil)], cacheWindow: window, now: now)
+    let r = WatermarkResolver.resolve(watermarks: [wm("a", nil), wm("b", nil)], caughtUpTo: nil, cacheWindow: window, now: now)
     #expect(r.since == .all)
     #expect(r.hasHistoryGap == false)
 }
@@ -20,6 +20,7 @@ private func wm(_ topic: String, _ offset: TimeInterval?) -> TopicWatermark {
 @Test func resolvesToTheOldestWatermarkMinusMargin() {
     let r = WatermarkResolver.resolve(
         watermarks: [wm("a", -600), wm("b", -120)],
+        caughtUpTo: nil,
         cacheWindow: window, now: now, margin: 5
     )
     #expect(r.since == .unixTime(Int(now.timeIntervalSince1970) - 600 - 5))
@@ -30,6 +31,7 @@ private func wm(_ topic: String, _ offset: TimeInterval?) -> TopicWatermark {
 @Test func ignoresTopicsThatHaveNoWatermarkYet() {
     let r = WatermarkResolver.resolve(
         watermarks: [wm("a", -600), wm("new", nil)],
+        caughtUpTo: nil,
         cacheWindow: window, now: now, margin: 5
     )
     #expect(r.since == .unixTime(Int(now.timeIntervalSince1970) - 600 - 5))
@@ -40,13 +42,14 @@ private func wm(_ topic: String, _ offset: TimeInterval?) -> TopicWatermark {
 @Test func flagsAHistoryGapWhenTheWatermarkPredatesTheCacheWindow() {
     let r = WatermarkResolver.resolve(
         watermarks: [wm("a", -(window + 3600))],
+        caughtUpTo: nil,
         cacheWindow: window, now: now, margin: 5
     )
     #expect(r.hasHistoryGap == true)
 }
 
 @Test func doesNotFlagAGapForARecentWatermark() {
-    let r = WatermarkResolver.resolve(watermarks: [wm("a", -60)], cacheWindow: window, now: now)
+    let r = WatermarkResolver.resolve(watermarks: [wm("a", -60)], caughtUpTo: nil, cacheWindow: window, now: now)
     #expect(r.hasHistoryGap == false)
 }
 
@@ -55,12 +58,13 @@ private func wm(_ topic: String, _ offset: TimeInterval?) -> TopicWatermark {
 @Test func flagsAGapWhenTheMarginPushesSinceOutsideTheWindow() {
     let r = WatermarkResolver.resolve(
         watermarks: [wm("a", -(window - 2))],
+        caughtUpTo: nil,
         cacheWindow: window, now: now, margin: 5
     )
     #expect(r.hasHistoryGap == true)
 }
 
 @Test func resolvesToAllForAnEmptyTopicSet() {
-    let r = WatermarkResolver.resolve(watermarks: [], cacheWindow: window, now: now)
+    let r = WatermarkResolver.resolve(watermarks: [], caughtUpTo: nil, cacheWindow: window, now: now)
     #expect(r.since == .all)
 }

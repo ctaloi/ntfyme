@@ -18,6 +18,16 @@ enum Fixtures {
     {"id":"kA1","time":1788352857,"event":"keepalive","topic":"alerts"}
     """#
 
+    /// A keepalive whose server time is *later* than `minimalMessage`'s, so a
+    /// script can take the steady-state shape a real stream has: the message,
+    /// then the keepalive that proves the server has delivered everything up
+    /// to that point. `keepaliveEvent` above is deliberately *older* than
+    /// `minimalMessage`, so reusing it here would assert the resume point
+    /// backwards.
+    static let laterKeepaliveEvent = #"""
+    {"id":"kA2","time":1788353400,"event":"keepalive","topic":"alerts"}
+    """#
+
     /// An event type this version of the app does not know about.
     static let unknownEvent = #"""
     {"id":"zZ9","time":1788352900,"event":"some_future_event","topic":"alerts"}

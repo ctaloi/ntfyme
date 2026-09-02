@@ -4,11 +4,28 @@ import Foundation
 /// topic on that server (spec §5).
 public actor ServerConnection {
     public private(set) var state: ConnectionState = .idle
+    /// Server timestamp of the most recent **keepalive** line. A keepalive is
+    /// the one line that proves the server has delivered everything up to that
+    /// point on every subscribed topic, which is what makes §5.2's resume rule
+    /// correct.
+    ///
+    /// Deliberately not "the most recent line of any kind". ntfy's subscribe
+    /// handler calls `sub(v, NewOpenMessage(...))` and only *then*
+    /// `sendOldMessages(...)`, so the `open` line — which carries `time = now`
+    /// — is sent *before* the replay it precedes. Advancing on `open` moved
+    /// the resume point past every message the replay had not yet sent, and a
+    /// drop mid-replay then meant nothing ever asked for them again. Messages
+    /// do not qualify either: `sendOldMessages` walks the subscribed topics one
+    /// at a time rather than merging them in time order, so a message's
+    /// timestamp says nothing about how far the *other* topics have been
+    /// delivered. Keepalives are emitted only after `sendOldMessages` returns,
+    /// which is precisely what makes them the proof.
+    public private(set) var caughtUpTo: Date?
 
     private let endpoint: NtfyEndpoint
     private let topics: [String]
     private var watermarks: [TopicWatermark]
-    private let client: NtfyStreamClient
+    private let client: any StreamClient
     private let backoff: BackoffPolicy
     private let sleeper: Sleeper
     private let watchdog: KeepaliveWatchdog
@@ -26,8 +43,35 @@ public actor ServerConnection {
     /// arriving before the first read is silently dropped — and whether that
     /// happens depends on task scheduling. `AsyncStream` buffers by default, so
     /// an eager stream loses nothing.
+    ///
+    /// **This carries keepalives as well as messages, in stream order.** A
+    /// consumer that wants content must filter on `kind == .message` — as
+    /// `MessageStore.insert` already does. The keepalives are here because
+    /// they are the only line that proves delivery (§5.2), and a consumer that
+    /// persists resume state has to know *where in this sequence* that proof
+    /// fell: reading `caughtUpTo` off this actor instead is a separate,
+    /// unordered channel, and a value read from it can already have advanced
+    /// past events still sitting in the consumer's own buffer. Putting the
+    /// proof in the stream is what makes "everything before this keepalive is
+    /// in my hands" a fact rather than a hope. `open` is deliberately *not*
+    /// yielded: it precedes the replay it announces and proves nothing.
     private let continuation: AsyncStream<NtfyEvent>.Continuation
     public nonisolated let events: AsyncStream<NtfyEvent>
+
+    /// One-shot facts a level-triggered `state` cannot carry — see
+    /// `ConnectionDiagnostic`. Created eagerly for the same reason `events`
+    /// is: a lazily-created stream leaves its continuation nil until
+    /// something first reads it, silently dropping anything emitted before
+    /// that.
+    ///
+    /// Bounded, unlike `events`. Nothing consumes this until the UI lands, and
+    /// a server emitting malformed lines yields a `.skippedLine` for each one,
+    /// so an unbounded buffer would grow for the life of the process against a
+    /// consumer that may never arrive. The newest 64 are what a status surface
+    /// would show anyway; `events` stays unbounded because losing a message is
+    /// not a display concern, and it has a consumer.
+    private let diagnosticContinuation: AsyncStream<ConnectionDiagnostic>.Continuation
+    public nonisolated let diagnostics: AsyncStream<ConnectionDiagnostic>
 
     /// `topics` is derived from `watermarks` rather than passed alongside it.
     /// They were two inputs to one truth, and they could disagree: a topic
@@ -36,10 +80,19 @@ public actor ServerConnection {
     /// so that topic never advanced its resume point and replayed on every
     /// reconnect. A subscription with no watermark yet is represented by a
     /// `TopicWatermark` whose `lastMessageTime` is `nil`.
+    ///
+    /// `caughtUpTo` seeds the resume point from the store (`Server.caughtUpTo`,
+    /// written by `Ingest`). Without it the property could only ever start
+    /// `nil`, so §5.2's `max(min(watermarks), caughtUpTo)` collapsed back to
+    /// the pre-§5.2 `min(watermarks)` on every launch — and a topic that had
+    /// merely been quiet for longer than the cache window produced a
+    /// full-cache replay and a false history gap every time the app started,
+    /// which is the exact defect §5.2 exists to remove.
     public init(
         endpoint: NtfyEndpoint,
         watermarks: [TopicWatermark],
-        client: NtfyStreamClient = NtfyStreamClient(),
+        caughtUpTo: Date? = nil,
+        client: any StreamClient = NtfyStreamClient(),
         backoff: BackoffPolicy = .standard,
         sleeper: Sleeper = SystemSleeper(),
         watchdogTimeout: Duration = .seconds(90),
@@ -49,9 +102,16 @@ public actor ServerConnection {
         self.events = AsyncStream { capturedContinuation = $0 }
         self.continuation = capturedContinuation
 
+        var capturedDiagnostics: AsyncStream<ConnectionDiagnostic>.Continuation!
+        self.diagnostics = AsyncStream(bufferingPolicy: .bufferingNewest(64)) {
+            capturedDiagnostics = $0
+        }
+        self.diagnosticContinuation = capturedDiagnostics
+
         self.endpoint = endpoint
         self.topics = watermarks.map(\.topic)
         self.watermarks = watermarks
+        self.caughtUpTo = caughtUpTo
         self.client = client
         self.backoff = backoff
         self.sleeper = sleeper
@@ -121,6 +181,7 @@ public actor ServerConnection {
                 // path cancels this task first, the guard above observes it,
                 // and there is no suspension point between the guard and here.
                 runTask = nil
+                diagnosticContinuation.yield(.unauthorized)
                 return
             } catch NtfyStreamClient.Error.rateLimited(let retryAfter) {
                 guard !Task.isCancelled else { return }
@@ -152,6 +213,7 @@ public actor ServerConnection {
                 )
                 forceSinceAll = true
                 degrade(.invalidSince)
+                diagnosticContinuation.yield(.invalidSinceRejected)
                 await waitBeforeRetry()
             } catch {
                 guard !Task.isCancelled else { return }
@@ -175,7 +237,11 @@ public actor ServerConnection {
             // close, so it must not be reintroduced by the fix.
             since = .all
         } else {
-            let resolution = WatermarkResolver.resolve(watermarks: watermarks, cacheWindow: cacheWindow)
+            let resolution = WatermarkResolver.resolve(
+                watermarks: watermarks,
+                caughtUpTo: caughtUpTo,
+                cacheWindow: cacheWindow
+            )
             since = resolution.since
             if resolution.hasHistoryGap {
                 // Surfaced rather than swallowed: the server will replay its
@@ -183,20 +249,29 @@ public actor ServerConnection {
                 // (spec §10), and that must never look like a clean resume.
                 //
                 // The log is the durable half of "surfaced". The state write
-                // below is a one-shot diagnostic in a level-triggered enum: the
-                // first line on the stream replaces it with `.open` tens of
-                // milliseconds later, so a consumer polling state can miss it.
-                // Carrying the gap where a consumer can latch it — a
-                // diagnostics stream, or a flag on `.open` — is deferred to the
-                // persistence plan. So is the resume point this gap is measured
-                // from: spec §5.2 decides it should be
-                // `max(min(watermarks), lastLineTime)`, so that a merely quiet
-                // topic stops reporting a gap that did not happen, and says
-                // this stage is knowingly incomplete on that point.
+                // below is still a one-shot value in a level-triggered enum —
+                // the first line on the stream replaces it with `.open` tens
+                // of milliseconds later — so the diagnostic below is what a
+                // consumer actually latches onto; `degrade` here only drives
+                // the menu bar icon for the brief window before `.open`. The
+                // resume point this gap is measured from is no longer the
+                // naive `min(watermarks)`: spec §5.2's
+                // `max(min(watermarks), caughtUpTo)` is implemented above, so
+                // a merely quiet topic no longer reports a gap that did not
+                // happen.
                 Log.connection.notice(
                     "history gap: resume watermark predates the server cache window; the server will replay its cache"
                 )
                 degrade(.historyGap)
+                // `hasHistoryGap` is only ever true alongside `since` resolved
+                // to `.unixTime` — the `.all` branch above always pairs with
+                // `hasHistoryGap: false`, and there is no other case. Matched
+                // rather than force-unwrapped so a future resolver change that
+                // breaks the invariant silently drops the diagnostic instead
+                // of crashing the connection.
+                if case .unixTime(let seconds) = since {
+                    diagnosticContinuation.yield(.historyGap(since: Date(timeIntervalSince1970: TimeInterval(seconds))))
+                }
             }
         }
 
@@ -253,6 +328,7 @@ public actor ServerConnection {
                         // vocabulary and never quotes the line, which is what
                         // makes `.public` safe here (spec §9).
                         Log.stream.warning("skipped line: \(reason, privacy: .public)")
+                        diagnosticContinuation.yield(.skippedLine(reason: reason))
                     }
                     continue
                 }
@@ -264,7 +340,23 @@ public actor ServerConnection {
                 case .message:
                     record(event)
                     continuation.yield(event)
-                case .keepalive, .pollRequest, nil:
+                case .keepalive:
+                    // §5.2, and the only place `caughtUpTo` moves. See the
+                    // property's doc comment for why `open` and `message`
+                    // lines are deliberately excluded. The `time > 0` guard
+                    // stays: a line with no usable server clock must not
+                    // rewind the resume point to 1970.
+                    if event.time > 0 {
+                        let lineTime = event.date
+                        if caughtUpTo == nil || lineTime > caughtUpTo! { caughtUpTo = lineTime }
+                    }
+                    // Yielded downstream too, in stream order, so a consumer
+                    // persisting resume state can tie the proof to its own
+                    // batch instead of reading `caughtUpTo` across the actor
+                    // boundary and getting a value that has already moved past
+                    // events it is still holding. See `events`' doc comment.
+                    continuation.yield(event)
+                case .pollRequest, nil:
                     continue
                 }
             }
@@ -274,6 +366,10 @@ public actor ServerConnection {
         }
         if !Task.isCancelled { await watchdog.stop() }
     }
+
+    /// Watermarks as currently known, for persistence and for rebuilding the
+    /// connection after a topic is added. Previously write-only.
+    public func watermarkSnapshot() -> [TopicWatermark] { watermarks }
 
     private func record(_ event: NtfyEvent) {
         guard let index = watermarks.firstIndex(where: { $0.topic == event.topic }) else { return }

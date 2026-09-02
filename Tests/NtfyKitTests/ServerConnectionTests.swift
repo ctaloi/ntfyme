@@ -13,32 +13,13 @@ private func makeConnection(
     cacheWindow: TimeInterval = 12 * 3600
 ) -> ServerConnection {
     ServerConnection(
-        endpoint: NtfyEndpoint(baseURL: base, credential: .none),
+        endpoint: NtfyEndpoint(baseURL: base, credential: .unauthenticated),
         watermarks: watermarks ?? topics.map { TopicWatermark(topic: $0, lastMessageTime: nil) },
         client: NtfyStreamClient(),
         backoff: .standard,
         sleeper: sleeper,
         cacheWindow: cacheWindow
     )
-}
-
-/// Polls until `condition` holds, or gives up at `timeout`. Preferred here over
-/// a fixed `Task.sleep`: every wait in this file is on a real socket handshake,
-/// and a fixed wait is either long enough to be slow on every run or short
-/// enough to be flaky on a loaded machine. The generous timeout costs nothing
-/// on the passing path, which returns as soon as the condition holds.
-private func waitUntil(
-    timeout: Duration = .seconds(5),
-    _ condition: () async -> Bool
-) async -> Bool {
-    let deadline = ContinuousClock.now.advanced(by: timeout)
-    while ContinuousClock.now < deadline {
-        if await condition() { return true }
-        // A cancelled poll means the test task itself is going away; stop
-        // polling rather than spinning to the deadline.
-        do { try await Task.sleep(for: .milliseconds(10)) } catch { break }
-    }
-    return await condition()
 }
 
 @Test func reachesOpenStateAndEmitsMessages() async throws {

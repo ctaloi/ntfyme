@@ -3,7 +3,7 @@ import Testing
 @testable import NtfyKit
 
 @Test func noneProducesNoHeader() {
-    #expect(AuthCredential.none.authorizationHeader == nil)
+    #expect(AuthCredential.unauthenticated.authorizationHeader == nil)
 }
 
 @Test func bearerProducesABearerHeader() {

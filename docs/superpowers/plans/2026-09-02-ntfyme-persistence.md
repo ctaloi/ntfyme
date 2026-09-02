@@ -12,6 +12,15 @@
 
 **Previous plan:** `docs/superpowers/plans/2026-09-02-ntfyme-foundation.md` (Stages 1–2, merged). Its "Measured ntfy behavior" table still applies.
 
+> **Superseded in one respect.** This plan's Task 3 text, and the code listings
+> reproduced in it, say `caughtUpTo` advances on "every line carrying a server
+> `time`". The whole-branch review disproved that: ntfy sends the `open` line
+> *before* it replays history, so treating `open` as a delivery proof silently
+> skipped the un-replayed remainder after a mid-replay drop. The shipped code
+> advances only on `keepalive`. See spec §5.2, which was corrected, and commit
+> `32fff32`. The listings below are left as written — they record what was
+> planned, and editing them would falsify that record.
+
 ## Global Constraints
 
 Copied from the spec and from Stage 1–2's merged state. Every task's requirements implicitly include these.
@@ -26,6 +35,28 @@ Copied from the spec and from Stage 1–2's merged state. Every task's requireme
 - **Attachment *files* are out of scope.** The `Attachment` model and its `localFilename` field are in scope, and retention must delete files that exist. Actually downloading them is Plan 3/4. Do not grow a downloader.
 - Test output must be pristine — warnings are findings.
 - **A `Subscription` must always be linked to its `Server`.** `MessageStore` scopes every watermark lookup through `server.subscriptions`, because two servers may legitimately carry a topic of the same name and advancing the wrong one would make the other resume from a point it never reached. A fixture that inserts a bare `Subscription` will silently find no watermarks.
+
+## Measured SwiftData behavior this plan depends on
+
+Verified in-process against this repo's toolchain on 2026-09-02 (Task 4,
+`Tests/NtfyKitTests/SwiftDataBehaviorTests.swift`). Do not re-derive these
+from documentation; they were measured, including a positive control —
+`@Attribute(.unique)` was removed, the same tests were re-run and failed
+cleanly (`count == 2`, surviving body `"first"`), then it was restored and
+the tests passed again. **Scope of what was measured:** a single long-lived
+`ModelContext` against an in-memory store, per the brief's own fixture — not
+the on-disk SQLite store or inserts split across separate `ModelContext`
+instances (as `MessageStore`'s `@ModelActor` will do). Task 6 exercises that
+case; this table does not claim to.
+
+| Fact | Consequence for this plan |
+|---|---|
+| `@Attribute(.unique)` on `Message.uniqueKey` upserts a duplicate-key `insert()` + `save()` — the row count stays 1, it does not throw | The unique constraint alone already prevents duplicate *rows* on this toolchain |
+| The **second** insert's field values win at the constraint level (`body == "second"`): **last write wins**, not keep-first | This is the raw mechanism only — see the reconciliation row below for what Task 6 must actually do, which is the opposite |
+| Distinct `uniqueKey`s coexist normally (2 rows in, 2 rows out) | No unexpected cross-row interaction from the unique constraint |
+| With `@Attribute(.unique)` removed (the positive control), the same duplicate-key insert produces 2 rows when tests run individually, and segfaults `swiftpm-testing-helper` when the whole file runs together under parallel test execution — observed only with the constraint removed, not on the real schema | SwiftData's behavior without the unique constraint is not just "wrong," it is unstable under this toolchain's parallel test runner — never ship without `@Attribute(.unique)` present |
+| **Reconciled:** the constraint's raw behavior (last-write-wins) is *not* what Task 6 should use. `Message` carries `isRead`, local state the server knows nothing about. Reconnect deliberately re-requests an overlapping window, so replayed rows are routine — if insert let a replay overwrite the stored row, every reconnect would silently reset `isRead` back to `false`, undoing what the user had already read | Task 6's `insert` must **skip on duplicate key (first-write-wins)**, not upsert. Query-before-insert is therefore **load-bearing for correctness after all** — not as a backstop against duplicate rows (the constraint already prevents those), but as the thing that keeps server replay from clobbering locally-owned fields. The next local-only field added to `Message` (a star, a snooze, a note) inherits this same protection for free, as long as insert keeps skipping rather than upserting |
+| The spec's hedge ("query existing keys... rather than relying solely on unique-constraint upsert semantics") is resolved: the unique constraint alone is sufficient to prevent duplicate *rows*, but insufficient by itself to prevent replay from *clobbering local state*, which only an explicit skip-on-duplicate query achieves | Task 6 implements query-before-insert as the primary correctness mechanism for local-state safety, and incidentally gets an accurate `InsertResult.duplicatesSkipped` count and explicit control over watermark advancement from the same query |
 
 ### The test rule this plan exists under
 
@@ -220,7 +251,15 @@ func waitUntil(
     let deadline = ContinuousClock.now + timeout
     while ContinuousClock.now < deadline {
         if await condition() { return true }
-        try? await Task.sleep(for: .milliseconds(10))
+        do {
+            try await Task.sleep(for: .milliseconds(10))
+        } catch {
+            // Cancelled: stop polling immediately. A `try?` here would swallow
+            // the cancellation and hot-spin this loop at full CPU until the
+            // deadline elapsed — and every socket test in the suite uses this
+            // helper.
+            break
+        }
     }
     return await condition()
 }
@@ -497,8 +536,8 @@ Add a stored property and advance it wherever a line arrives. In `ServerConnecti
 In the stream loop, immediately after the existing cancellation guard that follows `await watchdog.pet()`, and **before** the `guard case .event` filter is applied to non-message kinds, advance it for every event that carries a time:
 
 ```swift
-            if case .event(let element) = element, element.time > 0 {
-                let lineTime = element.date
+            if case .event(let line) = element, line.time > 0 {
+                let lineTime = line.date
                 if caughtUpTo == nil || lineTime > caughtUpTo! { caughtUpTo = lineTime }
             }
 ```
@@ -963,7 +1002,16 @@ public final class Attachment {
 }
 ```
 
-Keep the Task 4 probe's `Message` initializer working, or update those three tests to the real initializer — your choice, but say which in your report.
+**Task 4's three probe tests will stop compiling**, because they use the
+temporary initializer `Message(uniqueKey:messageID:topic:serverID:time:body:)`
+that this task replaces. Update all three to the real initializer
+`Message(serverID:topic:messageID:time:body:)`, which derives `uniqueKey`
+itself. Do not keep a second initializer alive to avoid the edit — one way to
+construct a `Message` is the point, and a hand-passed `uniqueKey` could
+disagree with the fields it is supposed to summarize.
+
+The probe's assertions must not change: they record measured SwiftData
+behavior, and altering them to fit would discard the measurement.
 
 - [ ] **Step 4: Write the snapshot type**
 
@@ -995,22 +1043,34 @@ public struct MessageSnapshot: Sendable, Equatable, Identifiable {
 
     public var isMarkdown: Bool { contentType == "text/markdown" }
     public var resolvedPriority: NtfyPriority { NtfyPriority(rawValue: priority) ?? .default }
-    public var actions: [NtfyAction] {
-        guard let actionsJSON else { return [] }
-        // A stored blob this app wrote itself; a decode failure means the row
-        // is corrupt, and an empty action list degrades the UI rather than
-        // losing the message. Logged by the caller, not swallowed silently.
-        return (try? JSONDecoder().decode([NtfyAction].self, from: actionsJSON)) ?? []
-    }
+    /// Decoded once when the snapshot is built, so an empty array means the
+    /// message genuinely has no actions — a corrupt blob announces itself in
+    /// the log instead of impersonating that.
+    public let actions: [NtfyAction]
 }
 
 extension Message {
     public var snapshot: MessageSnapshot {
-        MessageSnapshot(id: uniqueKey, messageID: messageID, topic: topic,
+        var decodedActions: [NtfyAction] = []
+        if let actionsJSON {
+            do {
+                decodedActions = try JSONDecoder().decode([NtfyAction].self, from: actionsJSON)
+            } catch {
+                // serverID only. NOT uniqueKey — it is
+                // "serverID/topic/messageID", so logging it would leak a topic
+                // name, which spec §9 forbids outright. NOT messageID either:
+                // it comes straight off the wire and is unbounded in length.
+                // If row-level correlation is ever needed, use a truncated
+                // digest of uniqueKey — fixed-shape, non-reversible, leaks
+                // neither the topic nor wire content — never the key itself.
+                Log.store.error("action decode failed for server \(serverID.uuidString, privacy: .public)")
+            }
+        }
+        return MessageSnapshot(id: uniqueKey, messageID: messageID, topic: topic,
                         serverID: serverID, time: time, title: title, body: body,
                         priority: priority, tags: tags, click: click,
                         iconURL: iconURL, contentType: contentType,
-                        actionsJSON: actionsJSON, isRead: isRead)
+                        actionsJSON: actionsJSON, actions: decodedActions, isRead: isRead)
     }
 }
 ```
@@ -1170,6 +1230,8 @@ swift test --filter MessageStoreTests 2>&1 | tail -20
 Expected: build error — `cannot find 'MessageStore' in scope`.
 
 - [ ] **Step 3: Write the store**
+
+`Log.store` already exists — Task 5 added it. Do not add it again.
 
 `Sources/NtfyKit/Persistence/MessageStore.swift`:
 
@@ -1571,7 +1633,7 @@ Append to `MessageStore`:
     }
 ```
 
-Add a `store` category to `Log.swift` alongside the existing ones, and update that file's doc comment to cover the new site.
+`Log.store` already exists — Task 6 added it. Do not add it again.
 
 - [ ] **Step 5: Run and verify**
 
@@ -1724,7 +1786,14 @@ public actor Ingest {
             // restart resume from §5.2's point rather than the oldest message.
             if let caughtUp = await connection.caughtUpTo {
                 do { try await store.setCaughtUpTo(caughtUp, forServer: serverID) }
-                catch { Log.store.error("caughtUpTo persist failed: \(error.localizedDescription, privacy: .public)") }
+                catch {
+                    // NOT error.localizedDescription: a Cocoa or SwiftData
+                    // error's description can embed a file's display name or a
+                    // stored value, either of which may be server-provided.
+                    // Domain and code are fixed constants.
+                    let ns = error as NSError
+                    Log.store.error("caughtUpTo persist failed: \(ns.domain, privacy: .public) \(ns.code, privacy: .public)")
+                }
             }
             _ = store
         }
@@ -1739,8 +1808,11 @@ public actor Ingest {
             insertedCount += result.inserted
         } catch {
             // Never silent: a failed write means messages are lost from the
-            // archive even though they were delivered.
-            Log.store.error("message batch insert failed: \(error.localizedDescription, privacy: .public)")
+            // archive even though they were delivered. Domain and code only —
+            // an error's description can embed stored or server-provided
+            // values, which must not reach a log.
+            let ns = error as NSError
+            Log.store.error("message batch insert failed: \(ns.domain, privacy: .public) \(ns.code, privacy: .public)")
         }
     }
 }
@@ -2170,6 +2242,10 @@ import Foundation
 /// specifies. And its 7-day `timeoutIntervalForResource` would end every
 /// stream weekly for no reason the user could see.
 public enum StreamingSession {
+    /// For SUBSCRIPTIONS only. These timeouts are deliberately long because a
+    /// subscription is meant to stay open for days — which makes them exactly
+    /// wrong for a one-shot poll. `Backfill` bounds its own wait locally and
+    /// must not rely on this session's limits.
     public static func make() -> URLSession {
         let configuration = URLSessionConfiguration.default
         // Comfortably longer than the watchdog, so the watchdog decides.
