@@ -46,8 +46,23 @@ private func makeStore() throws -> (MessageStore, UUID) {
 }
 
 /// Same message id on two different topics is two different messages.
+///
+/// Subscribes to both topics, not just `alerts` — the store's contract is
+/// that a `Subscription` row exists before messages for a topic arrive
+/// (`advanceWatermarks` logs an error otherwise); this test's job is to
+/// prove the dedupe key, not to exercise that error path incidentally.
 @Test func theSameMessageIdOnDifferentTopicsIsNotADuplicate() async throws {
-    let (store, serverID) = try makeStore()
+    let container = try StoreFixtures.inMemoryContainer()
+    let serverID = UUID()
+    let context = ModelContext(container)
+    let server = Server(id: serverID, name: "Example",
+                        baseURLString: "https://ntfy.example.com")
+    context.insert(server)
+    context.insert(Subscription(topic: "alerts", server: server))
+    context.insert(Subscription(topic: "deploys", server: server))
+    try context.save()
+    let store = MessageStore(modelContainer: container)
+
     let result = try await store.insert(
         [event("same", topic: "alerts", time: 100, body: "a"),
          event("same", topic: "deploys", time: 100, body: "b")], serverID: serverID)

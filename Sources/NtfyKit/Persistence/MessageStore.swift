@@ -106,7 +106,16 @@ public actor MessageStore {
     }
 
     public func caughtUpTo(forServer serverID: UUID) throws -> Date? {
-        try server(serverID)?.caughtUpTo
+        guard let server = try server(serverID) else {
+            // An unknown server id is a caller bug, the same as in
+            // `subscriptions(forServer:)` and `setCaughtUpTo`. It matters
+            // more here: `WatermarkResolver.resolve` treats `nil` with no
+            // watermarks as "never synced" and returns a full cache replay —
+            // silently indistinguishable from a genuinely new server.
+            Log.store.error("no server record for the requested id")
+            return nil
+        }
+        return server.caughtUpTo
     }
 
     public func setCaughtUpTo(_ date: Date, forServer serverID: UUID) throws {
