@@ -43,6 +43,18 @@ public actor ServerConnection {
     /// arriving before the first read is silently dropped — and whether that
     /// happens depends on task scheduling. `AsyncStream` buffers by default, so
     /// an eager stream loses nothing.
+    ///
+    /// **This carries keepalives as well as messages, in stream order.** A
+    /// consumer that wants content must filter on `kind == .message` — as
+    /// `MessageStore.insert` already does. The keepalives are here because
+    /// they are the only line that proves delivery (§5.2), and a consumer that
+    /// persists resume state has to know *where in this sequence* that proof
+    /// fell: reading `caughtUpTo` off this actor instead is a separate,
+    /// unordered channel, and a value read from it can already have advanced
+    /// past events still sitting in the consumer's own buffer. Putting the
+    /// proof in the stream is what makes "everything before this keepalive is
+    /// in my hands" a fact rather than a hope. `open` is deliberately *not*
+    /// yielded: it precedes the replay it announces and proves nothing.
     private let continuation: AsyncStream<NtfyEvent>.Continuation
     public nonisolated let events: AsyncStream<NtfyEvent>
 
@@ -329,6 +341,12 @@ public actor ServerConnection {
                         let lineTime = event.date
                         if caughtUpTo == nil || lineTime > caughtUpTo! { caughtUpTo = lineTime }
                     }
+                    // Yielded downstream too, in stream order, so a consumer
+                    // persisting resume state can tie the proof to its own
+                    // batch instead of reading `caughtUpTo` across the actor
+                    // boundary and getting a value that has already moved past
+                    // events it is still holding. See `events`' doc comment.
+                    continuation.yield(event)
                 case .pollRequest, nil:
                     continue
                 }

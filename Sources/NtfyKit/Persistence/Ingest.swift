@@ -5,10 +5,31 @@ import Foundation
 /// Events are batched over a short window rather than written one at a time:
 /// a reconnect replay can deliver thousands of lines at once, and one
 /// transaction per message would be pathological.
+///
+/// **Resume state advances on persisted, not on received** (spec §5.2). The
+/// `caughtUpTo` this writes is derived from the batch that was just durably
+/// stored — the newest keepalive *in that batch* — never from a cross-actor
+/// read of `ServerConnection.caughtUpTo`. Two failures follow from getting
+/// that wrong, and both are permanent archive loss no reconnect repairs:
+///
+/// - A batch whose insert fails, dropped while the resume point moves past it
+///   anyway. It is now kept in the buffer and retried on the next tick.
+/// - A resume point read *after* a long insert, by which time the connection
+///   has seen lines covering events still sitting in this actor's buffer or
+///   in the stream's. Deriving from the batch removes the read entirely.
 public actor Ingest {
     private let store: MessageStore
     private let batchWindow: Duration
     public private(set) var insertedCount = 0
+
+    /// Only one flush may be in flight. `flush` is called from both of `pump`'s
+    /// child tasks — the collector on the count ceiling, the ticker on its
+    /// cadence — and it suspends at `store.insert`, so without this they
+    /// interleave. That is not merely wasteful: a flush holding a failed batch
+    /// for retry could be overtaken by a second flush that drains later
+    /// events, succeeds, and persists a resume point *past* the batch still
+    /// waiting to be written. The retry that closes I2 would have reopened it.
+    private var isFlushing = false
 
     public init(store: MessageStore, batchWindow: Duration = .milliseconds(250)) {
         self.store = store
@@ -20,14 +41,31 @@ public actor Ingest {
     /// periodic-flush ticker below (in `pump`) run as separate concurrent
     /// child tasks, and Swift 6 strict concurrency requires state shared
     /// between concurrent tasks to be actor-isolated.
-    private actor Buffer {
+    ///
+    /// Internal rather than private so its invariants can be tested directly.
+    /// They are the whole basis of the resume rule and none of them is
+    /// observable from outside a flush.
+    actor Buffer {
+        /// Ceiling on events held across repeatedly failing inserts. A store
+        /// that keeps failing must not grow this without bound; the bound has
+        /// to drop *something*, and it drops the newest arrivals rather than
+        /// the batch waiting to be retried, so a retry never loses ground it
+        /// had already made.
+        static let capacity = 10_000
+
         private var events: [NtfyEvent] = []
         private var lastPersistedCaughtUp: Date?
+        private var dropped = false
+        private var loggedOverflow = false
 
         /// Appends and returns the new count, so the caller can flush
         /// immediately once the count ceiling is reached without a second
         /// round trip just to read it back.
         func append(_ event: NtfyEvent) -> Int {
+            guard events.count < Self.capacity else {
+                noteDrop()
+                return events.count
+            }
             events.append(event)
             return events.count
         }
@@ -37,14 +75,35 @@ public actor Ingest {
             return events
         }
 
+        /// Puts a batch whose insert failed back at the **front**, so it is
+        /// retried on the next tick instead of being lost. Prepended, not
+        /// appended: the collector has been appending newer events throughout
+        /// the failed insert, and stream order is the entire basis for
+        /// "a keepalive proves everything before it was delivered". An append
+        /// would reorder the retry batch after events that follow it on the
+        /// wire and make the next batch's mark a lie.
+        func restore(_ batch: [NtfyEvent]) {
+            events = batch + events
+            guard events.count > Self.capacity else { return }
+            events.removeLast(events.count - Self.capacity)
+            noteDrop()
+        }
+
         /// Whether `date` is newer than what was last persisted. The ticker
         /// calls `setCaughtUpTo` on every tick forever, including while the
         /// connection is idle; that store method is already monotonic, but
         /// it costs a `Server` fetch on every call, so skipping the ones that
         /// can't possibly advance anything keeps an idle connection from
         /// paying that cost four times a second for the app's lifetime.
+        ///
+        /// It also refuses outright once anything has been dropped. Past that
+        /// point this buffer no longer holds every event the stream delivered,
+        /// so no later keepalive can honestly claim everything before it was
+        /// stored. Freezing the resume point costs a replay on the next
+        /// launch; advancing it would cost the messages themselves.
         func shouldPersist(_ date: Date) -> Bool {
-            lastPersistedCaughtUp == nil || date > lastPersistedCaughtUp!
+            guard !dropped else { return false }
+            return lastPersistedCaughtUp == nil || date > lastPersistedCaughtUp!
         }
 
         /// Recorded only after the store confirms the write, so a failed
@@ -53,10 +112,35 @@ public actor Ingest {
         func markPersisted(_ date: Date) {
             lastPersistedCaughtUp = date
         }
+
+        private func noteDrop() {
+            dropped = true
+            guard !loggedOverflow else { return }
+            loggedOverflow = true
+            // Logged once, not per event: an unreachable store would otherwise
+            // emit this thousands of times a second. Never silent — the latch
+            // above also stops the resume point moving, which is the visible
+            // consequence a later launch would otherwise have to guess at.
+            Log.store.error(
+                "ingest buffer is full after repeated insert failures; dropping newly arrived events and freezing the resume point"
+            )
+        }
     }
 
     /// Starts pumping. The returned task runs until it is cancelled; the
     /// caller owns it.
+    ///
+    /// Cancelling it is final for this connection: `connection.events` is a
+    /// single `AsyncStream` with one continuation, and once the collector's
+    /// `for await` has ended the stream is not re-iterable. Resuming ingest
+    /// therefore means a **new `ServerConnection`**, not a second `attach` on
+    /// this one.
+    ///
+    /// For the same reason, do not `attach` twice to one connection: two
+    /// collectors sharing one `AsyncStream` split its elements between them
+    /// rather than each seeing all of them, so each would compute batch marks
+    /// over half the stream — and a keepalive proving delivery would land in
+    /// whichever half won the race for it.
     public func attach(_ connection: ServerConnection, serverID: UUID) -> Task<Void, Never> {
         Task { await self.pump(connection, serverID: serverID) }
     }
@@ -89,7 +173,7 @@ public actor Ingest {
                 for await event in connection.events {
                     let count = await buffer.append(event)
                     if count >= 500 {
-                        await self.flush(buffer, connection: connection, serverID: serverID)
+                        await self.flush(buffer, serverID: serverID)
                     }
                 }
             }
@@ -97,7 +181,7 @@ public actor Ingest {
                 while !Task.isCancelled {
                     do { try await Task.sleep(for: self.batchWindow) }
                     catch { return }
-                    await self.flush(buffer, connection: connection, serverID: serverID)
+                    await self.flush(buffer, serverID: serverID)
                 }
             }
         }
@@ -105,43 +189,64 @@ public actor Ingest {
         // The collector above only returns when this task is cancelled
         // (`connection.events` has no natural end), so this is the final
         // flush on the way out — catches whatever the last tick missed.
-        await flush(buffer, connection: connection, serverID: serverID)
+        await flush(buffer, serverID: serverID)
     }
 
-    private func flush(_ buffer: Buffer, connection: ServerConnection, serverID: UUID) async {
+    private func flush(_ buffer: Buffer, serverID: UUID) async {
+        guard !isFlushing else { return }
+        isFlushing = true
+        defer { isFlushing = false }
+
         let events = await buffer.drain()
-        if !events.isEmpty {
-            do {
-                let result = try await store.insert(events, serverID: serverID)
-                insertedCount += result.inserted
-            } catch {
-                // Never silent: a failed write means messages were delivered
-                // but lost from the archive. Domain and code only — an
-                // error's description can embed stored or server-provided
-                // values, which must not reach a log.
-                let ns = error as NSError
-                Log.store.error("message batch insert failed: \(ns.domain, privacy: .public) \(ns.code, privacy: .public)")
-            }
+        guard !events.isEmpty else { return }
+
+        // §5.2: only a keepalive proves the server has delivered everything up
+        // to its time on every subscribed topic. `open` is never yielded, and
+        // a message's own time proves nothing — ntfy replays the subscribed
+        // topics one at a time rather than merging them in time order.
+        //
+        // Taken from this batch, so it is a claim about data this actor is
+        // holding. Everything the stream delivered before this keepalive is
+        // either in `events` — about to be written in one transaction — or in
+        // an earlier batch, which was written before its own mark was
+        // persisted. Nothing else can be below it.
+        let batchMark = events
+            .filter { $0.kind == .keepalive && $0.time > 0 }
+            .map(\.date)
+            .max()
+
+        do {
+            let result = try await store.insert(events, serverID: serverID)
+            insertedCount += result.inserted
+        } catch {
+            // Never silent, and never lossy: the batch goes back on the front
+            // of the buffer for the next tick rather than being dropped. A
+            // logged drop is still permanent archive loss — the connection's
+            // watermarks have already moved past these events, so no
+            // reconnect asks for them again. Domain and code only: an error's
+            // description can embed stored or server-provided values, which
+            // must not reach a log.
+            await buffer.restore(events)
+            let ns = error as NSError
+            Log.store.error("message batch insert failed; batch held for retry: \(ns.domain, privacy: .public) \(ns.code, privacy: .public)")
+            return
         }
 
-        // The connection derived this from every line it saw, including
-        // keepalives that produce no rows. Persisting it on every flush —
-        // not only when the loop ends — is what makes a restart resume from
-        // §5.2's point rather than the oldest message, even across a crash.
-        // Guarded by `shouldPersist` so an idle connection, ticking forever,
-        // doesn't re-fetch and re-write a value that hasn't advanced.
-        if let caughtUp = await connection.caughtUpTo, await buffer.shouldPersist(caughtUp) {
-            do {
-                try await store.setCaughtUpTo(caughtUp, forServer: serverID)
-                await buffer.markPersisted(caughtUp)
-            } catch {
-                // NOT error.localizedDescription: a Cocoa or SwiftData
-                // error's description can embed a file's display name or a
-                // stored value, either of which may be server-provided.
-                // Domain and code are fixed constants.
-                let ns = error as NSError
-                Log.store.error("caughtUpTo persist failed: \(ns.domain, privacy: .public) \(ns.code, privacy: .public)")
-            }
+        // Reached only past a successful insert, which is what makes the mark
+        // a statement about what is durably stored. A batch with no keepalive
+        // in it proved nothing and persists nothing, however many messages it
+        // carried.
+        guard let batchMark, await buffer.shouldPersist(batchMark) else { return }
+        do {
+            try await store.setCaughtUpTo(batchMark, forServer: serverID)
+            await buffer.markPersisted(batchMark)
+        } catch {
+            // NOT error.localizedDescription: a Cocoa or SwiftData
+            // error's description can embed a file's display name or a
+            // stored value, either of which may be server-provided.
+            // Domain and code are fixed constants.
+            let ns = error as NSError
+            Log.store.error("caughtUpTo persist failed: \(ns.domain, privacy: .public) \(ns.code, privacy: .public)")
         }
     }
 }
