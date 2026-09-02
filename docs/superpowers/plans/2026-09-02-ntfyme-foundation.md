@@ -2594,7 +2594,8 @@ Expected: all tests pass — 57 tests across 13 test files.
 Nothing personal or secret may have crept into a fixture or a test name:
 
 ```bash
-git grep -inE "vaspian|aloi\.dev/|tk_[A-Za-z0-9]{8}|10\.[0-9]+\.[0-9]+\.[0-9]+" -- . ':!docs/' || echo "clean"
+# Add your own employer/org names and internal hostnames to this pattern.
+git grep -inE "<your-org>|tk_[A-Za-z0-9]{8}|gh[pousr]_[A-Za-z0-9]{16}|10\.[0-9]+\.[0-9]+\.[0-9]+|192\.168\." -- . ':!docs/' || echo "clean"
 ```
 
 Expected: `clean`. Any hit must be sanitized before this task is considered done. (`docs/` is excluded because the spec legitimately discusses the `aloi.dev`-derived bundle identifier.)
