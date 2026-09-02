@@ -220,7 +220,15 @@ func waitUntil(
     let deadline = ContinuousClock.now + timeout
     while ContinuousClock.now < deadline {
         if await condition() { return true }
-        try? await Task.sleep(for: .milliseconds(10))
+        do {
+            try await Task.sleep(for: .milliseconds(10))
+        } catch {
+            // Cancelled: stop polling immediately. A `try?` here would swallow
+            // the cancellation and hot-spin this loop at full CPU until the
+            // deadline elapsed — and every socket test in the suite uses this
+            // helper.
+            break
+        }
     }
     return await condition()
 }
