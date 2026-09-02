@@ -1,4 +1,4 @@
-# Ntfy Bar — a native macOS client for ntfy
+# NtfyMe — a native macOS client for ntfy
 
 **Status:** design approved, pending spec review
 **Date:** 2026-09-02
@@ -34,16 +34,22 @@ server list and an onboarding flow.
 
 | Item | Value | Notes |
 |---|---|---|
-| Product name | Ntfy Bar | **Review item** — easy to change now, painful later |
-| Bundle identifier | `com.github.ctaloi.NtfyBar` | **Review item** — forks must change this |
+| Product name | NtfyMe | Settled |
+| Bundle identifier | `dev.aloi.NtfyMe` | Settled — see below |
+| SwiftPM product / executable | `NtfyMe` | |
 | License | MIT | **Review item** |
+
+The bundle identifier derives from `aloi.dev`, a domain the author controls.
+That is the entire point of a reverse-DNS identifier, and it is why the common
+`com.github.<user>` form is wrong for anything not published by GitHub itself.
 
 The bundle identifier is **not a free knob**. macOS keys both notification
 authorization and Keychain ACLs to the signed bundle identifier, so changing it
 silently revokes granted notification permission and makes stored server
 credentials unreadable. It is therefore a single named constant in the package
 manifest rather than an environment variable, and the README states the
-consequence for anyone forking. See §14 review item 1.
+consequence for anyone forking: change it before your first build, or not at
+all.
 
 ## 3. Architecture
 
@@ -436,9 +442,8 @@ each other.
 
 ## 14. Spec review items
 
-1. Product name (`Ntfy Bar`), bundle identifier, and license. The bundle
-   identifier is worth settling now rather than later: changing it after first
-   run revokes notification permission and orphans Keychain credentials, so it
-   is effectively permanent once anyone installs a build.
+1. License. MIT is proposed; Apache-2.0 is the alternative if an explicit
+   patent grant matters. (Name and bundle identifier are settled: NtfyMe and
+   `dev.aloi.NtfyMe`.)
 2. Whether priority 5 should pursue the critical-alerts entitlement at all.
 3. Retention defaults (30 days / 10,000 messages per topic).
