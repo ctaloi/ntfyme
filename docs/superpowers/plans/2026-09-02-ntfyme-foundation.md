@@ -1300,6 +1300,7 @@ import Testing
     let fired = Signal()
 
     await watchdog.start { await fired.signal() }
+    await sleeper.waitForPendingSleep()
     await sleeper.advanceOnePendingSleep()
 
     #expect(await fired.waitOrTimeout() == true)
@@ -1311,6 +1312,7 @@ import Testing
     let fired = Signal()
 
     await watchdog.start { await fired.signal() }
+    await sleeper.waitForPendingSleep()
     await watchdog.pet()
     await sleeper.advanceOnePendingSleep()
 
@@ -1324,6 +1326,7 @@ import Testing
     let fired = Signal()
 
     await watchdog.start { await fired.signal() }
+    await sleeper.waitForPendingSleep()
     await watchdog.stop()
     await sleeper.advanceOnePendingSleep()
 
@@ -1373,13 +1376,30 @@ public struct SystemSleeper: Sleeper {
 }
 
 /// Test sleeper: every `sleep` suspends until `advanceOnePendingSleep()` is called.
+///
+/// `waitForPendingSleep()` exists to remove a start-order race: the watchdog
+/// arms its timer inside a detached `Task`, so a test that advances the sleeper
+/// immediately after `start()` can run before any sleep has been registered,
+/// advance nothing, and hang. Always wait before advancing.
 public actor ManualSleeper: Sleeper {
     private var pending: [CheckedContinuation<Void, Error>] = []
+    private var waiters: [CheckedContinuation<Void, Never>] = []
 
     public init() {}
 
     public func sleep(for duration: Duration) async throws {
-        try await withCheckedThrowingContinuation { pending.append($0) }
+        try await withCheckedThrowingContinuation { continuation in
+            pending.append(continuation)
+            let toWake = waiters
+            waiters.removeAll()
+            toWake.forEach { $0.resume() }
+        }
+    }
+
+    /// Suspends until at least one sleep is registered.
+    public func waitForPendingSleep() async {
+        guard pending.isEmpty else { return }
+        await withCheckedContinuation { waiters.append($0) }
     }
 
     /// Releases the oldest pending sleep, if any.
@@ -1476,7 +1496,13 @@ A real loopback HTTP server. Tests for Tasks 9 and 10 run over an actual socket,
 
 **Interfaces:**
 - Consumes: nothing from `NtfyKit`.
-- Produces: `actor MockNtfyServer` with `init()`, `func start() async throws -> URL`, `func stop() async`, `func enqueue(line: String) async`, `func closeCurrentConnection() async`, `func setResponse(status: Int, body: String) async`, and `var receivedRequestPaths: [String]`.
+- Produces: `actor MockNtfyServer` with `init()`, `func start() async throws -> URL`, `func stop() async`, `func enqueue(line: String) async`, `func setCloseAfterSending(_:) async`, `func waitForConnection() async`, `func closeCurrentConnection() async`, `func setResponse(status: Int, body: String) async`, and `var receivedRequestPaths: [String]`.
+
+**Framing note.** The server closes the connection after writing its queued
+lines by default (`closeAfterSending = true`). Without that, a client reading
+with `bytes.lines` never sees end-of-stream and the test hangs rather than
+fails. Tests that need a mid-stream drop instead call `setCloseAfterSending(false)`
+and then `closeCurrentConnection()` at the moment they choose.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1491,7 +1517,6 @@ import Testing
 
     await server.enqueue(line: #"{"id":"a1","time":1,"event":"open","topic":"t"}"#)
     await server.enqueue(line: #"{"id":"a2","time":2,"event":"message","topic":"t","message":"hi"}"#)
-    await server.closeCurrentConnection()
 
     let url = base.appending(path: "t").appending(path: "json")
     let (bytes, response) = try await URLSession.shared.bytes(from: url)
@@ -1541,6 +1566,10 @@ actor MockNtfyServer {
     private var pendingLines: [String] = []
     private var status = 200
     private var errorBody: String?
+    /// Close the socket once the queued lines are written. Required for a
+    /// client using `bytes.lines` to observe end-of-stream at all.
+    private var closeAfterSending = true
+    private var connectionWaiters: [CheckedContinuation<Void, Never>] = []
     private(set) var receivedRequestPaths: [String] = []
 
     func start() async throws -> URL {
@@ -1579,6 +1608,16 @@ actor MockNtfyServer {
 
     func enqueue(line: String) { pendingLines.append(line) }
 
+    /// Pass `false` to hold the connection open after writing, so a test can
+    /// drop it mid-stream with `closeCurrentConnection()`.
+    func setCloseAfterSending(_ value: Bool) { closeAfterSending = value }
+
+    /// Suspends until a client has connected.
+    func waitForConnection() async {
+        guard connection == nil else { return }
+        await withCheckedContinuation { connectionWaiters.append($0) }
+    }
+
     func setResponse(status: Int, body: String) {
         self.status = status
         self.errorBody = body
@@ -1591,6 +1630,9 @@ actor MockNtfyServer {
 
     private func accept(_ conn: NWConnection) {
         connection = conn
+        let toWake = connectionWaiters
+        connectionWaiters.removeAll()
+        toWake.forEach { $0.resume() }
         conn.start(queue: .global())
         conn.receive(minimumIncompleteLength: 1, maximumLength: 8192) { [weak self] data, _, _, _ in
             guard let self, let data, let request = String(data: data, encoding: .utf8) else { return }
@@ -1630,7 +1672,10 @@ actor MockNtfyServer {
         """
         let body = pendingLines.map { $0 + "\n" }.joined()
         pendingLines.removeAll()
-        conn.send(content: Data((head + body).utf8), completion: .contentProcessed { _ in })
+        let shouldClose = closeAfterSending
+        conn.send(content: Data((head + body).utf8), completion: .contentProcessed { _ in
+            if shouldClose { conn.cancel() }
+        })
     }
 }
 ```
@@ -1680,7 +1725,6 @@ private func endpoint(_ base: URL) -> NtfyEndpoint {
 
     await server.enqueue(line: Fixtures.openEvent)
     await server.enqueue(line: Fixtures.minimalMessage)
-    await server.closeCurrentConnection()
 
     let request = try endpoint(base).streamRequest(topics: ["alerts"], since: nil)
     var kinds: [NtfyEvent.Kind?] = []
@@ -1699,7 +1743,6 @@ private func endpoint(_ base: URL) -> NtfyEndpoint {
     await server.enqueue(line: Fixtures.openEvent)
     await server.enqueue(line: #"{"id":"broken"#)
     await server.enqueue(line: Fixtures.minimalMessage)
-    await server.closeCurrentConnection()
 
     let request = try endpoint(base).streamRequest(topics: ["alerts"], since: nil)
     var events = 0
@@ -1890,7 +1933,7 @@ private func makeConnection(
     let connection = makeConnection(base: base)
     var received: [NtfyEvent] = []
     let collector = Task {
-        for await event in await connection.events where event.kind == .message {
+        for await event in connection.events where event.kind == .message {
             received.append(event)
             break
         }
@@ -1947,9 +1990,8 @@ private func makeConnection(
     let sleeper = ManualSleeper()
     let connection = makeConnection(base: base, sleeper: sleeper)
     await connection.start()
-    try await Task.sleep(for: .milliseconds(300))
-    await server.closeCurrentConnection()
-    try await Task.sleep(for: .milliseconds(300))
+    // The server closes after writing, so the stream ends on its own.
+    try await Task.sleep(for: .milliseconds(500))
 
     if case .backoff = await connection.state {} else {
         Issue.record("expected .backoff, got \(await connection.state)")
@@ -1968,9 +2010,7 @@ private func makeConnection(
     let sleeper = ManualSleeper()
     let connection = makeConnection(base: base, sleeper: sleeper)
     await connection.start()
-    try await Task.sleep(for: .milliseconds(300))
-    await server.closeCurrentConnection()
-    try await Task.sleep(for: .milliseconds(300))
+    try await Task.sleep(for: .milliseconds(500))
 
     await server.enqueue(line: Fixtures.openEvent)
     await connection.reconnectNow()
@@ -2028,12 +2068,14 @@ public actor ServerConnection {
 
     private var runTask: Task<Void, Never>?
     private var attempt = 0
-    private var continuation: AsyncStream<NtfyEvent>.Continuation?
-    private lazy var eventStream: AsyncStream<NtfyEvent> = {
-        AsyncStream { self.continuation = $0 }
-    }()
 
-    public var events: AsyncStream<NtfyEvent> { eventStream }
+    /// Created eagerly in `init`, not lazily on first access. A lazy stream
+    /// leaves `continuation` nil until something reads `events`, so any message
+    /// arriving before the first read is silently dropped — and whether that
+    /// happens depends on task scheduling. `AsyncStream` buffers by default, so
+    /// an eager stream loses nothing.
+    private let continuation: AsyncStream<NtfyEvent>.Continuation
+    public nonisolated let events: AsyncStream<NtfyEvent>
 
     public init(
         endpoint: NtfyEndpoint,
@@ -2045,6 +2087,10 @@ public actor ServerConnection {
         watchdogTimeout: Duration = .seconds(90),
         cacheWindow: TimeInterval = 12 * 3600
     ) {
+        var capturedContinuation: AsyncStream<NtfyEvent>.Continuation!
+        self.events = AsyncStream { capturedContinuation = $0 }
+        self.continuation = capturedContinuation
+
         self.endpoint = endpoint
         self.topics = topics
         self.watermarks = watermarks
@@ -2125,7 +2171,7 @@ public actor ServerConnection {
                 attempt = 0
             case .message:
                 record(event)
-                continuation?.yield(event)
+                continuation.yield(event)
             case .keepalive, .pollRequest, nil:
                 continue
             }
