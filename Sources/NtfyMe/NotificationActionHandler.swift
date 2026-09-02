@@ -10,12 +10,20 @@ enum NotificationActionHandler {
     /// A dedicated session for `http` actions, not `.shared`: the target is
     /// attacker-chosen (see `NotificationDecision`'s header/method/scheme
     /// constraints), so the request must not ride the user's ambient
-    /// credentials toward it — no shared cookie jar, no cookies set from
-    /// responses, no additional headers merged in from anywhere else.
+    /// credentials toward it. `.ephemeral` alone is not enough to guarantee
+    /// that — its own in-memory jar and credential store would still answer
+    /// a cookie or a Basic/Digest challenge from the attacker's host — so
+    /// every one of these is set explicitly rather than relying on what the
+    /// base configuration happens to default to: no cookie storage, cookies
+    /// from a response never accepted or stored, no credential storage to
+    /// answer an auth challenge, and no additional headers merged in from
+    /// anywhere else.
     private static let session: URLSession = {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.httpCookieStorage = nil
         configuration.httpShouldSetCookies = false
+        configuration.httpCookieAcceptPolicy = .never
+        configuration.urlCredentialStorage = nil
         configuration.httpAdditionalHeaders = [:]
         return URLSession(configuration: configuration)
     }()
