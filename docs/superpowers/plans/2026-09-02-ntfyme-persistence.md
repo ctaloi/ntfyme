@@ -12,6 +12,15 @@
 
 **Previous plan:** `docs/superpowers/plans/2026-09-02-ntfyme-foundation.md` (Stages 1–2, merged). Its "Measured ntfy behavior" table still applies.
 
+> **Superseded in one respect.** This plan's Task 3 text, and the code listings
+> reproduced in it, say `caughtUpTo` advances on "every line carrying a server
+> `time`". The whole-branch review disproved that: ntfy sends the `open` line
+> *before* it replays history, so treating `open` as a delivery proof silently
+> skipped the un-replayed remainder after a mid-replay drop. The shipped code
+> advances only on `keepalive`. See spec §5.2, which was corrected, and commit
+> `32fff32`. The listings below are left as written — they record what was
+> planned, and editing them would falsify that record.
+
 ## Global Constraints
 
 Copied from the spec and from Stage 1–2's merged state. Every task's requirements implicitly include these.
