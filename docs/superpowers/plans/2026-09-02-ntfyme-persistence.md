@@ -497,8 +497,8 @@ Add a stored property and advance it wherever a line arrives. In `ServerConnecti
 In the stream loop, immediately after the existing cancellation guard that follows `await watchdog.pet()`, and **before** the `guard case .event` filter is applied to non-message kinds, advance it for every event that carries a time:
 
 ```swift
-            if case .event(let element) = element, element.time > 0 {
-                let lineTime = element.date
+            if case .event(let line) = element, line.time > 0 {
+                let lineTime = line.date
                 if caughtUpTo == nil || lineTime > caughtUpTo! { caughtUpTo = lineTime }
             }
 ```
@@ -963,7 +963,16 @@ public final class Attachment {
 }
 ```
 
-Keep the Task 4 probe's `Message` initializer working, or update those three tests to the real initializer — your choice, but say which in your report.
+**Task 4's three probe tests will stop compiling**, because they use the
+temporary initializer `Message(uniqueKey:messageID:topic:serverID:time:body:)`
+that this task replaces. Update all three to the real initializer
+`Message(serverID:topic:messageID:time:body:)`, which derives `uniqueKey`
+itself. Do not keep a second initializer alive to avoid the edit — one way to
+construct a `Message` is the point, and a hand-passed `uniqueKey` could
+disagree with the fields it is supposed to summarize.
+
+The probe's assertions must not change: they record measured SwiftData
+behavior, and altering them to fit would discard the measurement.
 
 - [ ] **Step 4: Write the snapshot type**
 
@@ -1171,7 +1180,19 @@ Expected: build error — `cannot find 'MessageStore' in scope`.
 
 - [ ] **Step 3: Write the store**
 
-`Sources/NtfyKit/Persistence/MessageStore.swift`:
+First add the log category this file uses. In `Sources/NtfyKit/Log.swift`, add
+alongside the existing `connection` and `stream` categories:
+
+```swift
+    /// Persistence: inserts, watermark advances, retention.
+    static let store = Logger(subsystem: subsystem, category: "store")
+```
+
+and extend that file's doc comment to cover the new site — it states what each
+log site may interpolate, and a new category that is not described there makes
+the comment wrong.
+
+Then `Sources/NtfyKit/Persistence/MessageStore.swift`:
 
 ```swift
 import Foundation
@@ -1571,7 +1592,7 @@ Append to `MessageStore`:
     }
 ```
 
-Add a `store` category to `Log.swift` alongside the existing ones, and update that file's doc comment to cover the new site.
+`Log.store` already exists — Task 6 added it. Do not add it again.
 
 - [ ] **Step 5: Run and verify**
 
