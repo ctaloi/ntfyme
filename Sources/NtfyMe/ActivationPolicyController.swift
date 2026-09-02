@@ -46,7 +46,8 @@ final class ActivationPolicyController {
     /// Call directly when opening a window, so the Dock icon and menu bar
     /// appear as the window does rather than one notification later.
     func update() {
-        let wantsRegular = NSApp.windows.contains { $0.isVisible && $0.canBecomeMain }
+        let wantsRegular = Self.wantsRegular(
+            windows: NSApp.windows.map { ($0.isVisible, $0.canBecomeMain) })
         let desired: NSApplication.ActivationPolicy = wantsRegular ? .regular : .accessory
         guard NSApp.activationPolicy() != desired else { return }
         NSApp.setActivationPolicy(desired)
@@ -57,4 +58,18 @@ final class ActivationPolicyController {
             NSApp.activate()
         }
     }
+
+    /// The policy decision, split out from AppKit so it can be tested without
+    /// a window server. `true` means the app should show a Dock icon.
+    ///
+    /// Both conditions are required. `isVisible` alone would keep the Dock
+    /// icon after a window is ordered out, and `canBecomeMain` alone would
+    /// summon one for the status item's window and the popover's window,
+    /// which are real `NSWindow`s that are frequently visible.
+    nonisolated static func wantsRegular(
+        windows: [(isVisible: Bool, canBecomeMain: Bool)]
+    ) -> Bool {
+        windows.contains { $0.isVisible && $0.canBecomeMain }
+    }
+
 }

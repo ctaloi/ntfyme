@@ -12,5 +12,6 @@ let package = Package(
         .target(name: "NtfyKit"),
         .executableTarget(name: "NtfyMe", dependencies: ["NtfyKit"]),
         .testTarget(name: "NtfyKitTests", dependencies: ["NtfyKit"]),
+        .testTarget(name: "NtfyMeTests", dependencies: ["NtfyMe"]),
     ]
 )

@@ -175,7 +175,15 @@ final class AppGraph {
     /// view rendering, so it reads the last state the coordinator published
     /// rather than awaiting a fresh one.
     func historyStatus(forServer id: UUID) -> HistoryConnectionStatus {
-        guard let state = lastKnownStates[id] else { return .unknown }
+        Self.historyStatus(for: lastKnownStates[id])
+    }
+
+    /// The state mapping, split out so it can be tested without a graph.
+    /// `nil` is `.unknown` — a server whose state has not been fetched yet is
+    /// not the same as one known to be disconnected, and showing the latter
+    /// would make a healthy server look broken for the first refresh interval.
+    nonisolated static func historyStatus(for state: ConnectionState?) -> HistoryConnectionStatus {
+        guard let state else { return .unknown }
         switch state {
         case .open: return .connected
         case .connecting, .backoff: return .connecting
