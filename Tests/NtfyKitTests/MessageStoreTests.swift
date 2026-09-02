@@ -1,5 +1,8 @@
 import Foundation
 import SwiftData
+#if canImport(Darwin)
+import Darwin
+#endif
 import Testing
 @testable import NtfyKit
 
@@ -46,6 +49,99 @@ private func makeStore() throws -> (MessageStore, UUID) {
     #expect(second.inserted == 1)
     #expect(second.duplicatesSkipped == 1)
     #expect(try await store.messageCount() == 3)
+}
+
+/// A thrown `save()` must not leave the just-inserted `Message` objects
+/// pending in the context. If it did, `Ingest.Buffer`'s retry of the same
+/// batch would run its duplicate-detection fetch against a context that
+/// already contains them (`FetchDescriptor.includePendingChanges` defaults
+/// to `true`), classify every event as an existing duplicate, and report an
+/// empty `stored` — so the messages would still end up saved once the
+/// retry's own `save()` succeeds, but the notification hook that reads
+/// `stored` would never fire for them. That is a silent loss of exactly the
+/// signal this app exists to deliver.
+///
+/// This needs a `save()` that genuinely throws, not a mock: the project has
+/// twice declined to add a `MessageWriting` seam for exactly this kind of
+/// injection, so there is no protocol to substitute here. Two techniques
+/// were tried and rejected before this one:
+/// - Revoking POSIX write permission on an on-disk store's files/directory
+///   *after* opening them once: permission bits are checked at `open(2)`
+///   time only, so a write through the already-open connection still
+///   succeeds — no failure is produced at all.
+/// - Opening a *fresh* connection to that now-permission-revoked store: this
+///   does make `save()` throw, but SwiftData bakes
+///   `NSReadOnlyPersistentStoreOption` into that connection at open time —
+///   restoring the file permissions afterward does not un-set it, so a
+///   retry on the *same* store keeps behaving as a permanently read-only
+///   store rather than as a transient failure that cleared. Empirically,
+///   under that condition `rollback()` does not make the pending insert
+///   disappear from a subsequent `includePendingChanges` fetch either — an
+///   artifact of the technique, not evidence about the fix, since a
+///   deliberately-never-saved insert *does* correctly disappear after
+///   `rollback()` on a normal writable context (verified separately).
+/// `RLIMIT_FSIZE` avoids both problems: it caps how large a file this
+/// process may write to *right now*, checked on every `write(2)`, and never
+/// touches how the store itself is configured — the connection stays a
+/// completely ordinary read-write one throughout, so restoring the limit
+/// affects the very next write, not a cached decision from `open(2)` time.
+/// `SIGXFSZ` is ignored first because exceeding the limit sends that signal
+/// by default, which would kill the test process outright instead of
+/// letting the `write(2)` call return `EFBIG` for SQLite to surface as a
+/// normal thrown error.
+@Test func aFailedSaveRollsBackSoARetriedBatchIsNotMistakenForADuplicate() async throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("MessageStoreTests-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    let storeURL = directory.appendingPathComponent("store.sqlite")
+    let serverID = UUID()
+    let container = try ModelContainer(
+        for: Message.self, Subscription.self, Server.self, Attachment.self,
+        configurations: ModelConfiguration(url: storeURL))
+    let setupContext = ModelContext(container)
+    let server = Server(id: serverID, name: "Example", baseURLString: "https://ntfy.example.com")
+    setupContext.insert(server)
+    setupContext.insert(Subscription(topic: "alerts", server: server))
+    try setupContext.save()   // Creates the on-disk files at their baseline size.
+
+    let previousXFSZHandler = signal(SIGXFSZ, SIG_IGN)
+    var originalLimit = rlimit()
+    getrlimit(RLIMIT_FSIZE, &originalLimit)
+    defer {
+        setrlimit(RLIMIT_FSIZE, &originalLimit)
+        signal(SIGXFSZ, previousXFSZHandler)
+    }
+
+    let store = MessageStore(modelContainer: container)
+    let batch = [event("a", time: 100, body: "one")]
+
+    // Cap file growth at the baseline size reached above — the very next
+    // write that would grow the store fails with EFBIG.
+    let baselineFiles = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+    let baselineSize = try baselineFiles
+        .map { try FileManager.default.attributesOfItem(atPath: $0.path)[.size] as? Int ?? 0 }
+        .max() ?? 0
+    var tightLimit = rlimit()
+    tightLimit.rlim_cur = rlim_t(baselineSize)
+    tightLimit.rlim_max = originalLimit.rlim_max
+    #expect(setrlimit(RLIMIT_FSIZE, &tightLimit) == 0)
+
+    await #expect(throws: (any Error).self) {
+        try await store.insert(batch, serverID: serverID)
+    }
+
+    // Lift the cap — mirroring however a real transient I/O failure would
+    // clear — and retry the SAME batch, unchanged, on the SAME store (same
+    // actor, same `modelContext`), exactly as `Ingest.Buffer` does after a
+    // failed flush.
+    #expect(setrlimit(RLIMIT_FSIZE, &originalLimit) == 0)
+
+    let retry = try await store.insert(batch, serverID: serverID)
+    #expect(retry.stored.map(\.id) == ["a"])
+    #expect(retry.duplicatesSkipped == 0)
+    #expect(try await store.messageCount() == 1)
 }
 
 /// Same message id on two different topics is two different messages.

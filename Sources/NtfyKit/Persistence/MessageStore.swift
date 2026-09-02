@@ -39,6 +39,21 @@ public actor MessageStore {
             var descriptor = FetchDescriptor<Message>(
                 predicate: #Predicate { $0.uniqueKey == key })
             descriptor.fetchLimit = 1
+            // `includePendingChanges` (default `true`) is not needed here —
+            // within this call, a message is only ever inserted into
+            // `modelContext` *after* this loop finishes, and across calls a
+            // successful `insert` always `save()`s before returning, so
+            // anything genuinely a duplicate is already committed and
+            // visible regardless of this flag. Turning it off matters for a
+            // different reason: after a call whose `save()` threw and was
+            // rolled back, `includePendingChanges: true` can still report a
+            // row that is in neither the context's pending-changes set
+            // (confirmed empirically: `rollback()` leaves `hasChanges ==
+            // false` and an empty `insertedModelsArray`) nor the persisted
+            // store (confirmed against a second, independent connection to
+            // the same file) — a `FetchDescriptor` defect, not a `rollback()`
+            // failure, that otherwise reintroduces this exact bug on retry.
+            descriptor.includePendingChanges = false
             if try modelContext.fetch(descriptor).first != nil { existing.insert(key) }
         }
 
@@ -79,8 +94,38 @@ public actor MessageStore {
             }
         }
 
-        try advanceWatermarks(newest, ids: newestID, serverID: serverID)
-        try modelContext.save()
+        do {
+            try advanceWatermarks(newest, ids: newestID, serverID: serverID)
+            try modelContext.save()
+        } catch {
+            // A thrown `advanceWatermarks` or `save()` leaves the `Message`
+            // objects just inserted above — and any watermark mutation
+            // `advanceWatermarks` already made — sitting in `modelContext`
+            // as uncommitted pending changes; nothing here rolls them back
+            // on its own. Left there, `Ingest.Buffer` requeues this same
+            // batch and retries it unchanged on the next tick, and that
+            // retry's own duplicate-detection fetch would see them and
+            // classify every event as an existing duplicate — the messages
+            // eventually land in the database (the retry's `save()` succeeds
+            // once the transient failure clears) but `stored` comes back
+            // empty, so the notification hook that reads it never fires: a
+            // silent loss of the exact signal this app exists to deliver.
+            //
+            // `rollback()` does clean the object graph — verified
+            // empirically, `hasChanges` is `false` and `insertedModelsArray`
+            // is empty immediately after. It is NOT, by itself, what closes
+            // the hole above: a `FetchDescriptor` with the default
+            // `includePendingChanges: true`, run on this SAME context right
+            // after, can still report one of these rows as existing even
+            // though it is in neither the (now-empty) pending-changes set
+            // nor the persisted store — confirmed against a second,
+            // independent connection to the same file. That is what the
+            // existence-check fetch above turns off explicitly; `rollback()`
+            // here is still correct and still needed (it undoes the
+            // watermark mutations too), just not sufficient on its own.
+            modelContext.rollback()
+            throw error
+        }
         return InsertResult(inserted: stored.count, duplicatesSkipped: skipped, stored: stored)
     }
 
