@@ -19,7 +19,13 @@ func waitUntil(
     let deadline = ContinuousClock.now + timeout
     while ContinuousClock.now < deadline {
         if await condition() { return true }
-        try? await Task.sleep(for: .milliseconds(10))
+        do {
+            try await Task.sleep(for: .milliseconds(10))
+        } catch {
+            // Cancelled: stop polling immediately rather than spinning out the
+            // remaining deadline at full CPU.
+            break
+        }
     }
     return await condition()
 }

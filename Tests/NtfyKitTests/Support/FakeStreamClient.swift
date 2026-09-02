@@ -11,6 +11,11 @@ actor FakeStreamClient: StreamClient {
     }
 
     private var scripts: [Script] = []
+    /// Updated inside the `Task` spawned by `stream(_:)`, not synchronously
+    /// within it — `take(_:)` is an actor hop away from the `nonisolated`
+    /// call. So these lag a `stream(_:)` call by one hop: never read either
+    /// immediately after `start()` without polling (`waitUntil`) for the
+    /// value to land.
     private(set) var requestCount = 0
     private(set) var lastRequest: URLRequest?
 
