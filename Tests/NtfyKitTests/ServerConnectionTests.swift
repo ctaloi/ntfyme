@@ -190,6 +190,70 @@ private func waitUntil(
     await connection.stop()
 }
 
+/// `stop()` must be final even when the run loop is mid-stream.
+///
+/// `await watchdog.pet()` is a cross-actor hop, so `stop()` can run to
+/// completion while the loop sits on it, and `pet()` is non-async-throwing —
+/// nothing stops the loop resuming afterwards and writing `state = .open` over
+/// `.idle`. Nothing is left running to correct that, so the connection would
+/// report itself connected forever.
+///
+/// The burst is what puts the loop mid-stream when `stop()` lands: every line
+/// is another hop, and every `open` line another chance to write state.
+///
+/// Both numbers below were calibrated against the unguarded code rather than
+/// guessed, because each governs a different half of the race:
+///
+/// - The **burst** has to still be in flight when `stop()` lands. `waitUntil`
+///   polls on a 10ms tick, so a short burst is long since drained by then and
+///   the loop is parked in `next()`, where cancellation is handled correctly
+///   and the bug cannot show. Measured per cycle: 400 lines caught it 5 times
+///   in 10, 1500 caught it 10 times in 10.
+/// - The **repeat** is needed because one `stop()` offers exactly one chance.
+///   The loop's resumption from `pet()` and `stop()`'s tail both end up queued
+///   on this actor and which runs first is scheduler-dependent, so a single
+///   cycle is a coin flip (measured 8 catches in 20). Only one resumption is
+///   possible after cancellation, so power comes from repeating.
+@Test func stopIsFinalEvenWithEventsInFlight() async throws {
+    let server = MockNtfyServer()
+    let base = try await server.start()
+    defer { Task { await server.stop() } }
+    await server.setCloseAfterSending(false)
+
+    for _ in 0..<12 {
+        await server.enqueue(line: Fixtures.openEvent)
+        for _ in 0..<1500 {
+            await server.enqueue(line: Fixtures.minimalMessage)
+            await server.enqueue(line: Fixtures.openEvent)
+        }
+
+        let collected = EventCollector()
+        let connection = makeConnection(base: base)
+        let collector = Task {
+            for await event in connection.events { await collected.append(event) }
+        }
+        defer { collector.cancel() }
+
+        await connection.start()
+        // Stop while the burst is still being consumed, not before it starts.
+        #expect(await waitUntil { await collected.events.isEmpty == false })
+        await connection.stop()
+
+        #expect(await connection.state == .idle)
+        // And it must *stay* idle: the offending write lands on the loop's next
+        // resumption, which is after stop() has already returned.
+        try await Task.sleep(for: .milliseconds(20))
+        #expect(await connection.state == .idle)
+    }
+
+    // The matching "no events yielded after stop()" half is deliberately not
+    // asserted by counting. `events` is a buffered AsyncStream drained by a
+    // separate task, so a count still rising after stop() is legitimate drain
+    // of pre-stop yields, indistinguishable from a post-stop yield without a
+    // seam into the actor. The single guard above governs both the state write
+    // and the yield, so the state assertion pins both.
+}
+
 /// A stopped connection must stay stopped. Sleep/wake and network-path changes
 /// fan `reconnectNow()` out across every server without filtering, so a server
 /// the user deliberately turned off would otherwise silently come back the

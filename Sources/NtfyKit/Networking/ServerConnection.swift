@@ -90,6 +90,9 @@ public actor ServerConnection {
                 guard !Task.isCancelled else { return }
                 await waitBeforeRetry()
             } catch NtfyStreamClient.Error.unauthorized {
+                // Guarded like every other branch: a 401 already in flight when
+                // stop() ran must not write state over `.idle` on its way out.
+                guard !Task.isCancelled else { return }
                 state = .unauthorized
                 await watchdog.stop()
                 return
@@ -142,6 +145,15 @@ public actor ServerConnection {
         do {
             for try await element in client.stream(request) {
                 await watchdog.pet()
+                // `pet()` is a cross-actor hop, so `stop()` can run to
+                // completion while this loop is suspended on it — and `pet()`
+                // is non-async-throwing, so nothing stops this loop resuming
+                // afterwards. Without this guard the resumed iteration writes
+                // `state = .open` over `stop()`'s `.idle`, or yields an event
+                // to subscribers, *after* the connection was stopped — and no
+                // loop is left running to correct it, so a stopped connection
+                // reports itself connected forever.
+                guard !Task.isCancelled else { return }
                 guard case .event(let event) = element else { continue }
 
                 switch event.kind {
