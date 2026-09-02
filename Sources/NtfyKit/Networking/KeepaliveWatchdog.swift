@@ -19,25 +19,35 @@ public struct SystemSleeper: Sleeper {
 /// arms its timer inside a detached `Task`, so a test that advances the sleeper
 /// immediately after `start()` can run before any sleep has been registered,
 /// advance nothing, and hang. Always wait before advancing.
+///
+/// A superseded arm (e.g. a `pet()` or a second `start()` on a live watchdog)
+/// leaves its continuation in `pending` forever, since nothing ever resumes it —
+/// there is no production equivalent of a sleep nobody ever advances. This is a
+/// test-double artifact, not a leak to fix.
 public actor ManualSleeper: Sleeper {
     private var pending: [CheckedContinuation<Void, Error>] = []
-    private var waiters: [CheckedContinuation<Void, Never>] = []
+    private var waiters: [(threshold: Int, continuation: CheckedContinuation<Void, Never>)] = []
 
     public init() {}
 
     public func sleep(for duration: Duration) async throws {
         try await withCheckedThrowingContinuation { continuation in
             pending.append(continuation)
-            let toWake = waiters
-            waiters.removeAll()
-            toWake.forEach { $0.resume() }
+            let met = waiters.filter { pending.count >= $0.threshold }
+            waiters.removeAll { pending.count >= $0.threshold }
+            met.forEach { $0.continuation.resume() }
         }
     }
 
     /// Suspends until at least one sleep is registered.
     public func waitForPendingSleep() async {
-        guard pending.isEmpty else { return }
-        await withCheckedContinuation { waiters.append($0) }
+        await waitForPendingSleeps(atLeast: 1)
+    }
+
+    /// Suspends until at least `count` sleeps are registered.
+    public func waitForPendingSleeps(atLeast count: Int) async {
+        guard pending.count < count else { return }
+        await withCheckedContinuation { waiters.append((threshold: count, continuation: $0)) }
     }
 
     /// Releases the oldest pending sleep, if any.
