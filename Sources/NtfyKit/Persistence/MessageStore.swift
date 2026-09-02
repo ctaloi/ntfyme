@@ -208,6 +208,29 @@ public actor MessageStore {
         for message in doomed {
             if let directory = attachmentsDirectory,
                let filename = message.attachment?.localFilename {
+                // `localFilename` must be a bare path component. No
+                // downloader writes this field yet, but the safety of a
+                // `removeItem` call should not depend on every future writer
+                // being careful — a guard here holds regardless of who sets
+                // the field or what they intended. Reject rather than
+                // sanitize: stripping "../" invites a double-encoding
+                // argument, and a non-component filename is a bug in
+                // whoever wrote it, not something to repair. The message is
+                // past retention either way, so the row is still deleted —
+                // only the file operation is declined, and it does not
+                // count toward `attachmentFilesDeleted`.
+                guard !filename.isEmpty,
+                      !filename.contains("/"),
+                      !filename.contains("\\"),
+                      filename != ".", filename != ".."
+                else {
+                    // Never interpolate `filename` itself: it is the same
+                    // server-provided value class `Log.store`'s doc comment
+                    // already bars from this log line.
+                    Log.store.error("refusing to delete an attachment with a non-component filename")
+                    modelContext.delete(message)
+                    continue
+                }
                 let url = directory.appendingPathComponent(filename)
                 do {
                     try FileManager.default.removeItem(at: url)

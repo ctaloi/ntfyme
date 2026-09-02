@@ -47,6 +47,12 @@ import os
 ///   `Attachment.localFilename` — content that ultimately traces back to a
 ///   server-provided attachment name, the same category `messageID` is
 ///   barred for above.
+/// - `MessageStore.prune`'s non-component-filename site is a string literal
+///   only — it deliberately does not interpolate `filename`, for the same
+///   reason as the site above: that value is the same server-provided
+///   attachment-name content, and here it is additionally the value that
+///   just failed a path-component check, making it worth no more trust in a
+///   log line than anywhere else.
 ///
 /// `privacy: .public` is used deliberately, to keep these labels readable in
 /// `log stream`. The alternative is not a safety net: `.private` hides a value
