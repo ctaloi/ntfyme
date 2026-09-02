@@ -82,8 +82,15 @@ final class AppGraph {
             pathMonitor: SystemPathMonitor(),
             // The hook fires inside the flush that stored the batch, with the
             // rows that flush actually wrote. See `Ingest.performFlush`.
-            ingest: Ingest(store: store) { events, serverID in
+            ingest: Ingest(store: store) { [weak self] events, serverID in
                 await router.handleStored(events, serverID: serverID)
+                // The badge and unread count are pull-only — there is no store
+                // change stream — so without this they are only ever as fresh
+                // as the refresh timer, and a message could sit in the archive
+                // for up to 30 seconds before the menu bar admitted it existed.
+                // `weak`: the coordinator owns the ingest that owns this
+                // closure, and the graph owns the coordinator.
+                await self?.notifyStoredBatch()
             })
         self.coordinator = coordinator
         await coordinator.start()
@@ -209,6 +216,16 @@ final class AppGraph {
     /// one preferences file and one Keychain service.
     func makeSettingsModel() -> SettingsModel {
         SettingsModel(store: store, preferences: preferences, keychain: keychain)
+    }
+
+
+    /// Called after a batch is stored and its notifications raised, so the
+    /// menu bar reflects a new message immediately rather than at the next
+    /// timer tick. Set by `AppDelegate`, which owns the status item.
+    var onStoredBatch: () -> Void = {}
+
+    private func notifyStoredBatch() {
+        onStoredBatch()
     }
 
 }

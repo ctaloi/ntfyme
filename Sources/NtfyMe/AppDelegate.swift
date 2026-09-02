@@ -81,6 +81,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             menuBar.onOpenSettings = { [weak self] in self?.openSettings() }
             self.menuBar = menuBar
 
+            // Refresh as soon as a batch lands, not at the next timer tick.
+            graph.onStoredBatch = { [weak menuBar] in
+                Task { await menuBar?.refreshNow() }
+            }
+
             Task {
                 await graph.start()
                 await graph.refreshConnectionStates()
