@@ -155,6 +155,29 @@ public actor MessageStore {
         try modelContext.fetchCount(FetchDescriptor<Message>())
     }
 
+    /// Every configured server, as `Sendable` snapshots, ordered by `sortOrder`.
+    ///
+    /// A row whose `baseURLString` does not parse is skipped and logged rather
+    /// than throwing: one corrupt row must not stop every other server from
+    /// connecting.
+    public func servers() throws -> [ServerRecordSnapshot] {
+        let rows = try modelContext.fetch(
+            FetchDescriptor<Server>(sortBy: [SortDescriptor(\.sortOrder)]))
+
+        return rows.compactMap { row in
+            guard let url = row.baseURL else {
+                Log.store.error("skipping a server row whose base URL does not parse")
+                return nil
+            }
+            return ServerRecordSnapshot(
+                id: row.id, name: row.name, baseURL: url,
+                authKindRaw: row.authKindRaw, caughtUpTo: row.caughtUpTo,
+                cacheWindowSeconds: row.cacheWindowSeconds,
+                watermarks: row.subscriptions.map(\.watermark),
+                sortOrder: row.sortOrder)
+        }
+    }
+
     private func server(_ id: UUID) throws -> Server? {
         var descriptor = FetchDescriptor<Server>(predicate: #Predicate { $0.id == id })
         descriptor.fetchLimit = 1
