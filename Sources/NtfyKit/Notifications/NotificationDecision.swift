@@ -28,6 +28,34 @@ public enum NotificationDecision: Sendable, Equatable {
     /// ntfy allows at most three action buttons; more is a malformed message.
     private static let maxActions = 3
 
+    /// On public ntfy.sh, anyone who knows a topic name can publish to it
+    /// (spec §9 — a topic name is effectively a password), so every URL,
+    /// method, header and copy value below is attacker-controlled input, not
+    /// a trusted server value, and is constrained accordingly.
+
+    /// A URL macOS will actually open safely. `file://` reads local files;
+    /// a custom scheme can launch another app. Restricting to the schemes a
+    /// browser would treat as ordinary web content removes both.
+    private static let allowedURLSchemes: Set<String> = ["http", "https"]
+
+    /// The only methods an `http` action may use. Anything else — `TRACE`,
+    /// a made-up verb — drops the action rather than being forwarded as-is.
+    private static let allowedHTTPMethods: Set<String> = ["GET", "POST", "PUT", "DELETE"]
+
+    /// Header names an action must not set: credentials that would leak to
+    /// an attacker-chosen host (`Authorization`, `Cookie`), and hop-by-hop or
+    /// framing headers `URLRequest` should own, not a message payload
+    /// (`Host`, `Content-Length`, `Transfer-Encoding`, `Proxy-*`,
+    /// `X-Forwarded-*`). Matched case-insensitively.
+    private static let deniedHeaderNames: Set<String> = [
+        "authorization", "cookie", "host", "content-length", "transfer-encoding",
+    ]
+    private static let deniedHeaderPrefixes = ["proxy-", "x-forwarded-"]
+
+    /// A copy value long enough to be useful, short enough to not be abused
+    /// as a way to dump arbitrary data onto the clipboard.
+    private static let maxCopyValueLength = 1024
+
     public static func decide(event: NtfyEvent, serverID: UUID,
                               settings: TopicAlertSettings,
                               preferences: Preferences) -> NotificationDecision {
@@ -53,7 +81,7 @@ public enum NotificationDecision: Sendable, Equatable {
             playsSound: priority.rawValue >= NtfyPriority.default.rawValue,
             categoryIdentifier: actions.isEmpty ? nil : categoryIdentifier(for: actions),
             actions: actions,
-            clickURL: event.click.flatMap(URL.init(string:)),
+            clickURL: sanitizedURL(event.click),
             attachmentURL: event.attachment.flatMap { URL(string: $0.url) }))
     }
 
@@ -69,23 +97,59 @@ public enum NotificationDecision: Sendable, Equatable {
         actions.prefix(maxActions).compactMap { action in
             switch action.kind {
             case .view:
-                guard let raw = action.url, let url = URL(string: raw) else { return nil }
+                guard let url = sanitizedURL(action.url) else { return nil }
                 return PresentableAction(id: action.id, title: action.label, kind: .view(url: url))
             case .copy:
                 guard let value = action.value else { return nil }
-                return PresentableAction(id: action.id, title: action.label, kind: .copy(value: value))
+                return PresentableAction(
+                    id: action.id, title: action.label, kind: .copy(value: sanitizedCopyValue(value)))
             case .http:
-                guard let raw = action.url, let url = URL(string: raw) else { return nil }
+                guard let url = sanitizedURL(action.url) else { return nil }
+                let method = (action.method ?? "POST").uppercased()
+                guard allowedHTTPMethods.contains(method) else { return nil }
                 return PresentableAction(
                     id: action.id, title: action.label,
-                    kind: .http(url: url, method: action.method ?? "POST",
-                                headers: action.headers ?? [:], body: action.body))
+                    kind: .http(url: url, method: method,
+                                headers: sanitizedHeaders(action.headers), body: action.body))
             case .broadcast, nil:
                 // Android-only, or a kind this version does not know. Dropping
                 // the button is better than showing an inert one.
                 return nil
             }
         }
+    }
+
+    /// `nil` for a missing, unparseable, or unsafely-schemed URL — see
+    /// `allowedURLSchemes`'s doc comment. Used for both action URLs (drops
+    /// the action) and `clickURL` (nulls the click, keeps the notification).
+    private static func sanitizedURL(_ raw: String?) -> URL? {
+        guard let raw, let url = URL(string: raw),
+              let scheme = url.scheme?.lowercased(), allowedURLSchemes.contains(scheme)
+        else { return nil }
+        return url
+    }
+
+    /// Drops any header a message should not be able to set — see
+    /// `deniedHeaderNames`'s doc comment. Everything else passes through
+    /// unchanged: the header allow-list this app cares about is small and
+    /// closed, unlike the set of headers a legitimate action might send.
+    private static func sanitizedHeaders(_ headers: [String: String]?) -> [String: String] {
+        guard let headers else { return [:] }
+        return headers.filter { key, _ in
+            let lower = key.lowercased()
+            return !deniedHeaderNames.contains(lower)
+                && !deniedHeaderPrefixes.contains { lower.hasPrefix($0) }
+        }
+    }
+
+    /// Strips ASCII control characters — newline and carriage return above
+    /// all, since a pasted one can execute as a shell command — and caps the
+    /// length. Sanitizes rather than drops: a truncated, control-free copy
+    /// value is still useful; a rejected action is not more useful than a
+    /// safe one.
+    private static func sanitizedCopyValue(_ value: String) -> String {
+        let stripped = String(value.unicodeScalars.filter { $0.value >= 0x20 && $0.value != 0x7F })
+        return String(stripped.prefix(maxCopyValueLength))
     }
 
     /// Stable for a given action shape, different for a different one. macOS

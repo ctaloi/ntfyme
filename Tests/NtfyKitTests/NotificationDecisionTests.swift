@@ -140,3 +140,92 @@ private let sid = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
     #expect(r.title == "deploys")
     #expect(r.body == "B")
 }
+
+// MARK: - Security: topics are effectively passwords on public ntfy.sh (spec §9),
+// so every action URL, method, header, and copy value below is attacker input.
+
+/// `file://` would let a message read a local file via the button's target;
+/// restricting to http/https removes that without losing the button entirely
+/// for a well-formed sibling action.
+@Test func aViewActionWithAnUnsupportedSchemeIsDroppedAndOthersSurvive() {
+    let actions = """
+    [{"id":"a1","action":"view","label":"Local","url":"file:///etc/passwd"},
+     {"id":"a2","action":"view","label":"Safe","url":"https://example.com/x"}]
+    """
+    guard case .present(let r) = NotificationDecision.decide(
+        event: message(priority: 3, actions: actions), serverID: sid,
+        settings: unmuted, preferences: .default) else { Issue.record("suppressed"); return }
+    #expect(r.actions.map(\.id) == ["a2"])
+}
+
+/// The click URL is optional on `NotificationRequest`, so an unsafe scheme
+/// there nulls the click rather than dropping the whole notification.
+@Test func aClickURLWithAnUnsupportedSchemeBecomesNilButTheNotificationStillPresents() throws {
+    let json = """
+    {"id":"m1","time":1788353322,"event":"message","topic":"alerts","priority":3,\
+    "click":"javascript:alert(1)","message":"B"}
+    """
+    let event = try JSONDecoder().decode(NtfyEvent.self, from: Data(json.utf8))
+    guard case .present(let r) = NotificationDecision.decide(
+        event: event, serverID: sid, settings: unmuted, preferences: .default)
+    else { Issue.record("suppressed"); return }
+    #expect(r.clickURL == nil)
+}
+
+/// `TRACE` (and any verb outside the fixed allow-list) is dropped rather
+/// than forwarded to `URLSession` as-is.
+@Test func anHTTPActionWithAnUnsupportedMethodIsDropped() {
+    let actions = """
+    [{"id":"a1","action":"http","label":"Do","url":"https://example.com","method":"TRACE"}]
+    """
+    guard case .present(let r) = NotificationDecision.decide(
+        event: message(priority: 3, actions: actions), serverID: sid,
+        settings: unmuted, preferences: .default) else { Issue.record("suppressed"); return }
+    #expect(r.actions.isEmpty)
+    #expect(r.categoryIdentifier == nil)
+}
+
+/// Auth-bearing and hop-by-hop headers must never reach the outgoing
+/// request; an ordinary header the action set is left alone.
+@Test func anHTTPActionStripsAuthAndHopByHopHeadersButKeepsOthers() {
+    let actions = """
+    [{"id":"a1","action":"http","label":"Do","url":"https://example.com","method":"POST",
+      "headers":{"Authorization":"Bearer xyz","Cookie":"a=b","X-Forwarded-For":"1.2.3.4","X-Custom":"keep"}}]
+    """
+    guard case .present(let r) = NotificationDecision.decide(
+        event: message(priority: 3, actions: actions), serverID: sid,
+        settings: unmuted, preferences: .default) else { Issue.record("suppressed"); return }
+    guard case .http(_, _, let headers, _) = r.actions.first?.kind else {
+        Issue.record("expected an http action"); return
+    }
+    #expect(headers == ["X-Custom": "keep"])
+}
+
+/// A pasted newline can execute as a shell command; the button label is
+/// attacker-chosen to make pasting look reasonable.
+@Test func aCopyActionStripsControlCharacters() {
+    let actions = """
+    [{"id":"a1","action":"copy","label":"Copy","value":"line1\\nline2\\r\\n"}]
+    """
+    guard case .present(let r) = NotificationDecision.decide(
+        event: message(priority: 3, actions: actions), serverID: sid,
+        settings: unmuted, preferences: .default) else { Issue.record("suppressed"); return }
+    guard case .copy(let value) = r.actions.first?.kind else {
+        Issue.record("expected a copy action"); return
+    }
+    #expect(value == "line1line2")
+}
+
+/// A truncated copy value is still useful; an unbounded one is a way to dump
+/// arbitrary data onto the clipboard.
+@Test func aCopyActionValueIsCappedAtOneKiB() {
+    let longValue = String(repeating: "a", count: 2000)
+    let actions = "[{\"id\":\"a1\",\"action\":\"copy\",\"label\":\"Copy\",\"value\":\"\(longValue)\"}]"
+    guard case .present(let r) = NotificationDecision.decide(
+        event: message(priority: 3, actions: actions), serverID: sid,
+        settings: unmuted, preferences: .default) else { Issue.record("suppressed"); return }
+    guard case .copy(let value) = r.actions.first?.kind else {
+        Issue.record("expected a copy action"); return
+    }
+    #expect(value.count == 1024)
+}
