@@ -38,8 +38,12 @@ server list and an onboarding flow.
 | Bundle identifier | `com.github.ctaloi.NtfyBar` | **Review item** — forks must change this |
 | License | MIT | **Review item** |
 
-Bundle identifier is a build variable (`PRODUCT_BUNDLE_ID`) with the above as
-its default, so a fork can rebrand without editing sources.
+The bundle identifier is **not a free knob**. macOS keys both notification
+authorization and Keychain ACLs to the signed bundle identifier, so changing it
+silently revokes granted notification permission and makes stored server
+credentials unreadable. It is therefore a single named constant in the package
+manifest rather than an environment variable, and the README states the
+consequence for anyone forking. See §14 review item 1.
 
 ## 3. Architecture
 
@@ -178,6 +182,15 @@ A brand-new topic has no watermark. Folding it into the shared stream would drag
 `?poll=1&since=all` for that topic **alone** in a one-shot request, set its
 watermark from the result, then rebuild the shared stream.
 
+**The rebuild must resume by message ID, not wall clock.** Between the backfill
+poll completing and the rebuilt stream opening, messages published to that topic
+land nowhere. A `since = time − 5s` margin closes only a five-second window, and
+a slow rebuild exceeds it. The rebuild therefore uses the backfill's last
+message **ID** as `since`, which ntfy honors exactly and which has no race
+regardless of how long the rebuild takes. `lastMessageID` exists on
+`Subscription` for this reason; `lastMessageTime` is a fallback for the case
+where a server's cache has already evicted that ID.
+
 ### `ConnectionCoordinator`
 
 Owns one `ServerConnection` per server. Subscribes to workspace sleep/wake and
@@ -200,6 +213,12 @@ notifications per topic natively.
 | 3 (default) | `.active` | default |
 | 4 (high) | `.timeSensitive` | default |
 | 5 (max/urgent) | `.timeSensitive` | default |
+
+`.timeSensitive` requires the
+`com.apple.developer.usernotifications.time-sensitive` entitlement on macOS.
+Unlike critical alerts, this one is self-enabled — no Apple approval — but
+without it priorities 4 and 5 silently degrade to `.active`. It is listed in
+§11's entitlements.
 
 Priority 5 does **not** map to `.critical` by default. Critical alerts require
 the `com.apple.developer.usernotifications.critical-alerts` entitlement, which
@@ -325,9 +344,16 @@ No silent failures. Every condition below is visible in the UI:
 (Info.plist, `.icns` via `iconutil`), signs it, and optionally notarizes.
 
 Hardened runtime is enabled from day one — required for notarization, free
-locally. Entitlements are `com.apple.security.network.client` only. **Not
-sandboxed**: the chosen distribution channel does not require it, and it keeps
-attachment handling simple.
+locally. **Not sandboxed**: the chosen distribution channel does not require it,
+and it keeps attachment handling simple.
+
+Entitlements:
+
+| Entitlement | Why |
+|---|---|
+| `com.apple.security.network.client` | Outbound connections to ntfy servers |
+| `com.apple.developer.usernotifications.time-sensitive` | Priorities 4–5; self-enabled, no Apple approval |
+| `com.apple.developer.usernotifications.critical-alerts` | Priority 5 only, **if** Apple grants it; the build works without it |
 
 Two signing modes, selected by environment:
 
@@ -352,6 +378,12 @@ no `sudo xcode-select` is required.
 CI (GitHub Actions, macOS runner) builds and runs the test suite unsigned. No
 signing secrets are present in CI.
 
+**Unverified assumption**, to be confirmed in stage 2 before the test suite
+grows around it: that an unsigned binary on a hosted macOS runner can bind and
+connect to loopback for `MockNtfyServer` without a signature or entitlement.
+This is expected to work, but it gates stage 2, which gates everything after it.
+If it does not, CI signs ad-hoc (`codesign -s -`) before running tests.
+
 ## 12. Testing
 
 Test-driven, with `NtfyKit` as the target surface. Swift Testing (`@Test`).
@@ -363,6 +395,9 @@ Unit tests:
 - backoff schedule stays within jitter bounds and resets on `open`
 - `since=` watermark computation across a topic group, including the
   new-subscription case that must **not** collapse to zero
+- backfill-to-stream handoff: a message published between the backfill poll and
+  the stream rebuild is still delivered, including when the rebuild is delayed
+  well past any wall-clock margin
 - deduplication by `uniqueKey` across overlapping replay windows
 - priority to interruption-level mapping, including the critical-alerts
   entitlement fallback
@@ -401,6 +436,9 @@ each other.
 
 ## 14. Spec review items
 
-1. Product name (`Ntfy Bar`), bundle identifier, and license.
+1. Product name (`Ntfy Bar`), bundle identifier, and license. The bundle
+   identifier is worth settling now rather than later: changing it after first
+   run revokes notification permission and orphans Keychain credentials, so it
+   is effectively permanent once anyone installs a build.
 2. Whether priority 5 should pursue the critical-alerts entitlement at all.
 3. Retention defaults (30 days / 10,000 messages per topic).
