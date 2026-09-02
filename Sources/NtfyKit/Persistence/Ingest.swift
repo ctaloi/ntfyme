@@ -22,14 +22,24 @@ public actor Ingest {
     private let batchWindow: Duration
     public private(set) var insertedCount = 0
 
-    /// Only one flush may be in flight. `flush` is called from both of `pump`'s
-    /// child tasks — the collector on the count ceiling, the ticker on its
-    /// cadence — and it suspends at `store.insert`, so without this they
-    /// interleave. That is not merely wasteful: a flush holding a failed batch
-    /// for retry could be overtaken by a second flush that drains later
-    /// events, succeeds, and persists a resume point *past* the batch still
-    /// waiting to be written. The retry that closes I2 would have reopened it.
-    private var isFlushing = false
+    /// Serializes flushes rather than letting a concurrent one skip. `flush`
+    /// is called from both of `pump`'s own child tasks for one connection —
+    /// the collector on the count ceiling, the ticker on its cadence — and,
+    /// because this actor is shared across every server `ConnectionCoordinator`
+    /// attaches, potentially from a *different connection's* `pump` at the
+    /// same moment too. Either way it suspends at `store.insert`, so without
+    /// serializing them they interleave.
+    ///
+    /// A previous version of this guarded with a `Bool` and had a *skipping*
+    /// flush return immediately, relying on the skipped batch being picked up
+    /// by whichever flush wins — true for a flush with a later retry, but not
+    /// for the trailing flush `pump` makes on its way out after cancellation:
+    /// there is no later call, so a skip there drops whatever the buffer held
+    /// the moment `pump` returns and its local `buffer` goes out of scope.
+    /// This chains through a stored `Task` instead: every flush actually
+    /// runs, in the order requested, however many are queued up behind the
+    /// one currently draining.
+    private var inFlight: Task<Void, Never>?
 
     public init(store: MessageStore, batchWindow: Duration = .milliseconds(250)) {
         self.store = store
@@ -192,11 +202,21 @@ public actor Ingest {
         await flush(buffer, serverID: serverID)
     }
 
+    /// Queues this flush behind whatever is already draining, and waits for
+    /// its own turn to finish before returning — so a caller (notably
+    /// `pump`'s trailing call) that awaits `flush` has a real guarantee that
+    /// draining actually happened, not just that some flush or other did.
     private func flush(_ buffer: Buffer, serverID: UUID) async {
-        guard !isFlushing else { return }
-        isFlushing = true
-        defer { isFlushing = false }
+        let previous = inFlight
+        let task = Task {
+            await previous?.value
+            await self.performFlush(buffer, serverID: serverID)
+        }
+        inFlight = task
+        await task.value
+    }
 
+    private func performFlush(_ buffer: Buffer, serverID: UUID) async {
         let events = await buffer.drain()
         guard !events.isEmpty else { return }
 
