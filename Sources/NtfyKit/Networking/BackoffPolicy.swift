@@ -24,7 +24,7 @@ public struct BackoffPolicy: Sendable, Equatable {
 
     /// - Parameter randomFraction: returns a value in `0...1`. Injected so tests
     ///   can assert the schedule exactly.
-    public func delay(forAttempt attempt: Int, randomFraction: @Sendable () -> Double) -> Duration {
+    public func delay(forAttempt attempt: Int, randomFraction: () -> Double) -> Duration {
         let steps = Swift.max(0, attempt - 1)
         let baseSeconds = seconds(base)
         let capSeconds = seconds(cap)
