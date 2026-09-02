@@ -11,6 +11,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The macOS runner image ships several Xcodes and its default selection
+      # has lagged behind the Swift version Package.swift requires, which fails
+      # the build before it starts with "using Swift tools version 6.2.0 but the
+      # installed version is 6.1.0". Select the newest Xcode present rather than
+      # pinning a path that goes stale with each image bump.
+      - name: Select newest Xcode
+        run: |
+          latest=$(ls -d /Applications/Xcode*.app | sort -V | tail -1)
+          echo "Selecting $latest"
+          sudo xcode-select -s "$latest/Contents/Developer"
+
       - name: Show toolchain
         run: swift --version
 
