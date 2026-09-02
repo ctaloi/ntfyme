@@ -58,3 +58,109 @@ import Testing
     let servers = try await MessageStore(modelContainer: container).servers()
     #expect(servers.map(\.name) == ["Fine"])
 }
+
+private func seededStore(topics: [String] = ["alerts"]) throws -> (ModelContainer, UUID) {
+    let container = try StoreFixtures.inMemoryContainer()
+    let id = UUID()
+    let context = ModelContext(container)
+    let server = Server(id: id, name: "Alpha", baseURLString: "https://a.example.com")
+    context.insert(server)
+    for t in topics { context.insert(Subscription(topic: t, server: server)) }
+    try context.save()
+    return (container, id)
+}
+
+@Test func startingTheCoordinatorOpensOneConnectionPerServer() async throws {
+    let (container, _) = try seededStore()
+    let store = MessageStore(modelContainer: container)
+    let fake = FakeStreamClient()
+    await fake.enqueue([.event(try Fixtures.decode(Fixtures.openEvent))])
+
+    let coordinator = ConnectionCoordinator(
+        store: store, keychain: KeychainStore(service: "dev.aloi.NtfyMe.tests.\(UUID())"),
+        client: fake, pathMonitor: FakePathMonitor(),
+        ingest: Ingest(store: store))
+
+    await coordinator.start()
+    #expect(await waitUntil { await fake.requestCount >= 1 })
+    #expect(await coordinator.connectionCount == 1)
+    await coordinator.stop()
+}
+
+/// The whole point of Stage 3's caughtUpTo work: a restart must resume from the
+/// persisted point, not replay from the oldest message.
+@Test func aConnectionIsSeededWithThePersistedCaughtUpTo() async throws {
+    let (container, id) = try seededStore()
+    let store = MessageStore(modelContainer: container)
+    // Watermark 24h old; caughtUpTo only 2 minutes old.
+    let context = ModelContext(container)
+    let sub = try #require(try context.fetch(FetchDescriptor<Subscription>()).first)
+    sub.lastMessageTime = Date().addingTimeInterval(-86_400)
+    try context.save()
+    let recent = Date().addingTimeInterval(-120)
+    try await store.setCaughtUpTo(recent, forServer: id)
+
+    let fake = FakeStreamClient()
+    await fake.enqueue([.event(try Fixtures.decode(Fixtures.openEvent))])
+    let coordinator = ConnectionCoordinator(
+        store: store, keychain: KeychainStore(service: "dev.aloi.NtfyMe.tests.\(UUID())"),
+        client: fake, pathMonitor: FakePathMonitor(),
+        ingest: Ingest(store: store))
+
+    await coordinator.start()
+    #expect(await waitUntil { await fake.requestCount >= 1 })
+
+    let url = try #require(await fake.lastRequest?.url?.absoluteString)
+    let since = Int(recent.timeIntervalSince1970) - 5
+    #expect(url.contains("since=\(since)"))
+    await coordinator.stop()
+}
+
+/// A network path coming back must reconnect immediately, not wait out backoff.
+///
+/// The first script hangs after `open` rather than finishing cleanly: a
+/// script that finishes lets the connection's own backoff (base delay ~1s)
+/// retry on its own well within `waitUntil`'s 5s timeout, which would pass
+/// this test whether or not `pathMonitor.start`'s handler is actually wired
+/// to `reconnectAll()`. Hanging means the only thing that can produce a
+/// second request is `reconnectNow()` cancelling the stalled attempt.
+@Test func aSatisfiedNetworkPathReconnectsEveryConnection() async throws {
+    let (container, _) = try seededStore()
+    let store = MessageStore(modelContainer: container)
+    let fake = FakeStreamClient()
+    await fake.enqueueThenHang([.event(try Fixtures.decode(Fixtures.openEvent))])
+    let monitor = FakePathMonitor()
+
+    let coordinator = ConnectionCoordinator(
+        store: store, keychain: KeychainStore(service: "dev.aloi.NtfyMe.tests.\(UUID())"),
+        client: fake, pathMonitor: monitor, ingest: Ingest(store: store))
+
+    await coordinator.start()
+    #expect(await waitUntil { await fake.requestCount >= 1 })
+    let before = await fake.requestCount
+
+    await fake.enqueue([.event(try Fixtures.decode(Fixtures.openEvent))])
+    await monitor.simulatePathSatisfied()
+
+    #expect(await waitUntil { await fake.requestCount > before })
+    await coordinator.stop()
+}
+
+@Test func stoppingCancelsTheMonitorAndEveryConnection() async throws {
+    let (container, id) = try seededStore()
+    let store = MessageStore(modelContainer: container)
+    let fake = FakeStreamClient()
+    await fake.enqueue([.event(try Fixtures.decode(Fixtures.openEvent))])
+    let monitor = FakePathMonitor()
+
+    let coordinator = ConnectionCoordinator(
+        store: store, keychain: KeychainStore(service: "dev.aloi.NtfyMe.tests.\(UUID())"),
+        client: fake, pathMonitor: monitor, ingest: Ingest(store: store))
+    await coordinator.start()
+    #expect(await waitUntil { await fake.requestCount >= 1 })
+
+    await coordinator.stop()
+    #expect(await coordinator.connectionCount == 0)
+    #expect(await waitUntil { await monitor.cancelCount == 1 })
+    #expect(await coordinator.state(forServer: id) == nil)
+}

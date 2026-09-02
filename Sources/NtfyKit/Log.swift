@@ -76,6 +76,15 @@ import os
 ///   bounded `ignoredUnknownEvent` carve-out) as `ServerConnection`'s
 ///   skipped-line site. The two are worded differently on purpose, so a log
 ///   read can tell a one-shot poll's bad line from a subscription's.
+/// - `ConnectionCoordinator.start`'s server-load-failure site interpolates
+///   only the failed `NSError`'s `domain` and `code`, the same reasoning as
+///   `Ingest.flush`'s two sites above.
+/// - `ConnectionCoordinator.open`'s keychain-read-failure site interpolates
+///   only `serverID.uuidString`, the same locally-generated, fixed-shape
+///   category as `MessageStore`'s missing-subscription site above. Never the
+///   underlying `KeychainStore.Error`: a malformed-data case carries no wire
+///   content today, but the credential itself must never become logged
+///   content regardless of what the error type could grow to carry later.
 ///
 /// `privacy: .public` is used deliberately, to keep these labels readable in
 /// `log stream`. The alternative is not a safety net: `.private` hides a value
