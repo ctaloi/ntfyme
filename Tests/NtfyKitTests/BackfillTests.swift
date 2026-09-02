@@ -108,7 +108,13 @@ private func message(_ id: String, topic: String, time: Int) -> NtfyEvent {
 /// no close — must not hang backfill forever. Unlike a subscription's shared
 /// stream, a poll has no keepalives to prove it's merely quiet, so this bound
 /// must come from `Backfill` itself, not from the underlying session.
-@Test func backfillTimesOutRatherThanHangingOnAStalledPoll() async throws {
+///
+/// `.timeLimit` is the test's own bound, distinct from the `timeout` passed
+/// to `run` below: without it, a regression that removed `run`'s internal
+/// race would hang this test itself rather than fail it — exactly the
+/// failure mode this test exists to catch, one level up.
+@Test(.timeLimit(.minutes(1)))
+func backfillTimesOutRatherThanHangingOnAStalledPoll() async throws {
     let (_, store, serverID) = try makeStore(topics: ["newtopic"])
     let fake = FakeStreamClient()
     await fake.enqueueHang()

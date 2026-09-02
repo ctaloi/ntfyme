@@ -28,7 +28,13 @@ public struct Backfill: Sendable {
 
     /// Fetches and stores the topic's server-cached history. Returns the number
     /// of rows inserted. Throws `Error.timedOut` if the poll has neither
-    /// delivered its cache nor closed within `timeout`.
+    /// delivered its cache nor closed within `timeout` — in which case
+    /// whatever events had already arrived are discarded, not partially
+    /// inserted, and the topic's watermark is left untouched. A partial
+    /// insert would advance the watermark past messages backfill never saw,
+    /// silently hiding exactly the gap this task exists to avoid; discarding
+    /// the whole batch instead makes a timed-out backfill a no-op the caller
+    /// can safely retry.
     ///
     /// When the poll returns at least one message, the topic's watermark is
     /// set as a side effect of the insert (`MessageStore.advanceWatermarks`),
