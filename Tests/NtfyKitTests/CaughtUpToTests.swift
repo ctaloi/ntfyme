@@ -63,6 +63,48 @@ private func wm(_ topic: String, _ offset: TimeInterval?) -> TopicWatermark {
     #expect(r.since == .unixTime(Int(now.timeIntervalSince1970) - 90 - 5))
 }
 
+/// ntfy sends the `open` line *before* it replays cached history — its
+/// subscribe handler calls `sub(v, NewOpenMessage(...))` and only then
+/// `sendOldMessages(...)` — and `open` carries `time = now`. So `open` proves
+/// the replay has *not started*, not that it finished, and a socket drop
+/// mid-replay must leave the resume point at the newest message actually
+/// received rather than at the open line's clock reading.
+///
+/// The numbers are the shape of a real replay: `openEvent` is t=1788352812
+/// (the server's "now") and `richMessage` is t=1788335966, ~4.7 hours older.
+/// Treating `open` as a delivery proof resolved the reconnect to
+/// `since=1788352807` and skipped that whole window, with no history gap
+/// reported — the loss was silent.
+@Test func aDropMidReplayResumesFromTheMessageNotTheOpenLine() async throws {
+    let fake = FakeStreamClient()
+    await fake.enqueue([
+        .event(try Fixtures.decode(Fixtures.openEvent)),
+        .event(try Fixtures.decode(Fixtures.richMessage)),
+    ])
+
+    let connection = ServerConnection(
+        endpoint: NtfyEndpoint(baseURL: URL(string: "https://ntfy.example.com")!,
+                               credential: .unauthenticated),
+        watermarks: [TopicWatermark(topic: "alerts", lastMessageTime: nil)],
+        client: fake,
+        sleeper: ManualSleeper()
+    )
+    await connection.start()
+
+    // The script has no keepalive, so nothing in it ever proved the replay
+    // completed. `.backoff(attempt: 1)` is the proof that the first attempt
+    // ran to its end of stream, so both lines have been processed by now.
+    #expect(await waitUntil { await connection.state == .backoff(attempt: 1) })
+    #expect(await connection.caughtUpTo == nil)
+
+    await connection.reconnectNow()
+    #expect(await waitUntil { await fake.requestCount == 2 })
+    let url = await fake.lastRequest?.url?.absoluteString ?? ""
+    // 1788335966 − 5s margin. NOT 1788352807, which is the open line's time.
+    #expect(url.contains("since=1788335961"))
+    await connection.stop()
+}
+
 /// A keepalive carries no message but does advance the resume point.
 @Test func aKeepaliveAdvancesCaughtUpTo() async throws {
     let fake = FakeStreamClient()

@@ -4,9 +4,22 @@ import Foundation
 /// topic on that server (spec §5).
 public actor ServerConnection {
     public private(set) var state: ConnectionState = .idle
-    /// Server timestamp of the most recent line of any kind. Receiving a line
-    /// proves the server has delivered everything up to that point on every
-    /// subscribed topic, which is what makes §5.2's resume rule correct.
+    /// Server timestamp of the most recent **keepalive** line. A keepalive is
+    /// the one line that proves the server has delivered everything up to that
+    /// point on every subscribed topic, which is what makes §5.2's resume rule
+    /// correct.
+    ///
+    /// Deliberately not "the most recent line of any kind". ntfy's subscribe
+    /// handler calls `sub(v, NewOpenMessage(...))` and only *then*
+    /// `sendOldMessages(...)`, so the `open` line — which carries `time = now`
+    /// — is sent *before* the replay it precedes. Advancing on `open` moved
+    /// the resume point past every message the replay had not yet sent, and a
+    /// drop mid-replay then meant nothing ever asked for them again. Messages
+    /// do not qualify either: `sendOldMessages` walks the subscribed topics one
+    /// at a time rather than merging them in time order, so a message's
+    /// timestamp says nothing about how far the *other* topics have been
+    /// delivered. Keepalives are emitted only after `sendOldMessages` returns,
+    /// which is precisely what makes them the proof.
     public private(set) var caughtUpTo: Date?
 
     private let endpoint: NtfyEndpoint
@@ -277,16 +290,6 @@ public actor ServerConnection {
                 // reports itself connected forever.
                 guard !Task.isCancelled else { return }
 
-                // §5.2: any line carrying a server time — not just messages —
-                // proves the server has delivered everything up to that time
-                // on every subscribed topic. `open` and `keepalive` lines
-                // both qualify and arrive far more often than messages do,
-                // which is what keeps a quiet topic from looking stale.
-                if case .event(let line) = element, line.time > 0 {
-                    let lineTime = line.date
-                    if caughtUpTo == nil || lineTime > caughtUpTo! { caughtUpTo = lineTime }
-                }
-
                 guard case .event(let event) = element else {
                     if case .skippedLine(let reason) = element {
                         // Spec §10: log, skip the line, keep the stream alive.
@@ -306,7 +309,17 @@ public actor ServerConnection {
                 case .message:
                     record(event)
                     continuation.yield(event)
-                case .keepalive, .pollRequest, nil:
+                case .keepalive:
+                    // §5.2, and the only place `caughtUpTo` moves. See the
+                    // property's doc comment for why `open` and `message`
+                    // lines are deliberately excluded. The `time > 0` guard
+                    // stays: a line with no usable server clock must not
+                    // rewind the resume point to 1970.
+                    if event.time > 0 {
+                        let lineTime = event.date
+                        if caughtUpTo == nil || lineTime > caughtUpTo! { caughtUpTo = lineTime }
+                    }
+                case .pollRequest, nil:
                     continue
                 }
             }

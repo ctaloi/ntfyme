@@ -47,7 +47,14 @@ import Testing
 
     let store = MessageStore(modelContainer: container)
     let fake = FakeStreamClient()
-    await fake.enqueue([.event(try Fixtures.decode(Fixtures.minimalMessage))])
+    // A message and then the keepalive that proves the server has delivered
+    // everything up to its time. The keepalive is what moves the resume point
+    // (§5.2); the message alone must not, so a script without one would pin
+    // nothing here.
+    await fake.enqueue([
+        .event(try Fixtures.decode(Fixtures.minimalMessage)),
+        .event(try Fixtures.decode(Fixtures.laterKeepaliveEvent)),
+    ])
 
     let connection = ServerConnection(
         endpoint: NtfyEndpoint(baseURL: URL(string: "https://ntfy.example.com")!,
@@ -61,13 +68,14 @@ import Testing
 
     await connection.start()
     #expect(await waitUntil { ((try? await store.caughtUpTo(forServer: serverID)) ?? nil) != nil })
-    // Not just `!= nil`: that would pass for `Date.distantPast`. The
-    // persisted value must be the exact server time the connection derived,
-    // matching `Fixtures.minimalMessage`'s `time` field.
+    // Not just `!= nil`: that would pass for `Date.distantPast`. The persisted
+    // value must be the exact server time of the keepalive — and specifically
+    // not `minimalMessage`'s 1_788_353_322, which a rule that advanced on any
+    // line would have produced.
     let persisted = try #require(try await store.caughtUpTo(forServer: serverID))
     let connectionCaughtUpTo = try #require(await connection.caughtUpTo)
     #expect(persisted == connectionCaughtUpTo)
-    #expect(persisted == Date(timeIntervalSince1970: 1_788_353_322))
+    #expect(persisted == Date(timeIntervalSince1970: 1_788_353_400))
     await connection.stop()
 }
 
@@ -142,11 +150,14 @@ import Testing
     let pump = await ingest.attach(connection, serverID: serverID)
 
     await connection.start()
-    // Wait for the connection to have actually processed the line (the same
-    // synchronization `ingestPersistsTheCaughtUpToTime` uses) before
+    // Wait for the connection to have actually processed the line before
     // cancelling, so this test exercises "did the final flush run", not "did
-    // the event happen to arrive before we cancelled".
-    #expect(await waitUntil { await connection.caughtUpTo != nil })
+    // the event happen to arrive before we cancelled". The watermark, not
+    // `caughtUpTo`: this script is a lone message, and §5.2 moves `caughtUpTo`
+    // only on a keepalive, so it would stay nil here forever. `record(_:)`
+    // writes the watermark in the same actor step that yields the event, so
+    // it is the same synchronization point the old `caughtUpTo` read was.
+    #expect(await waitUntil { await connection.watermarkSnapshot().first?.lastMessageTime != nil })
     pump.cancel()
     #expect(await waitUntil { (try? await store.messageCount()) == 1 })
     // Distinguishes "the final flush wrote this row" from "some other path
