@@ -125,10 +125,17 @@ public actor ServerConnection {
             } catch NtfyStreamClient.Error.rateLimited(let retryAfter) {
                 guard !Task.isCancelled else { return }
                 degrade(.rateLimited)
-                // An explicit `catch { return }` rather than `try?`: a cancelled
-                // sleep means stop()/reconnectNow() superseded this loop, and
-                // `try?` would swallow that and fall through to another connect
-                // attempt before the loop condition could act on it.
+                // An explicit `catch { return }` rather than `try?` — but not
+                // for the cancellation case, which an earlier version of this
+                // comment claimed. On cancellation `try?` falls to the end of
+                // the catch, then to the end of the `do`/`catch`, then to the
+                // loop condition, which is already false: identical behavior,
+                // no second connect attempt.
+                //
+                // The real distinction is a *non-cancellation* error, which a
+                // custom `Sleeper` may throw. `try?` would swallow it and go
+                // straight back to connecting; this kills the loop instead of
+                // spinning against a sleeper that cannot sleep.
                 do {
                     try await sleeper.sleep(for: .seconds(Int(retryAfter ?? 60)))
                 } catch {
@@ -312,8 +319,12 @@ public actor ServerConnection {
         attempt += 1
         state = .backoff(attempt: attempt)
         let delay = backoff.delay(forAttempt: attempt, randomFraction: { Double.random(in: 0...1) })
-        // Same reasoning as the rate-limited sleep above: a cancelled backoff
-        // means this loop was superseded, and nothing may run after it.
+        // Written for symmetry with the rate-limited sleep above, not because
+        // it changes anything here: `catch { return }` is this function's final
+        // statement, so it is provably identical to `try?` on every path,
+        // cancelled or not. Kept so the two sleeps read the same way and so
+        // adding a statement after this one cannot silently acquire a
+        // fall-through the author did not intend.
         do {
             try await sleeper.sleep(for: delay)
         } catch {

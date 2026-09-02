@@ -5,6 +5,16 @@ import Foundation
 public struct NtfyEventDecoder: Sendable {
     public enum Outcome: Sendable, Equatable {
         case event(NtfyEvent)
+        /// An event type this build does not know, bounded to
+        /// `unknownEventTypeLimit` characters. It is the only value in this
+        /// enum that comes off the wire verbatim, and it reaches a `.public`
+        /// log line through `NtfyStreamClient.skippedLine`, so it is capped
+        /// here rather than at each place it might be interpolated.
+        ///
+        /// It is not a message body — `event` is a protocol field the server
+        /// sets, not something a publisher can put text into — so bounding it
+        /// is about not putting an unbounded wire string in a log, not about
+        /// spec §9's body rule.
         case ignoredUnknownEvent(String)
         case empty
         /// The line could not be decoded.
@@ -19,6 +29,10 @@ public struct NtfyEventDecoder: Sendable {
         case malformed(reason: String)
     }
 
+    /// Generous for a real event type — the longest ntfy defines is
+    /// `poll_request`, at twelve.
+    static let unknownEventTypeLimit = 32
+
     private let json = JSONDecoder()
 
     public init() {}
@@ -29,7 +43,9 @@ public struct NtfyEventDecoder: Sendable {
 
         do {
             let event = try json.decode(NtfyEvent.self, from: Data(trimmed.utf8))
-            guard event.kind != nil else { return .ignoredUnknownEvent(event.event) }
+            guard event.kind != nil else {
+                return .ignoredUnknownEvent(String(event.event.prefix(Self.unknownEventTypeLimit)))
+            }
             return .event(event)
         } catch {
             return .malformed(reason: Self.reason(for: error))

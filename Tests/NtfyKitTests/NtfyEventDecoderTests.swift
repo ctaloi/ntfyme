@@ -17,6 +17,21 @@ private let decoder = NtfyEventDecoder()
     #expect(name == "some_future_event")
 }
 
+/// The unknown event type is the one value in `Outcome` that comes off the
+/// wire verbatim, and it reaches a `.public` log line through
+/// `NtfyStreamClient.skippedLine`. It is not a message body — `event` is a
+/// protocol field a publisher cannot write into — but an unbounded wire string
+/// in a log is still a bad idea, so it is capped at the source.
+@Test func boundsAnOverlongUnknownEventType() {
+    let long = String(repeating: "z", count: 500)
+    let line = #"{"id":"zZ9","time":1788352900,"event":"\#(long)","topic":"alerts"}"#
+    guard case .ignoredUnknownEvent(let name) = decoder.decode(line: line) else {
+        Issue.record("expected .ignoredUnknownEvent"); return
+    }
+    #expect(name.count == NtfyEventDecoder.unknownEventTypeLimit)
+    #expect(long.hasPrefix(name))
+}
+
 @Test func treatsBlankLinesAsEmpty() {
     #expect(decoder.decode(line: "") == .empty)
     #expect(decoder.decode(line: "   \t ") == .empty)
