@@ -1,4 +1,5 @@
 import Foundation
+import Network
 import Testing
 
 @Test func mockServerStreamsEnqueuedLines() async throws {
@@ -30,4 +31,113 @@ import Testing
     let url = base.appending(path: "t").appending(path: "json")
     let (_, response) = try await URLSession.shared.data(from: url)
     #expect((response as? HTTPURLResponse)?.statusCode == 401)
+}
+
+/// `waitForConnection()` must genuinely wait for a NEW connection, not
+/// return early against a stale reference to the first, already-closed one.
+/// `resolvedEarly` (via the `Signal` actor shared from
+/// `KeepaliveWatchdogTests.swift`) pins that: a buggy implementation that
+/// treats the closed first connection as still "connected" signals well
+/// before the second client actually connects below; the fixed
+/// implementation only signals once the second connect happens.
+@Test func mockServerWaitsForARealSecondConnection() async throws {
+    let server = MockNtfyServer()
+    let base = try await server.start()
+    defer { Task { await server.stop() } }
+
+    await server.enqueue(line: #"{"id":"a1","time":1,"event":"open","topic":"t"}"#)
+    let url = base.appending(path: "t").appending(path: "json")
+
+    // Serve and fully drain the first connection so the server closes it.
+    let (firstBytes, _) = try await URLSession.shared.bytes(from: url)
+    for try await _ in firstBytes.lines {}
+
+    await server.enqueue(line: #"{"id":"a2","time":2,"event":"message","topic":"t","message":"second"}"#)
+
+    let resolvedEarly = Signal()
+    let waitTask = Task {
+        await server.waitForConnection()
+        await resolvedEarly.signal()
+    }
+
+    // Give a buggy implementation a generous window to wrongly resolve
+    // against the stale, already-closed first connection.
+    for _ in 0..<20 {
+        if await resolvedEarly.hasFired { break }
+        try await Task.sleep(for: .milliseconds(10))
+    }
+    #expect(await resolvedEarly.hasFired == false)
+
+    let (secondBytes, _) = try await URLSession.shared.bytes(from: url)
+    _ = await waitTask.value
+
+    var lines: [String] = []
+    for try await line in secondBytes.lines { lines.append(line) }
+    #expect(lines.count == 1)
+    #expect(lines[0].contains("\"message\":\"second\""))
+    #expect(await server.receivedRequestPaths.count == 2)
+}
+
+/// A request that is not valid UTF-8 (and so cannot be parsed as an HTTP
+/// request line at all) must still get a response and a closed connection,
+/// rather than being silently dropped and leaving the client to hang.
+/// `URLSession` cannot be made to send non-UTF-8 bytes, so this test speaks
+/// raw TCP via `NWConnection` directly. A watchdog forces the connection
+/// closed after a bounded wait so a regression fails this test cleanly
+/// instead of stalling the suite.
+@Test func mockServerAnswersBadRequestInsteadOfHangingOnUnparsableBytes() async throws {
+    let server = MockNtfyServer()
+    let base = try await server.start()
+    defer { Task { await server.stop() } }
+
+    guard let port = base.port, let nwPort = NWEndpoint.Port(rawValue: UInt16(port)) else {
+        Issue.record("server did not report a usable port")
+        return
+    }
+
+    let conn = NWConnection(host: NWEndpoint.Host("127.0.0.1"), port: nwPort, using: .tcp)
+    conn.start(queue: .global())
+
+    try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Swift.Error>) in
+        conn.stateUpdateHandler = { state in
+            switch state {
+            case .ready: cont.resume()
+            case .failed(let error): cont.resume(throwing: error)
+            default: break
+            }
+        }
+    }
+
+    // Bytes that are not valid UTF-8, so the server cannot even extract a
+    // request line out of them. Ignoring the send completion's error is
+    // deliberate: a failed send here still leads to the receive below
+    // failing or the watchdog firing, so there is no distinct failure mode
+    // this test would otherwise miss.
+    conn.send(content: Data([0xFF, 0xFE, 0x00, 0x01, 0x02, 0x03]), completion: .contentProcessed { _ in })
+
+    // `try?` here discards only `CancellationError` from the `defer` below
+    // cancelling this task once the test has its answer — the watchdog's
+    // one job (force-closing `conn` on a timeout) still runs either way.
+    let watchdog = Task {
+        try? await Task.sleep(for: .seconds(3))
+        conn.cancel()
+    }
+    defer { watchdog.cancel() }
+
+    let responseText = try await withCheckedThrowingContinuation { (cont: CheckedContinuation<String, Swift.Error>) in
+        conn.receive(minimumIncompleteLength: 1, maximumLength: 8192) { data, _, _, error in
+            if let data, let text = String(data: data, encoding: .utf8), !text.isEmpty {
+                cont.resume(returning: text)
+            } else {
+                cont.resume(throwing: error ?? MockNtfyServerTestError.noResponseReceived)
+            }
+        }
+    }
+
+    conn.cancel()
+    #expect(responseText.hasPrefix("HTTP/1.1 400"))
+}
+
+private enum MockNtfyServerTestError: Swift.Error {
+    case noResponseReceived
 }
