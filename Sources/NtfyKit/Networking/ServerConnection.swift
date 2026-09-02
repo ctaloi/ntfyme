@@ -159,10 +159,13 @@ public actor ServerConnection {
 
         let since: SinceParameter
         if forceSinceAll {
-            // Consumed here rather than cleared on success, so exactly the next
-            // attempt falls back; once the watermark advances again, normal
-            // resolution resumes.
-            forceSinceAll = false
+            // Read here but cleared only past the cancellation guard below. If
+            // it were consumed here, an attempt abandoned before it reached the
+            // wire — a `stop()` landing on the watchdog hop, or a throwing
+            // `streamRequest` — would discard the fallback without ever having
+            // sent `since=all`, and the next loop would rebuild the rejected
+            // value and earn another 400. Exactly the seam this fix exists to
+            // close, so it must not be reintroduced by the fix.
             since = .all
         } else {
             let resolution = WatermarkResolver.resolve(watermarks: watermarks, cacheWindow: cacheWindow)
@@ -204,6 +207,11 @@ public actor ServerConnection {
         // same reason both exits below are guarded: the loop that replaced this
         // one may already own the arm.
         guard !Task.isCancelled else { return }
+
+        // Past every point that could abandon this attempt, so the fallback is
+        // spent only on one that actually reaches the wire. Once spent, a later
+        // attempt resumes normal watermark resolution.
+        forceSinceAll = false
 
         // The watchdog is stopped inline, on this task, rather than from a
         // `defer { Task { ... } }`. A detached teardown task escapes this run

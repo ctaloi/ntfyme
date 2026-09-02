@@ -14,8 +14,8 @@ public struct NtfyEventDecoder: Sendable {
         /// that carries one invites the next caller to log it — the reason the
         /// only current consumer strips it is not a property the type enforces.
         /// `reason` is drawn from a closed vocabulary describing the decoding
-        /// failure's *shape*: key names and coding paths, which are schema,
-        /// never content.
+        /// failure's *shape*: the expected key name, and the top-level field it
+        /// occurred under, both of which are schema rather than content.
         case malformed(reason: String)
     }
 
@@ -59,8 +59,12 @@ public struct NtfyEventDecoder: Sendable {
         }
     }
 
+    /// Only the *first* component of the coding path, never the whole thing.
+    /// A full path descends into `actions[].headers` and `actions[].extras`,
+    /// which are `[String: String]` — so it would name a server-supplied
+    /// dictionary key, which is content, not schema. The first component is
+    /// always one of `NtfyEvent`'s own `CodingKeys` by construction.
     private static func path(_ context: DecodingError.Context) -> String {
-        let path = context.codingPath.map(\.stringValue).joined(separator: ".")
-        return path.isEmpty ? "top level" : path
+        context.codingPath.first.map(\.stringValue) ?? "top level"
     }
 }

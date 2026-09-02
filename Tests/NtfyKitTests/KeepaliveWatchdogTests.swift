@@ -84,13 +84,22 @@ import Testing
     await watchdog.start { await stale.signal() }
     await sleeper.waitForPendingSleeps(atLeast: 1)
     await watchdog.stop()
-    await sleeper.advanceOnePendingSleep()
 
-    // A fresh arm, after the stopped one was released. `advanceOnePendingSleep`
-    // removed the stopped arm's continuation, so `atLeast: 1` here waits for
-    // this new arm's sleep rather than returning on the old one.
+    // The fresh arm is installed *before* the stopped one is released, not
+    // after. Releasing first made detection ride a queue race: the stopped
+    // arm needs a continuation resume, a task schedule, and a hop to reach
+    // `fireIfStillArmed`, while `start` needs one hop — so `start` normally
+    // won and a broken build was caught, but under different load the stopped
+    // arm arrives first, finds `currentHandler` still nil, and the test
+    // quietly goes back to passing against a broken watchdog. Arming first
+    // makes it order-independent, as `startingTwiceSupersedesTheFirstTimer`
+    // already is. It is also the production ordering: a watchdog fire installs
+    // a new run loop, which arms again from `connectOnce`.
     await watchdog.start { await live.signal() }
-    await sleeper.waitForPendingSleeps(atLeast: 1)
+    await sleeper.waitForPendingSleeps(atLeast: 2)
+
+    // Oldest first: the stopped arm, then the live one.
+    await sleeper.advanceOnePendingSleep()
     await sleeper.advanceOnePendingSleep()
 
     #expect(await live.waitOrTimeout() == true)

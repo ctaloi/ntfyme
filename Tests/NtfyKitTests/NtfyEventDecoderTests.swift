@@ -59,6 +59,13 @@ private let decoder = NtfyEventDecoder()
         #"{"message":"\#(body)"}"#,
         // Right shape, wrong type on a required field.
         #"{"id":"a","time":"\#(body)","event":"message","topic":"alerts"}"#,
+        // Wrong type *inside* a server-supplied dictionary. This is the case a
+        // full coding path leaks: the path descends to the header's own key,
+        // and `headers` and `extras` are `[String: String]` whose keys come off
+        // the wire. Only the top-level component may be reported.
+        #"""
+        {"id":"a","time":1,"event":"message","topic":"alerts","actions":[{"id":"x","action":"http","label":"L","headers":{"\#(body)":1}}]}
+        """#,
     ]
     for line in cases {
         guard case .malformed(let reason) = decoder.decode(line: line) else {
