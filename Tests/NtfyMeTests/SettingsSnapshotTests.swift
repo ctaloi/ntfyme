@@ -8,22 +8,20 @@ import NtfyKit
 
 /// Headless PNG renders of the Settings tabs and the onboarding pane, for
 /// visual review only — there is no snapshot-diff harness in this project
-/// (see this wave's report).
+/// (see this wave's report). Renders through `renderSnapshot` (see
+/// `SnapshotSupport.swift`): a real, offscreen `NSHostingView` in a real,
+/// never-ordered-front `NSWindow`, drawn with `cacheDisplay`. `ImageRenderer`
+/// was tried first and rejected — it renders `Form(.formStyle(.grouped))`
+/// blank and draws every `Button`/`TextField` as a placeholder box, which is
+/// nearly everything on this tab's surface.
 ///
-/// Renders through an offscreen (never ordered onscreen) `NSWindow` +
-/// `NSHostingView.cacheDisplay(in:to:)`, not `ImageRenderer`.
-/// `ImageRenderer` renders `Form(.formStyle(.grouped))` blank and `List`
-/// content as a corrupted placeholder glyph in this sandbox — reproduced
-/// with the plain `ImageRenderer` probe every render-owning agent this wave
-/// started from, and confirmed not specific to this file's views by seeing
-/// the same corruption in the menu bar popover's own `List`. The
-/// `NSWindow`-hosted approach renders both correctly; see this wave's report
-/// for the full comparison. One caveat this technique does not overcome:
-/// `DisclosureGroup`'s initial `isExpanded` state does not visually take
-/// effect in a single synchronous capture (tried an extra layout/display
-/// pass and disabling its implicit animation; neither changed the result),
-/// so the Servers tab always renders with its rows collapsed here even
-/// though the real, interactive app defaults them open.
+/// Every assertion below checks more than "a file was written": each state
+/// asserts a minimum byte count too small to be plausible for empty chrome,
+/// and every pair of states that must look different (populated vs. empty,
+/// light vs. dark, with vs. without the error alert) asserts their byte
+/// counts actually differ. A snapshot test that cannot fail is worse than
+/// none — this wave's own History round produced five byte-identical blank
+/// renders that each looked like a pass.
 ///
 /// Every fixture below uses placeholder content only — this repository is
 /// public: "ntfy.sh" (the real public service, safe to name), "Home Lab" and
@@ -32,44 +30,6 @@ import NtfyKit
 /// generic topic names. No credential value is ever set to anything other
 /// than a placeholder string, and no rendered view shows a credential's
 /// value at all — the Servers tab only ever displays a credential's *kind*.
-
-private enum RenderError: Error {
-    case failed(String)
-}
-
-/// Hosts `view` in an offscreen `NSWindow` (never `makeKeyAndOrderFront`) and
-/// rasterizes it via `cacheDisplay(in:to:)` to `/tmp/ntfyshots/<filename>`.
-@MainActor
-private func renderPNG(_ view: some View, filename: String, size: CGSize, dark: Bool = false) throws {
-    try FileManager.default.createDirectory(
-        atPath: "/tmp/ntfyshots", withIntermediateDirectories: true)
-
-    let hosting = NSHostingView(rootView: view.frame(width: size.width, height: size.height))
-    hosting.frame = NSRect(origin: .zero, size: size)
-
-    let window = NSWindow(contentRect: hosting.frame, styleMask: [.titled],
-                          backing: .buffered, defer: false)
-    window.contentView = hosting
-    if dark {
-        // The SwiftUI `.environment(\.colorScheme, .dark)` override alone
-        // left native-chrome content (the bordered "Add Server" button, the
-        // Divider above it) undrawn in this capture technique — setting the
-        // window's actual `NSAppearance` is what a real dark-mode window
-        // does, and fixes it.
-        window.appearance = NSAppearance(named: .darkAqua)
-    }
-    window.layoutIfNeeded()
-    hosting.layoutSubtreeIfNeeded()
-
-    guard let rep = hosting.bitmapImageRepForCachingDisplay(in: hosting.bounds) else {
-        throw RenderError.failed("no bitmap rep for \(filename)")
-    }
-    hosting.cacheDisplay(in: hosting.bounds, to: rep)
-    guard let png = rep.representation(using: .png, properties: [:]) else {
-        throw RenderError.failed("no PNG representation for \(filename)")
-    }
-    try png.write(to: URL(filePath: "/tmp/ntfyshots/\(filename)"))
-}
 
 /// A fresh, isolated `SettingsModel` plus the exact `MessageStore` it was
 /// built with, so a test can seed fixtures through the store's real public
@@ -117,67 +77,122 @@ private func seedServers(store: MessageStore, model: SettingsModel) async throws
     await model.loadServers()
 }
 
+/// Real sizes — the ones the app actually hosts these views at
+/// (`SettingsView`'s `.frame`, and `AppDelegate.presentOnboardingIfNeeded`'s
+/// `NSWindow`) — not invented ones.
 private let settingsSize = CGSize(width: 520, height: 440)
 private let onboardingSize = CGSize(width: 420, height: 340)
+
+/// Below this, a render is almost certainly empty chrome, not real content —
+/// every actual tab render in this file comes back well past 10x this.
+private let minPlausibleContentBytes = 5_000
 
 @MainActor @Test func renderGeneralTab() async throws {
     let (_, model) = try makeStoreAndModel()
     model.refreshPreferences()
-    try renderPNG(SettingsGeneralTab(model: model), filename: "settings-general.png", size: settingsSize)
+    let bytes = try renderSnapshot(
+        SettingsGeneralTab(model: model), size: settingsSize, to: "settings-general.png")
+    #expect(bytes > minPlausibleContentBytes)
 }
 
-@MainActor @Test func renderServersTabPopulated() async throws {
-    let (store, model) = try makeStoreAndModel()
-    try await seedServers(store: store, model: model)
-    try renderPNG(SettingsServersTab(model: model), filename: "settings-servers-populated.png", size: settingsSize)
-}
+@MainActor @Test func renderServersTabPopulatedAndEmptyDiffer() async throws {
+    let (store, populatedModel) = try makeStoreAndModel()
+    try await seedServers(store: store, model: populatedModel)
+    let populatedBytes = try renderSnapshot(
+        SettingsServersTab(model: populatedModel), size: settingsSize,
+        to: "settings-servers-populated.png")
 
-@MainActor @Test func renderServersTabEmpty() async throws {
-    let (_, model) = try makeStoreAndModel()
-    await model.loadServers()
-    try renderPNG(SettingsServersTab(model: model), filename: "settings-servers-empty.png", size: settingsSize)
+    let (_, emptyModel) = try makeStoreAndModel()
+    await emptyModel.loadServers()
+    let emptyBytes = try renderSnapshot(
+        SettingsServersTab(model: emptyModel), size: settingsSize,
+        to: "settings-servers-empty.png")
+
+    #expect(populatedBytes > minPlausibleContentBytes)
+    #expect(emptyBytes > minPlausibleContentBytes)
+    // Three server rows vs. a `ContentUnavailableView` must not coincide.
+    #expect(populatedBytes != emptyBytes)
 }
 
 @MainActor @Test func renderNotificationsTab() async throws {
     let (_, model) = try makeStoreAndModel()
     model.refreshPreferences()
-    try renderPNG(SettingsNotificationsTab(model: model), filename: "settings-notifications.png", size: settingsSize)
+    let bytes = try renderSnapshot(
+        SettingsNotificationsTab(model: model), size: settingsSize, to: "settings-notifications.png")
+    #expect(bytes > minPlausibleContentBytes)
 }
 
 @MainActor @Test func renderAdvancedTab() async throws {
     let (_, model) = try makeStoreAndModel()
     await model.refreshMessageCount()
-    try renderPNG(SettingsAdvancedTab(model: model), filename: "settings-advanced.png", size: settingsSize)
+    let bytes = try renderSnapshot(
+        SettingsAdvancedTab(model: model), size: settingsSize, to: "settings-advanced.png")
+    #expect(bytes > minPlausibleContentBytes)
 }
 
 /// The alert path: `errorMessage` set on the shared model, rendered through
 /// the real `SettingsView` root so its `.alert(...)` — the actual mechanism
 /// every failure in `SettingsModel` reports through — is what's on screen,
-/// not a stand-in for it.
-@MainActor @Test func renderErrorState() async throws {
+/// not a stand-in for it. Compared against the same tab with no error set,
+/// so a harness that silently fails to draw the alert (this offscreen
+/// window is never key, and a system alert sheet may need that) shows up as
+/// a byte-count match instead of a silent false pass.
+@MainActor @Test func renderErrorStateDiffersFromNoError() async throws {
     let (store, model) = try makeStoreAndModel()
     try await seedServers(store: store, model: model)
+    let cleanBytes = try renderSnapshot(
+        SettingsView(model: model), size: settingsSize, to: "settings-no-error.png")
+
     model.errorMessage = "Couldn't remove the server: the operation couldn't be completed."
-    try renderPNG(SettingsView(model: model), filename: "settings-error.png", size: settingsSize)
+    let errorBytes = try renderSnapshot(
+        SettingsView(model: model), size: settingsSize, to: "settings-error.png")
+
+    #expect(cleanBytes > minPlausibleContentBytes)
+    #expect(errorBytes > minPlausibleContentBytes)
+    // The alert provably does NOT draw in this harness: the two renders come
+    // out byte-identical. That is recorded as a *known* issue rather than a
+    // hard failure, for two reasons. A permanently red test teaches everyone
+    // to stop reading the suite, which costs more than this one gap. And
+    // `withKnownIssue` fails if the issue ever stops occurring — so the day
+    // the alert does start drawing, this test tells us instead of quietly
+    // passing, and `settings-error.png` becomes trustworthy at exactly that
+    // moment rather than whenever somebody happens to look.
+    withKnownIssue("""
+        The .alert(...) is presented from an offscreen NSWindow that is never \
+        key, so it does not draw and settings-error.png shows the tab beneath \
+        it. Do not trust that image as evidence the alert path renders.
+        """) {
+        #expect(errorBytes != cleanBytes)
+    }
 }
 
 /// Servers is the densest tab (rows, toggles, steppers, inline fields), so
-/// it is the one rendered in dark mode.
-@MainActor @Test func renderServersTabDark() async throws {
+/// it is the one rendered in dark mode. Compared against the light render
+/// for the same reason as the error-state pair above.
+@MainActor @Test func renderServersTabDarkDiffersFromLight() async throws {
     let (store, model) = try makeStoreAndModel()
     try await seedServers(store: store, model: model)
-    let view = SettingsServersTab(model: model)
-        .environment(\.colorScheme, .dark)
-        .background(Color(nsColor: .windowBackgroundColor))
-    try renderPNG(view, filename: "settings-servers-populated-dark.png", size: settingsSize, dark: true)
+
+    let lightBytes = try renderSnapshot(
+        SettingsServersTab(model: model), size: settingsSize,
+        colorScheme: .light, to: "settings-servers-populated-light-reference.png")
+    let darkBytes = try renderSnapshot(
+        SettingsServersTab(model: model), size: settingsSize,
+        colorScheme: .dark, to: "settings-servers-populated-dark.png")
+
+    #expect(lightBytes > minPlausibleContentBytes)
+    #expect(darkBytes > minPlausibleContentBytes)
+    #expect(lightBytes != darkBytes)
 }
 
 /// First-run onboarding (spec §6), at the size `AppDelegate` actually hosts
-/// it in (`presentOnboardingIfNeeded`'s `NSWindow`).
+/// it in (`presentOnboardingIfNeeded`'s `NSWindow`). The literal first thing
+/// a new user sees.
 @MainActor @Test func renderOnboarding() async throws {
     let view = OnboardingView(
         onRequestAuthorization: { true },
         onFinish: {},
         onSkip: {})
-    try renderPNG(view, filename: "onboarding.png", size: onboardingSize)
+    let bytes = try renderSnapshot(view, size: onboardingSize, to: "onboarding.png")
+    #expect(bytes > minPlausibleContentBytes)
 }
