@@ -98,10 +98,36 @@ private struct MessageDetailContent: View {
             let attributed = try AttributedString(
                 markdown: snapshot.body,
                 options: AttributedString.MarkdownParsingOptions(interpretedSyntax: .full))
-            return Text(attributed)
+            return Text(Self.separatingBlocks(attributed))
         } catch {
             return Text(snapshot.body)
         }
+    }
+
+    /// `Text(AttributedString)` renders inline styling (bold, links, code
+    /// spans) correctly, but never inserts anything between separate
+    /// block-level elements — two markdown paragraphs, or two list items,
+    /// render run together with no space or line break at all, because
+    /// `AttributedString` only records that structure as `presentationIntent`
+    /// metadata, which `Text` does not consult on its own (confirmed
+    /// visually: a headless snapshot of this exact view showed
+    /// "...for full logs.Exit code: 137Duration: 4m12s" as one unbroken run).
+    /// Walking the runs and inserting a newline wherever the enclosing block
+    /// changes — compared by the *whole* intent chain, not just its `Kind`,
+    /// since two consecutive paragraphs both have kind `.paragraph` but never
+    /// share an `identity` — is what actually separates them.
+    private static func separatingBlocks(_ attributed: AttributedString) -> AttributedString {
+        var result = AttributedString()
+        var previousBlock: PresentationIntent?
+        for run in attributed.runs {
+            let block = run.presentationIntent
+            if let previousBlock, block != previousBlock {
+                result += AttributedString("\n")
+            }
+            result += attributed[run.range]
+            previousBlock = block
+        }
+        return result
     }
 
     private var tagRow: some View {
