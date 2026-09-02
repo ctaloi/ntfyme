@@ -5,7 +5,9 @@ public struct NtfyStreamClient: Sendable {
     public enum StreamElement: Sendable {
         case event(NtfyEvent)
         /// A line that could not be used. Carries a reason for logging; the
-        /// stream continues. Never contains a message body.
+        /// stream continues. Never contains a message body — the reason comes
+        /// from `NtfyEventDecoder`'s closed vocabulary, which describes the
+        /// failure's shape rather than quoting the line (spec §9).
         case skippedLine(reason: String)
     }
 
@@ -36,10 +38,8 @@ public struct NtfyStreamClient: Sendable {
                             continuation.yield(.event(event))
                         case .ignoredUnknownEvent(let name):
                             continuation.yield(.skippedLine(reason: "unknown event type: \(name)"))
-                        case .malformed(_, let error):
-                            // The line itself is deliberately not included: it
-                            // may contain a message body (spec §9).
-                            continuation.yield(.skippedLine(reason: "malformed line: \(error)"))
+                        case .malformed(let reason):
+                            continuation.yield(.skippedLine(reason: "malformed line: \(reason)"))
                         case .empty:
                             continue
                         }

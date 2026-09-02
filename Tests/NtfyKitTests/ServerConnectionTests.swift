@@ -5,15 +5,18 @@ import Testing
 private func makeConnection(
     base: URL,
     topics: [String] = ["alerts"],
-    sleeper: Sleeper = ManualSleeper()
+    watermarks: [TopicWatermark]? = nil,
+    sleeper: Sleeper = ManualSleeper(),
+    cacheWindow: TimeInterval = 12 * 3600
 ) -> ServerConnection {
     ServerConnection(
         endpoint: NtfyEndpoint(baseURL: base, credential: .none),
         topics: topics,
-        watermarks: [TopicWatermark(topic: "alerts", lastMessageTime: nil)],
+        watermarks: watermarks ?? [TopicWatermark(topic: "alerts", lastMessageTime: nil)],
         client: NtfyStreamClient(),
         backoff: .standard,
-        sleeper: sleeper
+        sleeper: sleeper,
+        cacheWindow: cacheWindow
     )
 }
 
@@ -127,10 +130,77 @@ private func waitUntil(
     let connection = makeConnection(base: base)
     await connection.start()
 
-    #expect(await waitUntil { await connection.state == .degraded(reason: "rate limited") })
+    #expect(await waitUntil { await connection.state == .degraded(reason: .rateLimited) })
     // The retry is pending on the ManualSleeper rather than abandoned, so
     // exactly one request has been made — no hammering while rate limited.
     #expect(await server.receivedRequestPaths.count == 1)
+    await connection.stop()
+}
+
+/// Spec §10: HTTP 400 `40008` means this client built a `since` the server
+/// rejected. It is a client bug — log loudly, fall back to `since=all`, and do
+/// not retry the rejected value.
+///
+/// Without a dedicated catch the typed `invalidSince` error falls into the
+/// generic branch, and the result is not merely a wrong value but an unbounded
+/// loop: degrade → backoff → reconnect → the resolver rebuilds the identical
+/// `since` → 400 again, forever.
+@Test func fallsBackToSinceAllAfterTheServerRejectsTheSinceParameter() async throws {
+    let server = MockNtfyServer()
+    let base = try await server.start()
+    defer { Task { await server.stop() } }
+    await server.setResponse(status: 400, body: #"{"code":40008,"error":"invalid since parameter"}"#)
+
+    // A real watermark is load-bearing: with the default `nil` one the resolver
+    // already returns `.all`, so the first request would be indistinguishable
+    // from the fallback and this test would prove nothing.
+    let sleeper = ManualSleeper()
+    let connection = makeConnection(
+        base: base,
+        watermarks: [TopicWatermark(topic: "alerts", lastMessageTime: Date(timeIntervalSince1970: 1788353322))],
+        sleeper: sleeper
+    )
+    await connection.start()
+
+    #expect(await waitUntil { await server.receivedRequestPaths.isEmpty == false })
+    let first = await server.receivedRequestPaths[0]
+    #expect(first.contains("since=1788353317"))
+
+    // The mock keeps answering 400, so if the fallback did not exist the second
+    // request would repeat `since=1788353317` rather than fail to happen — the
+    // assertion below distinguishes the two.
+    #expect(await advanceUntilRequestCount(server: server, sleeper: sleeper, count: 2),
+            "no second attempt was made")
+    let second = await server.receivedRequestPaths[1]
+    #expect(second.contains("since=all"))
+    #expect(second.contains("since=1788353317") == false)
+
+    await connection.stop()
+}
+
+/// Spec §10: a watermark older than the server's cache window is detectable
+/// before the request goes out, and a silent full-cache replay must never be
+/// mistaken for a clean resume.
+///
+/// Nothing is enqueued and the connection is held open, so no line ever arrives
+/// to overwrite the state with `.open`. That makes the observation stable — the
+/// production signal itself is a flicker in a level-triggered enum, which is
+/// why the durable half of "surfaced" is the log line and why carrying the gap
+/// somewhere a consumer can latch it is deferred to the persistence plan.
+@Test func detectsAHistoryGapWhenResumingFromAnOutOfWindowWatermark() async throws {
+    let server = MockNtfyServer()
+    let base = try await server.start()
+    defer { Task { await server.stop() } }
+    await server.setCloseAfterSending(false)
+
+    let connection = makeConnection(
+        base: base,
+        watermarks: [TopicWatermark(topic: "alerts", lastMessageTime: Date(timeIntervalSinceNow: -48 * 3600))],
+        cacheWindow: 12 * 3600
+    )
+    await connection.start()
+
+    #expect(await waitUntil { await connection.state == .degraded(reason: .historyGap) })
     await connection.stop()
 }
 
@@ -325,24 +395,25 @@ private func waitUntil(
     await connection.start()
     #expect(await waitUntil { await server.receivedRequestPaths.count >= 1 })
 
-    #expect(await fireWatchdog(server: server, sleeper: sleeper, untilRequests: 2),
+    #expect(await advanceUntilRequestCount(server: server, sleeper: sleeper, count: 2),
             "watchdog did not fire the first time")
-    #expect(await fireWatchdog(server: server, sleeper: sleeper, untilRequests: 3),
+    #expect(await advanceUntilRequestCount(server: server, sleeper: sleeper, count: 3),
             "watchdog fired once but was disarmed before it could fire again")
 
     await connection.stop()
 }
 
-/// Releases pending sleeps until the watchdog fires and a reconnect lands.
+/// Releases pending sleeps until `count` requests have reached the server —
+/// whether the sleep standing in the way is a watchdog arm or a backoff delay.
 ///
 /// It advances repeatedly rather than once because `ManualSleeper` releases the
 /// *oldest* pending sleep, and a superseded watchdog arm leaves its sleep
 /// pending forever by design (see `ManualSleeper`'s note): releasing one of
-/// those is a no-op, so reaching the live arm can take several advances.
-private func fireWatchdog(
+/// those is a no-op, so reaching the live sleep can take several advances.
+private func advanceUntilRequestCount(
     server: MockNtfyServer,
     sleeper: ManualSleeper,
-    untilRequests count: Int
+    count: Int
 ) async -> Bool {
     for _ in 0..<200 {
         await sleeper.advanceOnePendingSleep()

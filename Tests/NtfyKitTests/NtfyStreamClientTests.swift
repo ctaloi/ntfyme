@@ -45,6 +45,24 @@ private func endpoint(_ base: URL) -> NtfyEndpoint {
     #expect(skipped == 1)
 }
 
+/// `skippedLine`'s reason is logged verbatim by `ServerConnection`, so the
+/// no-body invariant has to hold at this seam too, not only inside the decoder.
+@Test func aSkippedLineNeverCarriesTheMessageBody() async throws {
+    let server = MockNtfyServer()
+    let base = try await server.start()
+    defer { Task { await server.stop() } }
+
+    let body = "db-01.internal.example is DOWN"
+    await server.enqueue(line: #"{"id":"a","time":1,"event":"message","topic":"alerts","message":"\#(body)"#)
+
+    let request = try endpoint(base).streamRequest(topics: ["alerts"], since: nil)
+    var reasons: [String] = []
+    for try await element in NtfyStreamClient().stream(request) {
+        if case .skippedLine(let reason) = element { reasons.append(reason) }
+    }
+    #expect(reasons == ["malformed line: not valid JSON"])
+}
+
 @Test func mapsUnauthorizedToATypedError() async throws {
     let server = MockNtfyServer()
     let base = try await server.start()

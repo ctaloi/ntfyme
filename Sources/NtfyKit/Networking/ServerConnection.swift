@@ -16,6 +16,10 @@ public actor ServerConnection {
 
     private var runTask: Task<Void, Never>?
     private var attempt = 0
+    /// Set when the server rejects the `since` this client built, consumed by
+    /// the next `connectOnce`. Spec §10: the malformed value must not be
+    /// retried, so the next attempt asks for `since=all` instead.
+    private var forceSinceAll = false
 
     /// Created eagerly in `init`, not lazily on first access. A lazy stream
     /// leaves `continuation` nil until something reads `events`, so any message
@@ -98,7 +102,7 @@ public actor ServerConnection {
                 return
             } catch NtfyStreamClient.Error.rateLimited(let retryAfter) {
                 guard !Task.isCancelled else { return }
-                state = .degraded(reason: "rate limited")
+                degrade(.rateLimited)
                 // An explicit `catch { return }` rather than `try?`: a cancelled
                 // sleep means stop()/reconnectNow() superseded this loop, and
                 // `try?` would swallow that and fall through to another connect
@@ -108,9 +112,21 @@ public actor ServerConnection {
                 } catch {
                     return
                 }
+            } catch NtfyStreamClient.Error.invalidSince {
+                guard !Task.isCancelled else { return }
+                // Spec §10: a client bug, not a server condition. Without this
+                // branch the error falls into the generic one below, backs off,
+                // reconnects, and the resolver produces the same rejected
+                // `since` — forever. Log loudly and fall back to `since=all`.
+                Log.connection.error(
+                    "server rejected the since parameter (HTTP 400); falling back to since=all"
+                )
+                forceSinceAll = true
+                degrade(.invalidSince)
+                await waitBeforeRetry()
             } catch {
                 guard !Task.isCancelled else { return }
-                state = .degraded(reason: String(describing: error))
+                degrade(.classify(error))
                 await waitBeforeRetry()
             }
         }
@@ -119,14 +135,37 @@ public actor ServerConnection {
     private func connectOnce() async throws {
         state = .connecting
 
-        let resolution = WatermarkResolver.resolve(watermarks: watermarks, cacheWindow: cacheWindow)
-        if resolution.hasHistoryGap {
-            // Surfaced rather than swallowed: the server will replay its whole
-            // cache and some messages are simply unrecoverable (spec §10).
-            state = .degraded(reason: "history gap: watermark predates server cache")
+        let since: SinceParameter
+        if forceSinceAll {
+            // Consumed here rather than cleared on success, so exactly the next
+            // attempt falls back; once the watermark advances again, normal
+            // resolution resumes.
+            forceSinceAll = false
+            since = .all
+        } else {
+            let resolution = WatermarkResolver.resolve(watermarks: watermarks, cacheWindow: cacheWindow)
+            since = resolution.since
+            if resolution.hasHistoryGap {
+                // Surfaced rather than swallowed: the server will replay its
+                // whole cache and some messages are simply unrecoverable
+                // (spec §10), and that must never look like a clean resume.
+                //
+                // The log is the durable half of "surfaced". The state write
+                // below is a one-shot diagnostic in a level-triggered enum: the
+                // first line on the stream replaces it with `.open` tens of
+                // milliseconds later, so a consumer polling state can miss it.
+                // Carrying the gap where a consumer can latch it — a
+                // diagnostics stream, or a flag on `.open` — is deferred to the
+                // persistence plan, which is also where the resume point itself
+                // is being reconsidered.
+                Log.connection.notice(
+                    "history gap: resume watermark predates the server cache window; the server will replay its cache"
+                )
+                degrade(.historyGap)
+            }
         }
 
-        let request = try endpoint.streamRequest(topics: topics, since: resolution.since)
+        let request = try endpoint.streamRequest(topics: topics, since: since)
 
         await watchdog.start { [weak self] in
             await self?.handleWatchdogTimeout()
@@ -154,7 +193,17 @@ public actor ServerConnection {
                 // loop is left running to correct it, so a stopped connection
                 // reports itself connected forever.
                 guard !Task.isCancelled else { return }
-                guard case .event(let event) = element else { continue }
+
+                guard case .event(let event) = element else {
+                    if case .skippedLine(let reason) = element {
+                        // Spec §10: log, skip the line, keep the stream alive.
+                        // `reason` comes from `NtfyEventDecoder`'s closed
+                        // vocabulary and never quotes the line, which is what
+                        // makes `.public` safe here (spec §9).
+                        Log.stream.warning("skipped line: \(reason, privacy: .public)")
+                    }
+                    continue
+                }
 
                 switch event.kind {
                 case .open:
@@ -196,9 +245,16 @@ public actor ServerConnection {
         // armed it — which implies a live `runTask`.
         guard runTask != nil else { return }
 
-        state = .degraded(reason: "no keepalive within timeout")
+        degrade(.keepaliveTimeout)
         runTask?.cancel()
         runTask = Task { await self.runLoop() }
+    }
+
+    /// The one place `.degraded` is written, so every degradation is logged
+    /// and none can carry a free-form string.
+    private func degrade(_ reason: DegradedReason) {
+        Log.connection.warning("connection degraded: \(reason.logLabel, privacy: .public)")
+        state = .degraded(reason: reason)
     }
 
     private func waitBeforeRetry() async {
