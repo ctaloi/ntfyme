@@ -2233,6 +2233,10 @@ import Foundation
 /// specifies. And its 7-day `timeoutIntervalForResource` would end every
 /// stream weekly for no reason the user could see.
 public enum StreamingSession {
+    /// For SUBSCRIPTIONS only. These timeouts are deliberately long because a
+    /// subscription is meant to stay open for days — which makes them exactly
+    /// wrong for a one-shot poll. `Backfill` bounds its own wait locally and
+    /// must not rely on this session's limits.
     public static func make() -> URLSession {
         let configuration = URLSessionConfiguration.default
         // Comfortably longer than the watchdog, so the watchdog decides.
