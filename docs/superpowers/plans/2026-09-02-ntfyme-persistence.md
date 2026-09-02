@@ -1034,22 +1034,34 @@ public struct MessageSnapshot: Sendable, Equatable, Identifiable {
 
     public var isMarkdown: Bool { contentType == "text/markdown" }
     public var resolvedPriority: NtfyPriority { NtfyPriority(rawValue: priority) ?? .default }
-    public var actions: [NtfyAction] {
-        guard let actionsJSON else { return [] }
-        // A stored blob this app wrote itself; a decode failure means the row
-        // is corrupt, and an empty action list degrades the UI rather than
-        // losing the message. Logged by the caller, not swallowed silently.
-        return (try? JSONDecoder().decode([NtfyAction].self, from: actionsJSON)) ?? []
-    }
+    /// Decoded once when the snapshot is built, so an empty array means the
+    /// message genuinely has no actions — a corrupt blob announces itself in
+    /// the log instead of impersonating that.
+    public let actions: [NtfyAction]
 }
 
 extension Message {
     public var snapshot: MessageSnapshot {
-        MessageSnapshot(id: uniqueKey, messageID: messageID, topic: topic,
+        var decodedActions: [NtfyAction] = []
+        if let actionsJSON {
+            do {
+                decodedActions = try JSONDecoder().decode([NtfyAction].self, from: actionsJSON)
+            } catch {
+                // serverID only. NOT uniqueKey — it is
+                // "serverID/topic/messageID", so logging it would leak a topic
+                // name, which spec §9 forbids outright. NOT messageID either:
+                // it comes straight off the wire and is unbounded in length.
+                // If row-level correlation is ever needed, use a truncated
+                // digest of uniqueKey — fixed-shape, non-reversible, leaks
+                // neither the topic nor wire content — never the key itself.
+                Log.store.error("action decode failed for server \(serverID.uuidString, privacy: .public)")
+            }
+        }
+        return MessageSnapshot(id: uniqueKey, messageID: messageID, topic: topic,
                         serverID: serverID, time: time, title: title, body: body,
                         priority: priority, tags: tags, click: click,
                         iconURL: iconURL, contentType: contentType,
-                        actionsJSON: actionsJSON, isRead: isRead)
+                        actionsJSON: actionsJSON, actions: decodedActions, isRead: isRead)
     }
 }
 ```
@@ -1210,19 +1222,9 @@ Expected: build error — `cannot find 'MessageStore' in scope`.
 
 - [ ] **Step 3: Write the store**
 
-First add the log category this file uses. In `Sources/NtfyKit/Log.swift`, add
-alongside the existing `connection` and `stream` categories:
+`Log.store` already exists — Task 5 added it. Do not add it again.
 
-```swift
-    /// Persistence: inserts, watermark advances, retention.
-    static let store = Logger(subsystem: subsystem, category: "store")
-```
-
-and extend that file's doc comment to cover the new site — it states what each
-log site may interpolate, and a new category that is not described there makes
-the comment wrong.
-
-Then `Sources/NtfyKit/Persistence/MessageStore.swift`:
+`Sources/NtfyKit/Persistence/MessageStore.swift`:
 
 ```swift
 import Foundation
@@ -1775,7 +1777,14 @@ public actor Ingest {
             // restart resume from §5.2's point rather than the oldest message.
             if let caughtUp = await connection.caughtUpTo {
                 do { try await store.setCaughtUpTo(caughtUp, forServer: serverID) }
-                catch { Log.store.error("caughtUpTo persist failed: \(error.localizedDescription, privacy: .public)") }
+                catch {
+                    // NOT error.localizedDescription: a Cocoa or SwiftData
+                    // error's description can embed a file's display name or a
+                    // stored value, either of which may be server-provided.
+                    // Domain and code are fixed constants.
+                    let ns = error as NSError
+                    Log.store.error("caughtUpTo persist failed: \(ns.domain, privacy: .public) \(ns.code, privacy: .public)")
+                }
             }
             _ = store
         }
@@ -1790,8 +1799,11 @@ public actor Ingest {
             insertedCount += result.inserted
         } catch {
             // Never silent: a failed write means messages are lost from the
-            // archive even though they were delivered.
-            Log.store.error("message batch insert failed: \(error.localizedDescription, privacy: .public)")
+            // archive even though they were delivered. Domain and code only —
+            // an error's description can embed stored or server-provided
+            // values, which must not reach a log.
+            let ns = error as NSError
+            Log.store.error("message batch insert failed: \(ns.domain, privacy: .public) \(ns.code, privacy: .public)")
         }
     }
 }
