@@ -85,21 +85,32 @@ import os
 ///   underlying `KeychainStore.Error`: a malformed-data case carries no wire
 ///   content today, but the credential itself must never become logged
 ///   content regardless of what the error type could grow to carry later.
+/// - The `app` category's sites (app-target concerns: notification
+///   presentation, action handling, retention scheduling) follow the same
+///   rule as every site above: a fixed literal plus, at most, an HTTP status
+///   code or an `NSError`'s `domain` and `code`. **Never** a notification's
+///   title or body, even though both are shown to the user by design — this
+///   is the one place where a value is simultaneously user-visible and
+///   log-forbidden. Never an action's URL either: it is server-supplied, the
+///   same category `messageID` and topic are barred for above.
 ///
 /// `privacy: .public` is used deliberately, to keep these labels readable in
 /// `log stream`. The alternative is not a safety net: `.private` hides a value
 /// from an ordinary log read but is not a promise it was never recorded, so
 /// anything genuinely sensitive must not be logged at all rather than logged
 /// privately.
-enum Log {
+public enum Log {
     private static let subsystem = "dev.aloi.NtfyMe"
 
     /// Connection lifecycle: state changes, reconnects, resume decisions.
-    static let connection = Logger(subsystem: subsystem, category: "connection")
+    public static let connection = Logger(subsystem: subsystem, category: "connection")
 
     /// Wire-level events: lines that could not be used.
-    static let stream = Logger(subsystem: subsystem, category: "stream")
+    public static let stream = Logger(subsystem: subsystem, category: "stream")
 
     /// Persistence: inserts, watermark advances, retention.
-    static let store = Logger(subsystem: subsystem, category: "store")
+    public static let store = Logger(subsystem: subsystem, category: "store")
+
+    /// App-target concerns: notifications, login item, scheduling.
+    public static let app = Logger(subsystem: subsystem, category: "app")
 }
