@@ -1,6 +1,41 @@
 import Foundation
 import Network
 
+/// Wraps a `CheckedContinuation` so a persistent, possibly-not-serialized
+/// callback — like `NWListener`/`NWConnection`'s `stateUpdateHandler`, which
+/// can be invoked again with a second terminal state — can never resume the
+/// continuation twice. Reassigning the handler to a no-op from inside itself
+/// is *not* sufficient on its own: a targeted stress test that forced two
+/// terminal states to race (500 iterations, watchdog armed for 0ms so it
+/// raced against the listener's own `.ready`/`.failed` transition) hit the
+/// Swift Concurrency runtime's fatal "resumed more than once" crash without
+/// this guard, and zero crashes across the same 500 iterations with it.
+final class ResumeOnce<T: Sendable>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var resumed = false
+    private let continuation: CheckedContinuation<T, Swift.Error>
+
+    init(_ continuation: CheckedContinuation<T, Swift.Error>) {
+        self.continuation = continuation
+    }
+
+    func resume(returning value: T) {
+        lock.lock()
+        let alreadyResumed = resumed
+        resumed = true
+        lock.unlock()
+        if !alreadyResumed { continuation.resume(returning: value) }
+    }
+
+    func resume(throwing error: Swift.Error) {
+        lock.lock()
+        let alreadyResumed = resumed
+        resumed = true
+        lock.unlock()
+        if !alreadyResumed { continuation.resume(throwing: error) }
+    }
+}
+
 /// A minimal loopback HTTP server that speaks just enough to imitate ntfy's
 /// ndjson streaming endpoint. Binds port 0 so parallel tests never collide.
 actor MockNtfyServer {
@@ -10,6 +45,11 @@ actor MockNtfyServer {
         /// which would otherwise fail later as a confusing connection error
         /// far from its real cause.
         case listenerHasNoPort
+        /// The listener never reached `.ready` or `.failed` within the
+        /// bound below (e.g. stuck in `.waiting`/`.preparing` — a macOS
+        /// Local Network permission prompt can do this, as can other
+        /// OS-level stalls) and was force-cancelled instead.
+        case startTimedOut
     }
 
     private var listener: NWListener?
@@ -33,7 +73,37 @@ actor MockNtfyServer {
             Task { await self?.accept(conn) }
         }
 
-        let port: UInt16 = try await withCheckedThrowingContinuation { cont in
+        // Force the listener closed after a bounded wait. Armed before the
+        // continuation below can even suspend: a raw `NWListener`/`NWConnection`
+        // can stick in `.waiting`/`.preparing` with no guaranteed transition to
+        // a terminal state on its own (confirmed empirically for the analogous
+        // client-side wait in MockNtfyServerTests.swift, against a connection
+        // that stalled indefinitely until force-cancelled) — a macOS Local
+        // Network permission prompt is one realistic way this listener could
+        // stall. `start()` is the first line of every test in this file, so an
+        // unbounded wait here would hang the entire suite, not just one test.
+        //
+        // `try?` around the sleep would be wrong here: it discards
+        // `CancellationError` but does not stop execution, so
+        // `listener.cancel()` would run unconditionally — including the
+        // instant `defer` cancels this task below on the normal, successful
+        // path, tearing down every listener moments after it started. `do`/
+        // `catch` only reaches `listener.cancel()` when the sleep actually
+        // ran to completion (a genuine 3-second timeout), not when it was
+        // cancelled early.
+        let watchdog = Task {
+            do {
+                try await Task.sleep(for: .seconds(3))
+                listener.cancel()
+            } catch {
+                // Cancelled by the `defer` below because start() already
+                // finished (success or failure) — nothing to clean up.
+            }
+        }
+        defer { watchdog.cancel() }
+
+        let port: UInt16 = try await withCheckedThrowingContinuation { rawCont in
+            let cont = ResumeOnce(rawCont)
             listener.stateUpdateHandler = { state in
                 switch state {
                 case .ready:
@@ -44,6 +114,10 @@ actor MockNtfyServer {
                     }
                 case .failed(let error):
                     cont.resume(throwing: error)
+                case .cancelled:
+                    // Only reachable if the watchdog force-cancelled the
+                    // listener before it ever became ready.
+                    cont.resume(throwing: Error.startTimedOut)
                 default:
                     break
                 }

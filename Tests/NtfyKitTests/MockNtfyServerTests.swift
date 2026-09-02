@@ -135,30 +135,38 @@ import Testing
     // `.preparing` indefinitely until force-cancelled. Every await in this
     // test must be covered by this one bound, not just the ones after it.
     //
-    // `try?` here discards only `CancellationError` from the `defer` below
-    // cancelling this task once the test has its answer — the watchdog's
-    // one job (force-closing `conn` on a timeout) still runs either way.
+    // `try?` around the sleep would be wrong here: it discards
+    // `CancellationError` but does not stop execution, so `conn.cancel()`
+    // would run unconditionally, including the moment the `defer` below
+    // cancels this task once the test already has its answer. `do`/`catch`
+    // only reaches `conn.cancel()` when the sleep actually ran to
+    // completion (a genuine 3-second timeout), not when cancelled early.
     let watchdog = Task {
-        try? await Task.sleep(for: .seconds(3))
-        conn.cancel()
+        do {
+            try await Task.sleep(for: .seconds(3))
+            conn.cancel()
+        } catch {
+            // Cancelled by the `defer` below because the test already has
+            // its answer — nothing to clean up.
+        }
     }
     defer { watchdog.cancel() }
 
-    try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Swift.Error>) in
+    // `ResumeOnce` (from Support/MockNtfyServer.swift, same module) guards
+    // against `stateUpdateHandler` firing twice with two different terminal
+    // states close together — reassigning it to a no-op from inside itself
+    // was confirmed insufficient by a targeted race stress test.
+    try await withCheckedThrowingContinuation { (rawCont: CheckedContinuation<Void, Swift.Error>) in
+        let cont = ResumeOnce(rawCont)
         conn.stateUpdateHandler = { state in
             switch state {
             case .ready:
-                conn.stateUpdateHandler = { _ in }
-                cont.resume()
+                cont.resume(returning: ())
             case .failed(let error):
-                conn.stateUpdateHandler = { _ in }
                 cont.resume(throwing: error)
             case .cancelled:
                 // Only reachable here if the watchdog force-closed the
-                // connection before it ever became ready. `stateUpdateHandler`
-                // is cleared before each resume, so this and the two cases
-                // above can never resume the same continuation twice.
-                conn.stateUpdateHandler = { _ in }
+                // connection before it ever became ready.
                 cont.resume(throwing: MockNtfyServerTestError.connectionNeverBecameReady)
             default:
                 break
