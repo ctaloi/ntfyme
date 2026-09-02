@@ -1,6 +1,6 @@
 # NtfyMe — a native macOS client for ntfy
 
-**Status:** design approved, pending spec review
+**Status:** design approved, spec reviewed, ready for implementation planning
 **Date:** 2026-09-02
 
 ## 1. Purpose
@@ -37,7 +37,7 @@ server list and an onboarding flow.
 | Product name | NtfyMe | Settled |
 | Bundle identifier | `dev.aloi.NtfyMe` | Settled — see below |
 | SwiftPM product / executable | `NtfyMe` | |
-| License | MIT | **Review item** |
+| License | MIT | Settled |
 
 The bundle identifier derives from `aloi.dev`, a domain the author controls.
 That is the entire point of a reverse-DNS identifier, and it is why the common
@@ -226,11 +226,13 @@ Unlike critical alerts, this one is self-enabled — no Apple approval — but
 without it priorities 4 and 5 silently degrade to `.active`. It is listed in
 §11's entitlements.
 
-Priority 5 does **not** map to `.critical` by default. Critical alerts require
-the `com.apple.developer.usernotifications.critical-alerts` entitlement, which
-Apple grants only by application. The app detects the entitlement at runtime and
-upgrades priority 5 to `.critical` when present; absent it, priority 5 degrades
-to `.timeSensitive`. Nothing in the build blocks on Apple's approval.
+**Critical alerts are deliberately not supported.** Priority 5 maps to
+`.timeSensitive`, not `.critical`. Critical alerts require the
+`com.apple.developer.usernotifications.critical-alerts` entitlement, which Apple
+grants only by individual application, and supporting them would mean carrying a
+runtime-detection branch and a second notification path for a capability the app
+may never be granted. `.timeSensitive` already breaks through Focus when the
+user allows it per-app, which covers the actual need. Decided 2026-09-02.
 
 **Actions.** ntfy `actions[]` become `UNNotificationAction`s inside a
 `UNNotificationCategory` registered lazily, keyed by a hash of the action set.
@@ -359,7 +361,8 @@ Entitlements:
 |---|---|
 | `com.apple.security.network.client` | Outbound connections to ntfy servers |
 | `com.apple.developer.usernotifications.time-sensitive` | Priorities 4–5; self-enabled, no Apple approval |
-| `com.apple.developer.usernotifications.critical-alerts` | Priority 5 only, **if** Apple grants it; the build works without it |
+
+Critical alerts are not requested; see §6.
 
 Two signing modes, selected by environment:
 
@@ -405,8 +408,7 @@ Unit tests:
   the stream rebuild is still delivered, including when the rebuild is delayed
   well past any wall-clock margin
 - deduplication by `uniqueKey` across overlapping replay windows
-- priority to interruption-level mapping, including the critical-alerts
-  entitlement fallback
+- priority to interruption-level mapping across all five levels
 - action encode/decode round-trip for all four action types
 - retention pruning boundaries, and attachment file cleanup
 
@@ -440,10 +442,14 @@ implementation plan expands these.
 Stage 2 gates everything after it; stages 4 and 5 are largely independent of
 each other.
 
-## 14. Spec review items
+## 14. Decisions log
 
-1. License. MIT is proposed; Apache-2.0 is the alternative if an explicit
-   patent grant matters. (Name and bundle identifier are settled: NtfyMe and
-   `dev.aloi.NtfyMe`.)
-2. Whether priority 5 should pursue the critical-alerts entitlement at all.
-3. Retention defaults (30 days / 10,000 messages per topic).
+All spec review items are closed.
+
+| Decision | Outcome | Date |
+|---|---|---|
+| Product name | NtfyMe | 2026-09-02 |
+| Bundle identifier | `dev.aloi.NtfyMe`, from the author's `aloi.dev` | 2026-09-02 |
+| License | MIT | 2026-09-02 |
+| Critical alerts | Not supported; priority 5 uses `.timeSensitive` | 2026-09-02 |
+| Retention defaults | 30 days / 10,000 messages per topic, both configurable | 2026-09-02 |
