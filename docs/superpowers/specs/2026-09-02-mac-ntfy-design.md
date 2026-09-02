@@ -58,7 +58,7 @@ Three SwiftPM targets:
 - **`NtfyKit`** (library) — models, REST client, streaming client, connection
   state machine, Keychain access, retention. No AppKit, no SwiftUI. This is
   where the interesting logic lives and where the tests point.
-- **`NtfyApp`** (executable) — menu bar, windows, notification presentation.
+- **`NtfyMe`** (executable) — menu bar, windows, notification presentation.
   Thin; it renders `NtfyKit` state.
 - **`NtfyKitTests`** — unit tests plus `MockNtfyServer`, a loopback HTTP server
   that streams canned newline-delimited JSON including keepalives and
@@ -227,6 +227,32 @@ guards only the boundary case of a message whose timestamp equals the watermark.
 
 `lastMessageID` is still recorded on `Subscription` for diagnostics and log
 correlation; it is not used to construct `since`.
+
+### 5.2 The resume point is "caught up to", not "last message"
+
+**Decided 2026-09-02, to be implemented with the persisted watermark model in
+the persistence plan.** The Stage 1–2 code implements the simpler rule below
+and is knowingly incomplete on this point.
+
+Resuming from `min(lastMessageTime)` across topics is wrong for a quiet topic.
+A topic that merely received no messages for longer than the server's cache
+window drags the shared `since` outside that window on *every* reconnect — every
+lid-open — producing a full-cache replay of every topic and a `hasHistoryGap`
+that is false: nothing was missed, the topic was simply quiet.
+
+The connection already receives a better signal and currently discards it. Every
+`open` and `keepalive` line carries a server `time`, and receiving one means
+everything up to that time has been delivered on *all* subscribed topics. So the
+correct resume point is:
+
+    since = max(min(topic watermarks), lastLineTime) − margin
+
+where `lastLineTime` is the server timestamp of the most recent line of any kind.
+This makes `hasHistoryGap` true only after a genuinely long disconnect.
+
+The persisted `Subscription` model must therefore store a per-server "caught up
+to" time alongside the per-topic message watermarks. Deciding this now is what
+keeps the persistence schema from freezing the wrong shape.
 
 ### `ConnectionCoordinator`
 
