@@ -230,17 +230,32 @@ struct MenuBarPopoverView: View {
                 priorityDot(message.resolvedPriority)
                     .padding(.top, 5)
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(displayTitle(for: message))
-                        .font(.subheadline)
-                        .fontWeight(message.isRead ? .regular : .semibold)
-                        .foregroundStyle(receded(message.resolvedPriority) ? .secondary : .primary)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                    Text(message.body)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
+                    if let title = message.title, !title.isEmpty {
+                        Text(title)
+                            .font(.subheadline)
+                            .fontWeight(message.isRead ? .regular : .semibold)
+                            .foregroundStyle(receded(message.resolvedPriority) ? .secondary : .primary)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                        Text(message.body)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    } else {
+                        // No title: repeating the topic name here would just
+                        // duplicate the group header immediately above this
+                        // row (seen directly in the rendered popover — an
+                        // "alerts" row under the "alerts — Home Lab"
+                        // header). The body becomes the one primary line
+                        // instead, at the weight a title would have used.
+                        Text(message.body)
+                            .font(.subheadline)
+                            .fontWeight(message.isRead ? .regular : .semibold)
+                            .foregroundStyle(receded(message.resolvedPriority) ? .secondary : .primary)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    }
                 }
                 Spacer(minLength: 4)
                 Text(relativeTime(message.time))
@@ -277,16 +292,15 @@ struct MenuBarPopoverView: View {
         Self.relativeTimeFormatter.string(from: date, to: Date()) ?? ""
     }
 
-    /// `title` falling back to `topic`: ntfy messages may publish with no
-    /// title at all, and a blank row header is worse than the topic name.
-    private func displayTitle(for message: MessageSnapshot) -> String {
-        guard let title = message.title, !title.isEmpty else { return message.topic }
-        return title
-    }
-
     private func accessibilityLabel(for message: MessageSnapshot) -> String {
         let readState = message.isRead ? "" : "Unread. "
-        return "\(readState)\(displayTitle(for: message)). \(message.body)"
+        // Matches the row's own title/body collapse just above: an untitled
+        // message reads as just its body, not body prefixed with the topic
+        // name a second time.
+        guard let title = message.title, !title.isEmpty else {
+            return "\(readState)\(message.body)"
+        }
+        return "\(readState)\(title). \(message.body)"
     }
 
     private func receded(_ priority: NtfyPriority) -> Bool {
@@ -310,7 +324,10 @@ struct MenuBarPopoverView: View {
     // MARK: - Footer
 
     private var footer: some View {
-        HStack(spacing: 4) {
+        // `spacing: 16`, not the label's own icon-to-title gap (~4-6pt): with
+        // the same spacing on both, History and Settings read as one run-on
+        // control rather than two — seen directly in the rendered popover.
+        HStack(spacing: 16) {
             Button(action: onOpenHistory) {
                 Label("History", systemImage: "clock.arrow.circlepath")
             }
