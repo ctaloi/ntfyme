@@ -8,7 +8,7 @@ public actor ServerConnection {
     private let endpoint: NtfyEndpoint
     private let topics: [String]
     private var watermarks: [TopicWatermark]
-    private let client: NtfyStreamClient
+    private let client: any StreamClient
     private let backoff: BackoffPolicy
     private let sleeper: Sleeper
     private let watchdog: KeepaliveWatchdog
@@ -39,7 +39,7 @@ public actor ServerConnection {
     public init(
         endpoint: NtfyEndpoint,
         watermarks: [TopicWatermark],
-        client: NtfyStreamClient = NtfyStreamClient(),
+        client: any StreamClient = NtfyStreamClient(),
         backoff: BackoffPolicy = .standard,
         sleeper: Sleeper = SystemSleeper(),
         watchdogTimeout: Duration = .seconds(90),
