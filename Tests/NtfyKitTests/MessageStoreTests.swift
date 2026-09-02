@@ -233,3 +233,330 @@ private func makeStore() throws -> (MessageStore, UUID) {
     #expect(settings.muted == false)
     #expect(settings.minAlertPriority == 1)
 }
+
+// MARK: - search
+
+/// Inserts a `Message` directly, bypassing `NtfyEvent`, so a test can set
+/// `priority`, `tags`, `title`, and `isRead` independently of one another.
+@discardableResult
+private func insertMessage(_ context: ModelContext, serverID: UUID, topic: String = "alerts",
+                           id: String, time: Int, title: String? = nil, body: String,
+                           priority: Int = 3, tags: [String] = [], isRead: Bool = false) -> Message {
+    let message = Message(serverID: serverID, topic: topic, messageID: id,
+                          time: Date(timeIntervalSince1970: TimeInterval(time)),
+                          title: title, body: body, priority: priority, tags: tags,
+                          isRead: isRead)
+    context.insert(message)
+    return message
+}
+
+private func makeSearchStore() throws -> (MessageStore, ModelContext, UUID) {
+    let container = try StoreFixtures.inMemoryContainer()
+    let serverID = UUID()
+    let context = ModelContext(container)
+    let server = Server(id: serverID, name: "Example", baseURLString: "https://ntfy.example.com")
+    context.insert(server)
+    context.insert(Subscription(topic: "alerts", server: server))
+    context.insert(Subscription(topic: "deploys", server: server))
+    try context.save()
+    return (MessageStore(modelContainer: container), context, serverID)
+}
+
+@Test func searchFiltersByTopic() async throws {
+    let (store, context, serverID) = try makeSearchStore()
+    insertMessage(context, serverID: serverID, topic: "alerts", id: "a", time: 100, body: "a")
+    insertMessage(context, serverID: serverID, topic: "deploys", id: "d", time: 200, body: "d")
+    try context.save()
+
+    let results = try await store.search(MessageQuery(topic: "alerts"))
+    #expect(results.map(\.id).count == 1)
+    #expect(results.first?.topic == "alerts")
+}
+
+@Test func searchMatchesTitleOrBodyCaseInsensitively() async throws {
+    let (store, context, serverID) = try makeSearchStore()
+    insertMessage(context, serverID: serverID, id: "a", time: 100,
+                  title: "Deploy Finished", body: "all good")
+    insertMessage(context, serverID: serverID, id: "b", time: 200,
+                  title: nil, body: "server is DOWN")
+    insertMessage(context, serverID: serverID, id: "c", time: 300,
+                  title: nil, body: "unrelated")
+    try context.save()
+
+    let byTitle = try await store.search(MessageQuery(searchText: "deploy"))
+    #expect(byTitle.map(\.id) == [Message.uniqueKey(serverID: serverID, topic: "alerts", messageID: "a")])
+
+    let byBody = try await store.search(MessageQuery(searchText: "down"))
+    #expect(byBody.map(\.id) == [Message.uniqueKey(serverID: serverID, topic: "alerts", messageID: "b")])
+}
+
+@Test func searchAppliesMinPriority() async throws {
+    let (store, context, serverID) = try makeSearchStore()
+    insertMessage(context, serverID: serverID, id: "low", time: 100, body: "low", priority: 2)
+    insertMessage(context, serverID: serverID, id: "high", time: 200, body: "high", priority: 5)
+    try context.save()
+
+    let results = try await store.search(MessageQuery(minPriority: 4))
+    #expect(results.map(\.id) == [Message.uniqueKey(serverID: serverID, topic: "alerts", messageID: "high")])
+}
+
+@Test func searchAppliesTagFilter() async throws {
+    let (store, context, serverID) = try makeSearchStore()
+    insertMessage(context, serverID: serverID, id: "tagged", time: 100, body: "a", tags: ["urgent"])
+    insertMessage(context, serverID: serverID, id: "untagged", time: 200, body: "b")
+    try context.save()
+
+    let results = try await store.search(MessageQuery(tag: "urgent"))
+    #expect(results.map(\.id) == [Message.uniqueKey(serverID: serverID, topic: "alerts", messageID: "tagged")])
+}
+
+@Test func searchAppliesUnreadOnly() async throws {
+    let (store, context, serverID) = try makeSearchStore()
+    insertMessage(context, serverID: serverID, id: "read", time: 100, body: "a", isRead: true)
+    insertMessage(context, serverID: serverID, id: "unread", time: 200, body: "b", isRead: false)
+    try context.save()
+
+    let results = try await store.search(MessageQuery(unreadOnly: true))
+    #expect(results.map(\.id) == [Message.uniqueKey(serverID: serverID, topic: "alerts", messageID: "unread")])
+}
+
+@Test func searchAppliesSinceAndUntil() async throws {
+    let (store, context, serverID) = try makeSearchStore()
+    insertMessage(context, serverID: serverID, id: "early", time: 100, body: "a")
+    insertMessage(context, serverID: serverID, id: "mid", time: 200, body: "b")
+    insertMessage(context, serverID: serverID, id: "late", time: 300, body: "c")
+    try context.save()
+
+    let results = try await store.search(MessageQuery(
+        since: Date(timeIntervalSince1970: 150), until: Date(timeIntervalSince1970: 250)))
+    #expect(results.map(\.id) == [Message.uniqueKey(serverID: serverID, topic: "alerts", messageID: "mid")])
+}
+
+/// Mutation-verified: the topic/server filter must live IN the predicate,
+/// not be applied to rows a `fetchLimit` already truncated — the same bug
+/// class `aTopicFilteredPageIsFilteredBeforeTheLimit` covers for
+/// `messages(forServer:topic:limit:)`, exercised here for `search`. Run
+/// once against a deliberately broken build (limit applied before the
+/// topic filter): FAILS as expected — the broken build returns
+/// `["alerts-newest"]` because it takes the two newest rows overall (one a
+/// `deploys` row) before filtering, instead of the two newest `alerts`
+/// rows.
+@Test func searchLimitIsAppliedAfterFilteringNotBefore() async throws {
+    let (store, context, serverID) = try makeSearchStore()
+    insertMessage(context, serverID: serverID, topic: "alerts", id: "a1", time: 100, body: "alerts-oldest")
+    insertMessage(context, serverID: serverID, topic: "deploys", id: "d1", time: 200, body: "deploys-old")
+    insertMessage(context, serverID: serverID, topic: "alerts", id: "a2", time: 300, body: "alerts-middle")
+    insertMessage(context, serverID: serverID, topic: "deploys", id: "d2", time: 400, body: "deploys-mid")
+    insertMessage(context, serverID: serverID, topic: "alerts", id: "a3", time: 500, body: "alerts-newest")
+    insertMessage(context, serverID: serverID, topic: "deploys", id: "d3", time: 600, body: "deploys-newest")
+    try context.save()
+
+    let page = try await store.search(MessageQuery(topic: "alerts", limit: 2))
+    #expect(page.map(\.body) == ["alerts-newest", "alerts-middle"])
+}
+
+@Test func searchOffsetPagesPastEarlierRows() async throws {
+    let (store, context, serverID) = try makeSearchStore()
+    insertMessage(context, serverID: serverID, id: "a", time: 100, body: "one")
+    insertMessage(context, serverID: serverID, id: "b", time: 200, body: "two")
+    insertMessage(context, serverID: serverID, id: "c", time: 300, body: "three")
+    try context.save()
+
+    let page = try await store.search(MessageQuery(limit: 2, offset: 1))
+    #expect(page.map(\.body) == ["two", "one"])
+}
+
+// MARK: - topicSummaries / unreadCount
+
+@Test func topicSummariesReportUnreadAndTotalCounts() async throws {
+    let (store, context, serverID) = try makeSearchStore()
+    insertMessage(context, serverID: serverID, topic: "alerts", id: "a1", time: 100, body: "a", isRead: true)
+    insertMessage(context, serverID: serverID, topic: "alerts", id: "a2", time: 200, body: "b", isRead: false)
+    insertMessage(context, serverID: serverID, topic: "deploys", id: "d1", time: 300, body: "c", isRead: false)
+    try context.save()
+
+    let summaries = try await store.topicSummaries()
+        .sorted { $0.topic < $1.topic }
+    #expect(summaries.count == 2)
+    #expect(summaries[0].topic == "alerts")
+    #expect(summaries[0].totalCount == 2)
+    #expect(summaries[0].unreadCount == 1)
+    #expect(summaries[1].topic == "deploys")
+    #expect(summaries[1].totalCount == 1)
+    #expect(summaries[1].unreadCount == 1)
+}
+
+@Test func unreadCountScopesToServerAndTopic() async throws {
+    let (store, context, serverID) = try makeSearchStore()
+    insertMessage(context, serverID: serverID, topic: "alerts", id: "a1", time: 100, body: "a", isRead: false)
+    insertMessage(context, serverID: serverID, topic: "alerts", id: "a2", time: 200, body: "b", isRead: true)
+    insertMessage(context, serverID: serverID, topic: "deploys", id: "d1", time: 300, body: "c", isRead: false)
+    try context.save()
+
+    #expect(try await store.unreadCount(serverID: serverID, topic: "alerts") == 1)
+    #expect(try await store.unreadCount(serverID: serverID, topic: nil) == 2)
+}
+
+// MARK: - markRead / markAllRead / deleteMessages
+
+@Test func markReadTogglesIsReadOnNamedRowsOnly() async throws {
+    let (store, context, serverID) = try makeSearchStore()
+    insertMessage(context, serverID: serverID, id: "a", time: 100, body: "a")
+    insertMessage(context, serverID: serverID, id: "b", time: 200, body: "b")
+    try context.save()
+    let keyA = Message.uniqueKey(serverID: serverID, topic: "alerts", messageID: "a")
+    let keyB = Message.uniqueKey(serverID: serverID, topic: "alerts", messageID: "b")
+
+    try await store.markRead([keyA], read: true)
+    let page = try await store.messages(forServer: serverID, topic: nil, limit: 10)
+    #expect(page.first(where: { $0.id == keyA })?.isRead == true)
+    #expect(page.first(where: { $0.id == keyB })?.isRead == false)
+
+    try await store.markRead([keyA], read: false)
+    let after = try await store.messages(forServer: serverID, topic: nil, limit: 10)
+    #expect(after.first(where: { $0.id == keyA })?.isRead == false)
+}
+
+@Test func markAllReadOnlyTouchesScopedUnreadRows() async throws {
+    let (store, context, serverID) = try makeSearchStore()
+    insertMessage(context, serverID: serverID, topic: "alerts", id: "a", time: 100, body: "a")
+    insertMessage(context, serverID: serverID, topic: "deploys", id: "d", time: 200, body: "d")
+    try context.save()
+
+    try await store.markAllRead(serverID: serverID, topic: "alerts")
+    #expect(try await store.unreadCount(serverID: serverID, topic: "alerts") == 0)
+    #expect(try await store.unreadCount(serverID: serverID, topic: "deploys") == 1)
+}
+
+@Test func deleteMessagesRemovesOnlyTheNamedRows() async throws {
+    let (store, context, serverID) = try makeSearchStore()
+    insertMessage(context, serverID: serverID, id: "a", time: 100, body: "a")
+    insertMessage(context, serverID: serverID, id: "b", time: 200, body: "b")
+    try context.save()
+    let keyA = Message.uniqueKey(serverID: serverID, topic: "alerts", messageID: "a")
+
+    try await store.deleteMessages([keyA])
+    #expect(try await store.messageCount() == 1)
+    let remaining = try await store.messages(forServer: serverID, topic: nil, limit: 10)
+    #expect(remaining.map(\.body) == ["b"])
+}
+
+// MARK: - addServer / removeServer
+
+@Test func addServerPersistsAndIsReturnedByServers() async throws {
+    let container = try StoreFixtures.inMemoryContainer()
+    let store = MessageStore(modelContainer: container)
+
+    let id = try await store.addServer(name: "New", baseURL: URL(string: "https://new.example.com")!,
+                                       authKindRaw: "unauthenticated")
+    let servers = try await store.servers()
+    #expect(servers.count == 1)
+    #expect(servers.first?.id == id)
+    #expect(servers.first?.name == "New")
+}
+
+/// Mutation-verified: `Message.serverID` is a plain value, not a
+/// relationship, so `Server`'s cascade delete rule does not reach it —
+/// removing that explicit deletion (leaving only `modelContext.delete(server)`)
+/// FAILS this test as expected: `messageCount()` comes back `1`, the
+/// orphaned row, instead of `0`.
+@Test func removeServerDeletesItsMessages() async throws {
+    let (store, context, serverID) = try makeSearchStore()
+    insertMessage(context, serverID: serverID, id: "a", time: 100, body: "a")
+    try context.save()
+    #expect(try await store.messageCount() == 1)
+
+    try await store.removeServer(serverID)
+    #expect(try await store.messageCount() == 0)
+}
+
+/// Companion to the mutation-verified test above: proves the deletion is
+/// scoped to the removed server, not a global wipe — a broken
+/// implementation that deleted every `Message` row regardless of
+/// `serverID` would also pass a test that only checked the removed
+/// server's count went to zero.
+@Test func removeServerLeavesOtherServersMessagesIntact() async throws {
+    let container = try StoreFixtures.inMemoryContainer()
+    let context = ModelContext(container)
+    let removedID = UUID()
+    let keptID = UUID()
+    let removedServer = Server(id: removedID, name: "Removed", baseURLString: "https://a.example.com")
+    let keptServer = Server(id: keptID, name: "Kept", baseURLString: "https://b.example.com")
+    context.insert(removedServer)
+    context.insert(keptServer)
+    context.insert(Subscription(topic: "alerts", server: removedServer))
+    context.insert(Subscription(topic: "alerts", server: keptServer))
+    try context.save()
+    insertMessage(context, serverID: removedID, id: "a", time: 100, body: "a")
+    insertMessage(context, serverID: keptID, id: "b", time: 200, body: "b")
+    try context.save()
+
+    let store = MessageStore(modelContainer: container)
+    try await store.removeServer(removedID)
+
+    #expect(try await store.messageCount() == 1)
+    let remaining = try await store.messages(forServer: keptID, topic: nil, limit: 10)
+    #expect(remaining.map(\.body) == ["b"])
+}
+
+@Test func removeServerAlsoRemovesItsSubscriptions() async throws {
+    let (store, _, serverID) = try makeSearchStore()
+    try await store.removeServer(serverID)
+    let servers = try await store.servers()
+    #expect(servers.isEmpty)
+}
+
+// MARK: - addTopic / removeTopic
+
+/// Mutation-verified: dropping the `server.caughtUpTo = nil` line makes
+/// this FAIL as expected — `caughtUpTo` comes back still set to `t`
+/// instead of `nil`.
+@Test func addTopicResetsCaughtUpTo() async throws {
+    let (store, serverID) = try makeStore()
+    let t = Date(timeIntervalSince1970: 1_788_353_322)
+    try await store.setCaughtUpTo(t, forServer: serverID)
+    #expect(try await store.caughtUpTo(forServer: serverID) == t)
+
+    try await store.addTopic("deploys", toServer: serverID)
+    #expect(try await store.caughtUpTo(forServer: serverID) == nil)
+}
+
+@Test func addTopicCreatesASubscriptionRow() async throws {
+    let (store, serverID) = try makeStore()
+    try await store.addTopic("deploys", toServer: serverID)
+    let marks = try await store.watermarks(forServer: serverID)
+    #expect(marks.map(\.topic).sorted() == ["alerts", "deploys"])
+}
+
+/// Adding a topic the server is already subscribed to must not create a
+/// second `Subscription` row, or every `first(where:)` lookup in the store
+/// (alert settings, watermark advance) would nondeterministically pick
+/// either one.
+@Test func addTopicIsIdempotentForAnAlreadySubscribedTopic() async throws {
+    let (store, serverID) = try makeStore()
+    try await store.addTopic("alerts", toServer: serverID)
+    let marks = try await store.watermarks(forServer: serverID)
+    #expect(marks.count == 1)
+}
+
+@Test func removeTopicDeletesTheSubscriptionButKeepsMessages() async throws {
+    let (store, context, serverID) = try makeSearchStore()
+    insertMessage(context, serverID: serverID, topic: "alerts", id: "a", time: 100, body: "a")
+    try context.save()
+
+    try await store.removeTopic("alerts", fromServer: serverID)
+    let marks = try await store.watermarks(forServer: serverID)
+    #expect(marks.map(\.topic) == ["deploys"])
+    #expect(try await store.messageCount() == 1)
+}
+
+// MARK: - setAlertSettings
+
+@Test func setAlertSettingsWritesToTheSubscriptionRow() async throws {
+    let (store, serverID) = try makeStore()
+    try await store.setAlertSettings(TopicAlertSettings(muted: true, minAlertPriority: 5),
+                                     forServer: serverID, topic: "alerts")
+    let settings = try await store.alertSettings(forServer: serverID, topic: "alerts")
+    #expect(settings.muted == true)
+    #expect(settings.minAlertPriority == 5)
+}

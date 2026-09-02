@@ -300,3 +300,247 @@ public actor MessageStore {
         return PruneResult(messagesDeleted: doomed.count, attachmentFilesDeleted: filesDeleted)
     }
 }
+
+extension MessageStore {
+    /// Newest first. Honours every non-nil field of the query.
+    ///
+    /// Every field except `tag` is folded into one `#Predicate` and pushed to
+    /// SQL — the same reasoning as `messages(forServer:topic:limit:)`:
+    /// applying `fetchLimit`/`fetchOffset` before a filter silently truncates
+    /// or mis-pages a result. `tag` cannot join that predicate — see the
+    /// comment below — so when it is set, this fetches every SQL-filtered
+    /// row unpaged, filters those by tag in Swift, and only then slices by
+    /// `offset`/`limit`. That ordering (tag filter strictly before
+    /// pagination) is what avoids the exact truncation bug the SQL-pushed
+    /// path avoids by construction.
+    public func search(_ query: MessageQuery) throws -> [MessageSnapshot] {
+        let serverID = query.serverID
+        let topic = query.topic
+        let searchText = query.searchText
+        let minPriority = query.minPriority
+        let unreadOnly = query.unreadOnly
+        let since = query.since
+        let until = query.until
+
+        // Split into small sub-predicates composed via `.evaluate(_:)`
+        // rather than one large `&&` chain: the single-expression form times
+        // out the compiler's predicate type-checker. Each piece still
+        // becomes part of the one `Predicate` handed to `FetchDescriptor`,
+        // so this is still filtering in SQL, not post-fetch in memory.
+        let scopeFilter = #Predicate<Message> { message in
+            (serverID == nil || message.serverID == serverID!) &&
+            (topic == nil || message.topic == topic!)
+        }
+        let priorityAndReadFilter = #Predicate<Message> { message in
+            (minPriority == nil || message.priority >= minPriority!) &&
+            (!unreadOnly || message.isRead == false)
+        }
+        let dateFilter = #Predicate<Message> { message in
+            (since == nil || message.time >= since!) &&
+            (until == nil || message.time <= until!)
+        }
+        let searchTextFilter = #Predicate<Message> { message in
+            // `message.title!` (force-unwrapping a *model* optional, as
+            // opposed to `searchText!` above, which force-unwraps a
+            // captured Swift value) is rejected at runtime with
+            // `unsupportedPredicate` — SwiftData's predicate translator
+            // does not support `ForcedUnwrap` on a fetched property. Optional
+            // chaining with `??` is supported and expresses the same thing.
+            searchText == nil ||
+            message.body.localizedStandardContains(searchText!) ||
+            (message.title?.localizedStandardContains(searchText!) ?? false)
+        }
+
+        var descriptor = FetchDescriptor<Message>(
+            predicate: #Predicate<Message> { message in
+                scopeFilter.evaluate(message) &&
+                priorityAndReadFilter.evaluate(message) &&
+                dateFilter.evaluate(message) &&
+                searchTextFilter.evaluate(message)
+            },
+            sortBy: [SortDescriptor(\.time, order: .reverse)])
+
+        guard let tag = query.tag else {
+            descriptor.fetchLimit = query.limit
+            descriptor.fetchOffset = query.offset
+            return try modelContext.fetch(descriptor).map(\.snapshot)
+        }
+
+        // `Message.tags` (`[String]`) is stored as a transformable blob, not
+        // a SQL-queryable column: CoreData cannot generate SQL for
+        // `Array.contains` against it at all on this platform — confirmed by
+        // spiking even the plainest possible form,
+        // `message.tags.contains("literal")`, with no captured variable and
+        // no optional handling involved. It does not throw a catchable
+        // error; it crashes the process (`NSInvalidArgumentException`,
+        // "unimplemented SQL generation ... (bad LHS)"), so there is no
+        // fallback-and-recover option — the filter must not reach SQL.
+        let matches = try modelContext.fetch(descriptor).filter { $0.tags.contains(tag) }
+        let page = matches.dropFirst(query.offset).prefix(query.limit)
+        return page.map(\.snapshot)
+    }
+
+    /// One row per (server, topic) that has a `Subscription`, for the
+    /// sidebar's unread badges.
+    public func topicSummaries() throws -> [TopicSummary] {
+        let servers = try modelContext.fetch(
+            FetchDescriptor<Server>(sortBy: [SortDescriptor(\.sortOrder)]))
+
+        var summaries: [TopicSummary] = []
+        for server in servers {
+            let serverID = server.id
+            for sub in server.subscriptions {
+                let topic = sub.topic
+                let total = try modelContext.fetchCount(FetchDescriptor<Message>(
+                    predicate: #Predicate { $0.serverID == serverID && $0.topic == topic }))
+                let unread = try modelContext.fetchCount(FetchDescriptor<Message>(
+                    predicate: #Predicate {
+                        $0.serverID == serverID && $0.topic == topic && $0.isRead == false
+                    }))
+                summaries.append(TopicSummary(
+                    serverID: serverID, topic: topic, displayName: sub.displayName,
+                    unreadCount: unread, totalCount: total, lastMessageTime: sub.lastMessageTime,
+                    muted: sub.muted, minAlertPriority: sub.minAlertPriority))
+            }
+        }
+        return summaries
+    }
+
+    /// Count of unread messages, optionally scoped to a server and/or topic.
+    public func unreadCount(serverID: UUID?, topic: String?) throws -> Int {
+        try modelContext.fetchCount(FetchDescriptor<Message>(
+            predicate: #Predicate<Message> { message in
+                (serverID == nil || message.serverID == serverID!) &&
+                (topic == nil || message.topic == topic!) &&
+                message.isRead == false
+            }))
+    }
+
+    /// Sets `isRead` on exactly the rows named by `uniqueKeys`. Keys with no
+    /// matching row are silently ignored — a row deleted (by prune, or by a
+    /// concurrent `deleteMessages` call) between the caller reading it and
+    /// this call is not an error, just nothing left to mark.
+    public func markRead(_ uniqueKeys: [String], read: Bool) throws {
+        guard !uniqueKeys.isEmpty else { return }
+        let keys = Set(uniqueKeys)
+        let messages = try modelContext.fetch(
+            FetchDescriptor<Message>(predicate: #Predicate { keys.contains($0.uniqueKey) }))
+        for message in messages { message.isRead = read }
+        try modelContext.save()
+    }
+
+    /// Marks every currently-unread message in scope as read.
+    public func markAllRead(serverID: UUID?, topic: String?) throws {
+        let messages = try modelContext.fetch(FetchDescriptor<Message>(
+            predicate: #Predicate<Message> { message in
+                (serverID == nil || message.serverID == serverID!) &&
+                (topic == nil || message.topic == topic!) &&
+                message.isRead == false
+            }))
+        guard !messages.isEmpty else { return }
+        for message in messages { message.isRead = true }
+        try modelContext.save()
+    }
+
+    /// Deletes exactly the rows named by `uniqueKeys`. `Message.attachment`
+    /// cascades (`deleteRule: .cascade` in `Models.swift`), so its
+    /// `Attachment` row goes with it — but the attachment's downloaded FILE
+    /// does not, the same as everywhere else in this actor that deletes a
+    /// `Message` outside of `prune`: only `prune` is handed an
+    /// `attachmentsDirectory` to reconcile disk with rows.
+    public func deleteMessages(_ uniqueKeys: [String]) throws {
+        guard !uniqueKeys.isEmpty else { return }
+        let keys = Set(uniqueKeys)
+        let messages = try modelContext.fetch(
+            FetchDescriptor<Message>(predicate: #Predicate { keys.contains($0.uniqueKey) }))
+        for message in messages { modelContext.delete(message) }
+        try modelContext.save()
+    }
+
+    /// Adds a server and returns its id. Credentials go to the Keychain by
+    /// the caller, never here.
+    public func addServer(name: String, baseURL: URL, authKindRaw: String) throws -> UUID {
+        var top = FetchDescriptor<Server>(sortBy: [SortDescriptor(\.sortOrder, order: .reverse)])
+        top.fetchLimit = 1
+        let nextSortOrder = (try modelContext.fetch(top).first?.sortOrder ?? -1) + 1
+
+        let server = Server(name: name, baseURLString: baseURL.absoluteString,
+                            authKindRaw: authKindRaw, sortOrder: nextSortOrder)
+        modelContext.insert(server)
+        try modelContext.save()
+        return server.id
+    }
+
+    /// Removes a server, its subscriptions, and its message history.
+    ///
+    /// `Message.serverID` is a plain value, not a relationship, so the
+    /// cascade delete on `Server.subscriptions` does not reach messages —
+    /// they must be deleted explicitly here or they are orphaned forever.
+    /// `Attachment` still cascades from `Message` (see `deleteMessages`), so
+    /// no separate attachment query is needed.
+    public func removeServer(_ serverID: UUID) throws {
+        guard let server = try server(serverID) else {
+            // An unknown server id is a caller bug, the same as every other
+            // server-scoped method in this actor — nothing to remove.
+            Log.store.error("no server record for the requested id")
+            return
+        }
+        let messages = try modelContext.fetch(
+            FetchDescriptor<Message>(predicate: #Predicate { $0.serverID == serverID }))
+        for message in messages { modelContext.delete(message) }
+        modelContext.delete(server)
+        try modelContext.save()
+    }
+
+    /// Subscribes `serverID` to `topic`. A topic already subscribed is left
+    /// untouched — a no-op, not a duplicate `Subscription` row, which would
+    /// otherwise make every `first(where:)` lookup in this actor pick
+    /// whichever row happens to come back first.
+    public func addTopic(_ topic: String, toServer serverID: UUID) throws {
+        guard let server = try server(serverID) else {
+            Log.store.error("no server record for the requested id")
+            return
+        }
+        guard !server.subscriptions.contains(where: { $0.topic == topic }) else { return }
+
+        modelContext.insert(Subscription(topic: topic, server: server))
+        // §5.2: `caughtUpTo` means "delivered on every subscribed topic",
+        // which was never true of this one — leaving it set would skip
+        // anything the new topic published before the old resume point.
+        server.caughtUpTo = nil
+        try modelContext.save()
+    }
+
+    /// Unsubscribes `serverID` from `topic`. Message history for the topic
+    /// is left in place — only `removeServer` purges history, and only
+    /// because the server itself is gone.
+    public func removeTopic(_ topic: String, fromServer serverID: UUID) throws {
+        guard let server = try server(serverID) else {
+            Log.store.error("no server record for the requested id")
+            return
+        }
+        guard let subscription = server.subscriptions.first(where: { $0.topic == topic }) else {
+            return
+        }
+        modelContext.delete(subscription)
+        try modelContext.save()
+    }
+
+    /// Writes per-topic alert settings to the `Subscription` row.
+    public func setAlertSettings(_ settings: TopicAlertSettings,
+                                 forServer serverID: UUID, topic: String) throws {
+        guard let server = try server(serverID) else {
+            Log.store.error("no server record for the requested id")
+            return
+        }
+        guard let subscription = server.subscriptions.first(where: { $0.topic == topic }) else {
+            // No subscription row for this topic — the same "caller bug,
+            // nowhere to store it" case as `alertSettings`'s counterpart.
+            Log.store.error("no subscription record for the requested topic")
+            return
+        }
+        subscription.muted = settings.muted
+        subscription.minAlertPriority = settings.minAlertPriority
+        try modelContext.save()
+    }
+}
