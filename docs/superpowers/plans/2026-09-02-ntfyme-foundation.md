@@ -825,6 +825,17 @@ private func wm(_ topic: String, _ offset: TimeInterval?) -> TopicWatermark {
     #expect(r.hasHistoryGap == true)
 }
 
+/// The boundary sliver: a watermark inside the cache window whose `since`
+/// value — watermark minus margin — falls outside it. Measuring the gap from
+/// the watermark instead of from the value actually sent reports no gap here.
+@Test func flagsAGapWhenTheMarginPushesSinceOutsideTheWindow() {
+    let r = WatermarkResolver.resolve(
+        watermarks: [wm("a", -(window - 2))],
+        cacheWindow: window, now: now, margin: 5
+    )
+    #expect(r.hasHistoryGap == true)
+}
+
 @Test func doesNotFlagAGapForARecentWatermark() {
     let r = WatermarkResolver.resolve(watermarks: [wm("a", -60)], cacheWindow: window, now: now)
     #expect(r.hasHistoryGap == false)
@@ -913,9 +924,15 @@ public enum WatermarkResolver {
             return Resolution(since: .all, hasHistoryGap: false)
         }
 
-        let gap = now.timeIntervalSince(oldest) > cacheWindow
-        let since = Int((oldest.timeIntervalSince1970 - margin).rounded(.down))
-        return Resolution(since: .unixTime(since), hasHistoryGap: gap)
+        // The gap is measured against the value actually sent, which is
+        // `oldest - margin`, not against `oldest`. Measuring from `oldest`
+        // leaves a margin-wide sliver where the request predates the cache
+        // window but the client reports no gap — a false negative in exactly
+        // the signal spec section 10 relies on to distinguish a clean resume
+        // from a silent full-cache replay.
+        let sinceDate = oldest.addingTimeInterval(-margin)
+        let gap = now.timeIntervalSince(sinceDate) > cacheWindow
+        return Resolution(since: .unixTime(Int(sinceDate.timeIntervalSince1970.rounded(.down))), hasHistoryGap: gap)
     }
 }
 ```
