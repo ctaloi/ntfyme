@@ -421,11 +421,27 @@ no `sudo xcode-select` is required.
 CI (GitHub Actions, macOS runner) builds and runs the test suite unsigned. No
 signing secrets are present in CI.
 
-**Unverified assumption**, to be confirmed in stage 2 before the test suite
-grows around it: that an unsigned binary on a hosted macOS runner can bind and
-connect to loopback for `MockNtfyServer` without a signature or entitlement.
-This is expected to work, but it gates stage 2, which gates everything after it.
-If it does not, CI signs ad-hoc (`codesign -s -`) before running tests.
+**Open assumption, not yet CI-verified:** that an unsigned binary on a hosted
+macOS runner can bind and connect to loopback for `MockNtfyServer` without a
+signature or entitlement. `.github/workflows/ci.yml` is written and committed
+(`macos-15`, unsigned `swift build` / `swift test`), but this repository has
+no git remote yet, so no CI run has ever executed — the workflow has not
+produced evidence either way.
+
+What *is* established: on this development machine, macOS 26.6.2, the full
+suite including every loopback-socket test in `MockNtfyServer` and
+`ServerConnectionTests` passes locally against an unsigned SwiftPM test
+binary (`swift test`, no `codesign` step, no signing entitlement present) —
+66 tests, zero failures. That is real evidence that an unsigned binary can
+bind and connect to loopback on this OS version, but it is not runner
+evidence: `ci.yml` targets `macos-15`, a different OS version than this
+machine's 26.6.2, and a hosted GitHub Actions image may also differ in
+firewall configuration, System Integrity Protection posture, or other
+sandboxing that only a real CI run will expose. This assumption remains open
+until this repository gets a remote and the workflow actually runs. If that
+run fails with a binding or permission error, the fallback is to add a
+workflow step that ad-hoc signs the test bundle (`codesign -s - --force`)
+before `swift test`.
 
 ## 12. Testing
 

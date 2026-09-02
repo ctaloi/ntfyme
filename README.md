@@ -62,3 +62,20 @@ an App ID with that capability enabled, which plain local "Apple Development"
 signing does not provide. This is expected, is not a blocker for early
 development, and is deferred to a future release-signing task once a paid
 Developer Program account and Developer ID are available.
+
+## Development
+
+`swift test` runs the full `NtfyKit` suite, including socket-level tests
+against a loopback `MockNtfyServer`:
+
+```bash
+export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
+swift test
+```
+
+`.github/workflows/ci.yml` builds and tests the package unsigned on a hosted
+`macos-15` runner on every push to `main` and every pull request, with no
+signing secrets configured. This repository has no git remote yet, so that
+workflow has never run — there is no build-status badge here because there is
+no run to point one at. See spec §11 for what is and isn't established about
+loopback networking on an unsigned CI binary.
