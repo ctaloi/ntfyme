@@ -8,6 +8,11 @@ actor FakeStreamClient: StreamClient {
     private enum Script {
         case elements([NtfyStreamClient.StreamElement])
         case failure(Swift.Error)
+        /// Never yields and never finishes on its own — for pinning a
+        /// caller's timeout against a server that accepts the connection and
+        /// then stalls. Only ends when the consumer's task is cancelled,
+        /// which tears down the stream via `onTermination` below.
+        case hang
     }
 
     private var scripts: [Script] = []
@@ -27,6 +32,10 @@ actor FakeStreamClient: StreamClient {
         scripts.append(.failure(error))
     }
 
+    func enqueueHang() {
+        scripts.append(.hang)
+    }
+
     private func take(_ request: URLRequest) -> Script {
         requestCount += 1
         lastRequest = request
@@ -44,6 +53,11 @@ actor FakeStreamClient: StreamClient {
                     continuation.finish()
                 case .failure(let error):
                     continuation.finish(throwing: error)
+                case .hang:
+                    // `try?`: cancellation is the only way this returns, and
+                    // that is the intended, sole exit for this branch — there
+                    // is nothing else to report.
+                    try? await Task.sleep(for: .seconds(86400))
                 }
             }
             continuation.onTermination = { _ in task.cancel() }

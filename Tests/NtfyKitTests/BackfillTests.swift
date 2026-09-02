@@ -59,8 +59,12 @@ private func message(_ id: String, topic: String, time: Int) -> NtfyEvent {
     #expect(url.contains("other") == false)
 }
 
-/// After backfill the topic has a watermark, so the rebuilt shared stream
-/// cannot drag the resume point to the epoch.
+/// After a successful backfill the topic has a watermark, so the rebuilt
+/// shared stream resumes it from that point instead of missing everything
+/// that came before. (When backfill finds nothing for a topic the watermark
+/// stays `nil` instead — separately safe, see
+/// `backfillOfATopicWithNoCachedHistoryLeavesTheWatermarkNil` below and
+/// `WatermarkResolver`'s `ignoresTopicsThatHaveNoWatermarkYet`.)
 @Test func backfillLeavesTheTopicWithAWatermark() async throws {
     let (_, store, serverID) = try makeStore(topics: ["newtopic"])
     let fake = FakeStreamClient()
@@ -98,4 +102,23 @@ private func message(_ id: String, topic: String, time: Int) -> NtfyEvent {
     #expect(inserted == 0)
     let marks = try await store.watermarks(forServer: serverID)
     #expect(marks.first(where: { $0.topic == "newtopic" })?.lastMessageTime == nil)
+}
+
+/// A server that accepts the connection and then never responds — no data,
+/// no close — must not hang backfill forever. Unlike a subscription's shared
+/// stream, a poll has no keepalives to prove it's merely quiet, so this bound
+/// must come from `Backfill` itself, not from the underlying session.
+@Test func backfillTimesOutRatherThanHangingOnAStalledPoll() async throws {
+    let (_, store, serverID) = try makeStore(topics: ["newtopic"])
+    let fake = FakeStreamClient()
+    await fake.enqueueHang()
+
+    let backfill = Backfill(
+        endpoint: NtfyEndpoint(baseURL: URL(string: "https://ntfy.example.com")!,
+                               credential: .unauthenticated),
+        client: fake, store: store)
+
+    await #expect(throws: Backfill.Error.timedOut) {
+        try await backfill.run(topic: "newtopic", serverID: serverID, timeout: .milliseconds(50))
+    }
 }
