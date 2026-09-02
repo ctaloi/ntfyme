@@ -27,6 +27,23 @@ Copied from the spec and from Stage 1–2's merged state. Every task's requireme
 - Test output must be pristine — warnings are findings.
 - **A `Subscription` must always be linked to its `Server`.** `MessageStore` scopes every watermark lookup through `server.subscriptions`, because two servers may legitimately carry a topic of the same name and advancing the wrong one would make the other resume from a point it never reached. A fixture that inserts a bare `Subscription` will silently find no watermarks.
 
+## Measured SwiftData behavior this plan depends on
+
+Verified in-process against this repo's toolchain on 2026-09-02 (Task 4,
+`Tests/NtfyKitTests/SwiftDataBehaviorTests.swift`). Do not re-derive these
+from documentation; they were measured, including a positive control —
+`@Attribute(.unique)` was removed, the same tests were re-run and failed
+cleanly (`count == 2`, surviving body `"first"`), then it was restored and
+the tests passed again.
+
+| Fact | Consequence for this plan |
+|---|---|
+| `@Attribute(.unique)` on `Message.uniqueKey` upserts a duplicate-key `insert()` + `save()` — the row count stays 1, it does not throw | The unique constraint alone already prevents duplicate rows on this toolchain |
+| The **second** insert's field values win (`body == "second"`): **last write wins**, not keep-first | Task 6's dedupe may safely treat a re-received message as replacing the stored row, not merely rejecting it |
+| Distinct `uniqueKey`s coexist normally (2 rows in, 2 rows out) | No unexpected cross-row interaction from the unique constraint |
+| With `@Attribute(.unique)` removed (the positive control), the same duplicate-key insert produces 2 rows when tests run individually, and segfaults `swiftpm-testing-helper` when the whole file runs together under parallel test execution | SwiftData's behavior without the unique constraint is not just "wrong," it is unstable under this toolchain's parallel test runner — never ship without `@Attribute(.unique)` present |
+| The spec's hedge ("query existing keys... rather than relying solely on unique-constraint upsert semantics") is **not required for correctness** on this toolchain: the unique constraint alone already dedupes and upserts | Task 6 still implements query-before-insert anyway — it is the only way to produce an accurate `InsertResult.duplicatesSkipped` count and to control watermark advancement explicitly, not because the constraint is unsafe to rely on |
+
 ### The test rule this plan exists under
 
 Stage 1–2 shipped **four separate tests that looked rigorous and pinned nothing**. All four were negative assertions never demonstrated able to fail. This plan is full of that shape — "the row was not duplicated", "the pruned message is gone", "the quiet topic did not trigger a gap".

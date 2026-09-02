@@ -107,9 +107,14 @@ Mirrors the ntfy message JSON:
 `actionsJSON: Data?`, `attachment: Attachment?`, `isRead: Bool`.
 
 `uniqueKey` is what makes replay-on-reconnect safe: overlapping windows
-upsert rather than duplicate. The store actor queries existing keys for a batch
-before inserting rather than relying solely on unique-constraint upsert
-semantics.
+upsert rather than duplicate. Measured against this project's toolchain
+(Plan 2 Task 4): `@Attribute(.unique)` alone already upserts a duplicate-key
+insert, last write wins, and the row count never exceeds one — the
+unique constraint is not merely a belt-and-braces backstop here, it is
+sufficient on its own. The store actor still queries existing keys for a
+batch before inserting, not because the constraint is unsafe, but because an
+explicit query is the only way to produce an accurate skipped-duplicate count
+and to control watermark advancement deliberately.
 
 `contentType == "text/markdown"` selects markdown rendering.
 
