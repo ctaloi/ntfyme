@@ -612,6 +612,62 @@ private func makeSearchStore() throws -> (MessageStore, ModelContext, UUID) {
     #expect(remaining.map(\.body) == ["b"])
 }
 
+/// `deleteMessages` reuses `prune`'s guarded attachment-file deletion
+/// rather than a second copy of it — this pins that the file is actually
+/// removed, not just that the call compiles.
+@Test func deleteMessagesRemovesTheAttachmentFileOnDisk() async throws {
+    let (store, context, serverID) = try makeSearchStore()
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("deleteMessages-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    let file = directory.appendingPathComponent("graph.png")
+    try Data("png".utf8).write(to: file)
+
+    let message = Message(serverID: serverID, topic: "alerts", messageID: "a",
+                          time: Date(timeIntervalSince1970: 1), body: "m",
+                          attachment: Attachment(name: "graph.png",
+                                                 urlString: "https://example.com/graph.png",
+                                                 localFilename: "graph.png"))
+    context.insert(message)
+    try context.save()
+    let key = Message.uniqueKey(serverID: serverID, topic: "alerts", messageID: "a")
+
+    try await store.deleteMessages([key], attachmentsDirectory: directory)
+    #expect(try await store.messageCount() == 0)
+    #expect(FileManager.default.fileExists(atPath: file.path) == false)
+}
+
+/// The `attachmentsDirectory` parameter defaults to `nil`, so a caller that
+/// omits it (tests, or a build with no downloader) deletes the row without
+/// attempting any file operation — this is the contrast that proves the
+/// test above is actually exercising the file-deletion path, not something
+/// that always happens regardless.
+@Test func deleteMessagesLeavesTheFileAloneWhenNoDirectoryIsGiven() async throws {
+    let (store, context, serverID) = try makeSearchStore()
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("deleteMessages-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    let file = directory.appendingPathComponent("graph.png")
+    try Data("png".utf8).write(to: file)
+
+    let message = Message(serverID: serverID, topic: "alerts", messageID: "a",
+                          time: Date(timeIntervalSince1970: 1), body: "m",
+                          attachment: Attachment(name: "graph.png",
+                                                 urlString: "https://example.com/graph.png",
+                                                 localFilename: "graph.png"))
+    context.insert(message)
+    try context.save()
+    let key = Message.uniqueKey(serverID: serverID, topic: "alerts", messageID: "a")
+
+    try await store.deleteMessages([key])
+    #expect(try await store.messageCount() == 0)
+    #expect(FileManager.default.fileExists(atPath: file.path) == true)
+}
+
 // MARK: - addServer / removeServer
 
 @Test func addServerPersistsAndIsReturnedByServers() async throws {

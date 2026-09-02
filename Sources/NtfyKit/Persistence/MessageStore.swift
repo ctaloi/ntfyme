@@ -311,55 +311,64 @@ public actor MessageStore {
 
         var filesDeleted = 0
         for message in doomed {
-            if let directory = attachmentsDirectory,
-               let filename = message.attachment?.localFilename {
-                // `localFilename` must be a bare path component. No
-                // downloader writes this field yet, but the safety of a
-                // `removeItem` call should not depend on every future writer
-                // being careful — a guard here holds regardless of who sets
-                // the field or what they intended. Reject rather than
-                // sanitize: stripping "../" invites a double-encoding
-                // argument, and a non-component filename is a bug in
-                // whoever wrote it, not something to repair. The message is
-                // past retention either way, so the row is still deleted —
-                // only the file operation is declined, and it does not
-                // count toward `attachmentFilesDeleted`.
-                guard !filename.isEmpty,
-                      !filename.contains("/"),
-                      !filename.contains("\\"),
-                      filename != ".", filename != ".."
-                else {
-                    // Never interpolate `filename` itself: it is the same
-                    // server-provided value class `Log.store`'s doc comment
-                    // already bars from this log line.
-                    Log.store.error("refusing to delete an attachment with a non-component filename")
-                    modelContext.delete(message)
-                    continue
-                }
-                let url = directory.appendingPathComponent(filename)
-                do {
-                    try FileManager.default.removeItem(at: url)
-                    filesDeleted += 1
-                } catch CocoaError.fileNoSuchFile {
-                    // Already gone: the row outlived its file. Not an error —
-                    // the goal is that the file is absent, and it is.
-                } catch {
-                    // Not `error.localizedDescription`: Cocoa's file-removal
-                    // errors embed the display name of the file they failed
-                    // on, which is `Attachment.localFilename` — content that
-                    // reached this device from a server-provided attachment
-                    // name, the same category `Log.store`'s doc comment bars
-                    // (see the topic/messageID reasoning there). Domain and
-                    // code are a closed, fixed-shape vocabulary instead.
-                    let nsError = error as NSError
-                    Log.store.error("attachment file deletion failed: \(nsError.domain, privacy: .public) \(nsError.code, privacy: .public)")
-                }
+            if deleteAttachmentFileIfAny(for: message, in: attachmentsDirectory) {
+                filesDeleted += 1
             }
             modelContext.delete(message)
         }
 
         try modelContext.save()
         return PruneResult(messagesDeleted: doomed.count, attachmentFilesDeleted: filesDeleted)
+    }
+
+    /// Deletes `message`'s attachment file from `directory`, if it has one.
+    /// Returns whether a file was actually removed, for callers (`prune`)
+    /// that count it. Shared by `prune` and `deleteMessages` so the
+    /// path-traversal guard on `localFilename` — a real fix, not defensive
+    /// boilerplate — exists in exactly one place rather than being
+    /// re-derived, and potentially re-broken, at each call site.
+    private func deleteAttachmentFileIfAny(for message: Message, in directory: URL?) -> Bool {
+        guard let directory, let filename = message.attachment?.localFilename else { return false }
+        // `localFilename` must be a bare path component. No downloader wrote
+        // this field when this guard was first added, but the safety of a
+        // `removeItem` call should not depend on every future writer being
+        // careful — this guard holds regardless of who sets the field or
+        // what they intended. Reject rather than sanitize: stripping "../"
+        // invites a double-encoding argument, and a non-component filename
+        // is a bug in whoever wrote it, not something to repair. The caller
+        // still deletes the message row either way — only the file
+        // operation is declined here.
+        guard !filename.isEmpty,
+              !filename.contains("/"),
+              !filename.contains("\\"),
+              filename != ".", filename != ".."
+        else {
+            // Never interpolate `filename` itself: it is the same
+            // server-provided value class `Log.store`'s doc comment already
+            // bars from this log line.
+            Log.store.error("refusing to delete an attachment with a non-component filename")
+            return false
+        }
+        let url = directory.appendingPathComponent(filename)
+        do {
+            try FileManager.default.removeItem(at: url)
+            return true
+        } catch CocoaError.fileNoSuchFile {
+            // Already gone: the row outlived its file. Not an error — the
+            // goal is that the file is absent, and it is.
+            return false
+        } catch {
+            // Not `error.localizedDescription`: Cocoa's file-removal errors
+            // embed the display name of the file they failed on, which is
+            // `Attachment.localFilename` — content that reached this device
+            // from a server-provided attachment name, the same category
+            // `Log.store`'s doc comment bars (see the topic/messageID
+            // reasoning there). Domain and code are a closed, fixed-shape
+            // vocabulary instead.
+            let nsError = error as NSError
+            Log.store.error("attachment file deletion failed: \(nsError.domain, privacy: .public) \(nsError.code, privacy: .public)")
+            return false
+        }
     }
 }
 
@@ -510,16 +519,20 @@ extension MessageStore {
 
     /// Deletes exactly the rows named by `uniqueKeys`. `Message.attachment`
     /// cascades (`deleteRule: .cascade` in `Models.swift`), so its
-    /// `Attachment` row goes with it — but the attachment's downloaded FILE
-    /// does not, the same as everywhere else in this actor that deletes a
-    /// `Message` outside of `prune`: only `prune` is handed an
-    /// `attachmentsDirectory` to reconcile disk with rows.
-    public func deleteMessages(_ uniqueKeys: [String]) throws {
+    /// `Attachment` row goes with it — and, when `attachmentsDirectory` is
+    /// given, its downloaded FILE goes too, via the same guarded deletion
+    /// `prune` uses (see `deleteAttachmentFileIfAny`). The parameter
+    /// defaults to `nil`, matching `prune`'s signature, for tests and for a
+    /// build with no downloader.
+    public func deleteMessages(_ uniqueKeys: [String], attachmentsDirectory: URL? = nil) throws {
         guard !uniqueKeys.isEmpty else { return }
         let keys = Set(uniqueKeys)
         let messages = try modelContext.fetch(
             FetchDescriptor<Message>(predicate: #Predicate { keys.contains($0.uniqueKey) }))
-        for message in messages { modelContext.delete(message) }
+        for message in messages {
+            _ = deleteAttachmentFileIfAny(for: message, in: attachmentsDirectory)
+            modelContext.delete(message)
+        }
         try modelContext.save()
     }
 
@@ -544,6 +557,14 @@ extension MessageStore {
     /// they must be deleted explicitly here or they are orphaned forever.
     /// `Attachment` still cascades from `Message` (see `deleteMessages`), so
     /// no separate attachment query is needed.
+    ///
+    /// Deliberately asymmetric with `removeTopic`, which keeps history: a
+    /// removed server's messages would otherwise be unreachable forever —
+    /// no `serverID` remains to scope a `search`/`messages` call to them,
+    /// and no UI could show them — so keeping the rows would only be
+    /// keeping dead weight. A topic removed from a server that still exists
+    /// has no such problem; its messages stay reachable through that
+    /// server, which is exactly why `removeTopic` leaves them alone.
     public func removeServer(_ serverID: UUID) throws {
         guard let server = try server(serverID) else {
             // An unknown server id is a caller bug, the same as every other
@@ -578,8 +599,13 @@ extension MessageStore {
     }
 
     /// Unsubscribes `serverID` from `topic`. Message history for the topic
-    /// is left in place — only `removeServer` purges history, and only
-    /// because the server itself is gone.
+    /// is deliberately left in place: unsubscribing should not destroy the
+    /// archive of what the topic already sent, and unlike `removeServer`,
+    /// the server still exists, so those messages stay reachable through it
+    /// — nothing here would orphan them the way `removeServer` would leave
+    /// `Message.serverID` rows behind pointing at a `Server` that is gone.
+    /// Only `removeServer` purges history, and only because the server
+    /// itself is gone.
     public func removeTopic(_ topic: String, fromServer serverID: UUID) throws {
         guard let server = try server(serverID) else {
             Log.store.error("no server record for the requested id")
