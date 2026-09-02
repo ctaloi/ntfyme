@@ -375,8 +375,11 @@ private func makeSearchStore() throws -> (MessageStore, ModelContext, UUID) {
     insertMessage(context, serverID: serverID, topic: "deploys", id: "d1", time: 300, body: "c", isRead: false)
     try context.save()
 
+    // No `.sorted` here: `topicSummaries()` orders by topic name itself
+    // (subscriptions have no natural relationship order), so asserting on
+    // its raw result actually verifies that ordering rather than re-imposing
+    // one over it.
     let summaries = try await store.topicSummaries()
-        .sorted { $0.topic < $1.topic }
     #expect(summaries.count == 2)
     #expect(summaries[0].topic == "alerts")
     #expect(summaries[0].totalCount == 2)

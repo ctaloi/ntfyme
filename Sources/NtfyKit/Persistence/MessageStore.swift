@@ -381,7 +381,10 @@ extension MessageStore {
     }
 
     /// One row per (server, topic) that has a `Subscription`, for the
-    /// sidebar's unread badges.
+    /// sidebar's unread badges. Ordered by server `sortOrder`, then topic
+    /// name — `server.subscriptions` is a SwiftData to-many relationship
+    /// with no defined order, and a sidebar `List` reshuffling rows between
+    /// refreshes would be worse than an arbitrary-but-stable one.
     public func topicSummaries() throws -> [TopicSummary] {
         let servers = try modelContext.fetch(
             FetchDescriptor<Server>(sortBy: [SortDescriptor(\.sortOrder)]))
@@ -389,7 +392,7 @@ extension MessageStore {
         var summaries: [TopicSummary] = []
         for server in servers {
             let serverID = server.id
-            for sub in server.subscriptions {
+            for sub in server.subscriptions.sorted(by: { $0.topic < $1.topic }) {
                 let topic = sub.topic
                 let total = try modelContext.fetchCount(FetchDescriptor<Message>(
                     predicate: #Predicate { $0.serverID == serverID && $0.topic == topic }))
