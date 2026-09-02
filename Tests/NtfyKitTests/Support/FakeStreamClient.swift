@@ -13,6 +13,12 @@ actor FakeStreamClient: StreamClient {
         /// then stalls. Only ends when the consumer's task is cancelled,
         /// which tears down the stream via `onTermination` below.
         case hang
+        /// Yields the elements and then stalls without finishing. `elements`
+        /// closes the stream the instant the last one is yielded, leaving no
+        /// window in which a caller can be cancelled with data already
+        /// collected — which is exactly the state a cancellation test needs
+        /// to put a collector in.
+        case elementsThenHang([NtfyStreamClient.StreamElement])
     }
 
     private var scripts: [Script] = []
@@ -36,6 +42,10 @@ actor FakeStreamClient: StreamClient {
         scripts.append(.hang)
     }
 
+    func enqueueThenHang(_ elements: [NtfyStreamClient.StreamElement]) {
+        scripts.append(.elementsThenHang(elements))
+    }
+
     private func take(_ request: URLRequest) -> Script {
         requestCount += 1
         lastRequest = request
@@ -57,6 +67,10 @@ actor FakeStreamClient: StreamClient {
                     // `try?`: cancellation is the only way this returns, and
                     // that is the intended, sole exit for this branch — there
                     // is nothing else to report.
+                    try? await Task.sleep(for: .seconds(86400))
+                case .elementsThenHang(let elements):
+                    for element in elements { continuation.yield(element) }
+                    // Same `try?` reasoning as `.hang` above.
                     try? await Task.sleep(for: .seconds(86400))
                 }
             }

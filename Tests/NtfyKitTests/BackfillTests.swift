@@ -128,3 +128,48 @@ func backfillTimesOutRatherThanHangingOnAStalledPoll() async throws {
         try await backfill.run(topic: "newtopic", serverID: serverID, timeout: .milliseconds(50))
     }
 }
+
+/// `run`'s contract — "discarded, not partially inserted, and the topic's
+/// watermark is left untouched" — has to hold for external cancellation, not
+/// only for the timeout path. Cancellation is how a coordinator will actually
+/// abandon a backfill (the user removes the topic, the app quits), and it
+/// arrives by a different route: cancelling the collector child ends its
+/// `for try await` *cleanly*, so it returns its partial array rather than
+/// throwing, and `group.next()` returns whichever of the two children lands
+/// first. Measured against the unfixed code, that coin flip inserted the
+/// partial batch and advanced the watermark far more often than it threw.
+///
+/// Looped, for the same reason `stopIsFinalEvenWithEventsInFlight` is: a
+/// single iteration of a race can pass by luck. The 20ms pause is not the
+/// bound — it is what makes the partial batch deterministic, by giving the
+/// yielded element time to reach the collector before the cancel lands. The
+/// script hangs rather than finishing, so nothing can close the window early.
+@Test(.timeLimit(.minutes(1)))
+func cancellingBackfillMidPollInsertsNothing() async throws {
+    for _ in 0..<20 {
+        let (_, store, serverID) = try makeStore(topics: ["newtopic"])
+        let fake = FakeStreamClient()
+        await fake.enqueueThenHang([.event(message("h1", topic: "newtopic", time: 100))])
+
+        let backfill = Backfill(
+            endpoint: NtfyEndpoint(baseURL: URL(string: "https://ntfy.example.com")!,
+                                   credential: .unauthenticated),
+            client: fake, store: store)
+
+        let run = Task {
+            try await backfill.run(topic: "newtopic", serverID: serverID, timeout: .seconds(30))
+        }
+        #expect(await waitUntil { await fake.requestCount == 1 })
+        try await Task.sleep(for: .milliseconds(20))
+        run.cancel()
+        _ = await run.result
+
+        #expect(try await store.messageCount() == 0)
+        // `#require` the mark rather than relying on `first(where:)?` being
+        // nil: that comparison also passes when the subscription is missing
+        // entirely, which would pin nothing.
+        let marks = try await store.watermarks(forServer: serverID)
+        let mark = try #require(marks.first(where: { $0.topic == "newtopic" }))
+        #expect(mark.lastMessageTime == nil)
+    }
+}

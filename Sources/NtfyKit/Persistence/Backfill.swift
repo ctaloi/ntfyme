@@ -36,6 +36,14 @@ public struct Backfill: Sendable {
     /// the whole batch instead makes a timed-out backfill a no-op the caller
     /// can safely retry.
     ///
+    /// The same guarantee holds for **external cancellation**, which is how a
+    /// coordinator will actually abandon a backfill — the user removes the
+    /// topic, or the app quits. It throws `CancellationError` and inserts
+    /// nothing. This needs its own enforcement rather than falling out of the
+    /// timeout path: cancelling the collector ends its `for try await`
+    /// cleanly, with no throw, so it would otherwise return the partial batch
+    /// it had already gathered.
+    ///
     /// When the poll returns at least one message, the topic's watermark is
     /// set as a side effect of the insert (`MessageStore.advanceWatermarks`),
     /// which is what makes the subsequent stream rebuild safe for *this*
@@ -59,6 +67,12 @@ public struct Backfill: Sendable {
         let request = try endpoint.pollRequest(topic: topic, since: .all)
         let events = try await collectEvents(from: request, timeout: timeout)
 
+        // The collector child already refuses to hand back a partial batch it
+        // was cancelled out of, so this is the second of two checks rather
+        // than the only one. It is worth having: `collectEvents` can also
+        // return a *complete* batch on the same turn a cancellation lands,
+        // and an abandoned backfill must not write in that case either.
+        try Task.checkCancellation()
         let result = try await store.insert(events, serverID: serverID)
         Log.store.info("backfilled \(result.inserted, privacy: .public) messages for a new topic")
         return result.inserted
@@ -81,6 +95,14 @@ public struct Backfill: Sendable {
                         Log.stream.warning("backfill skipped a line: \(reason, privacy: .public)")
                     }
                 }
+                // External cancellation ends the `for try await` above
+                // *cleanly* — `next()` returns nil, nothing throws — so
+                // without this the child returns its partial array and races
+                // the sleeper child's `CancellationError` for `group.next()`.
+                // Whichever lands first decides whether a cancelled backfill
+                // inserts a partial batch, which is not a decision a coin
+                // flip may make.
+                try Task.checkCancellation()
                 return events
             }
             group.addTask {
