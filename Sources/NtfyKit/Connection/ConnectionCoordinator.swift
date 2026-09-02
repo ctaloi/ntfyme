@@ -151,6 +151,19 @@ public actor ConnectionCoordinator {
     /// whatever they already held, which is where the entries genuinely can,
     /// and should, drain concurrently in the background rather than being
     /// serialized behind one another.
+    ///
+    /// **This pairing fixes no observed defect, and no test pins it.**
+    /// Abandoning a connection's not-yet-processed backlog on `stop()` is
+    /// legitimate — the server resends it on the next reconnect, keyed off
+    /// the watermark — which is exactly why no test can tell "the window
+    /// above dropped an already-yielded event" apart from "stop() correctly
+    /// abandoned an event nobody had gotten to yet": both look identical
+    /// from outside, a lower final message count than some larger number
+    /// that was never promised. This ordering is kept because it is a
+    /// clearer formulation of the same two-pass structure, not because it
+    /// is known to fix anything: closing the window between cancelling a
+    /// pump and stopping its connection is strictly harder to get wrong
+    /// than leaving it open on purpose.
     public func stop() async {
         pathMonitor.cancel()
         for entry in live.values {
