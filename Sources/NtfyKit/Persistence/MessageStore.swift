@@ -9,6 +9,12 @@ public actor MessageStore {
     public struct InsertResult: Sendable, Equatable {
         public let inserted: Int
         public let duplicatesSkipped: Int
+        /// The events newly written by this call, in the order they arrived —
+        /// the ones, and only the ones, a notifier may alert on. Duplicates
+        /// and non-message lines are absent by construction, so a caller
+        /// notifying from this cannot raise a second banner for a message a
+        /// reconnect replayed, nor one for a keepalive.
+        public let stored: [NtfyEvent]
     }
 
     /// Persists the message events in `events`, skipping any whose
@@ -21,7 +27,9 @@ public actor MessageStore {
     @discardableResult
     public func insert(_ events: [NtfyEvent], serverID: UUID) throws -> InsertResult {
         let messages = events.filter { $0.kind == .message }
-        guard !messages.isEmpty else { return InsertResult(inserted: 0, duplicatesSkipped: 0) }
+        guard !messages.isEmpty else {
+            return InsertResult(inserted: 0, duplicatesSkipped: 0, stored: [])
+        }
 
         let keys = Set(messages.map {
             Message.uniqueKey(serverID: serverID, topic: $0.topic, messageID: $0.id)
@@ -34,7 +42,7 @@ public actor MessageStore {
             if try modelContext.fetch(descriptor).first != nil { existing.insert(key) }
         }
 
-        var inserted = 0
+        var stored: [NtfyEvent] = []
         var skipped = 0
         var newest: [String: Date] = [:]
         var newestID: [String: String] = [:]
@@ -63,7 +71,7 @@ public actor MessageStore {
                 // dictionary keys) apply, so this cannot throw.
                 actionsJSON: event.actions.flatMap { try? JSONEncoder().encode($0) }
             ))
-            inserted += 1
+            stored.append(event)
 
             if newest[event.topic] == nil || event.date > newest[event.topic]! {
                 newest[event.topic] = event.date
@@ -73,7 +81,7 @@ public actor MessageStore {
 
         try advanceWatermarks(newest, ids: newestID, serverID: serverID)
         try modelContext.save()
-        return InsertResult(inserted: inserted, duplicatesSkipped: skipped)
+        return InsertResult(inserted: stored.count, duplicatesSkipped: skipped, stored: stored)
     }
 
     private func advanceWatermarks(_ newest: [String: Date], ids: [String: String],
@@ -103,6 +111,18 @@ public actor MessageStore {
 
     public func watermarks(forServer serverID: UUID) throws -> [TopicWatermark] {
         try subscriptions(forServer: serverID).map(\.watermark)
+    }
+
+    /// Per-topic alert settings for the decision. An absent subscription row
+    /// defaults to alerting: suppressing by default would hide messages the
+    /// user can find in the archive but was never told about.
+    public func alertSettings(forServer serverID: UUID,
+                              topic: String) throws -> TopicAlertSettings {
+        guard let sub = try subscriptions(forServer: serverID)
+            .first(where: { $0.topic == topic }) else {
+            return TopicAlertSettings(muted: false, minAlertPriority: 1)
+        }
+        return TopicAlertSettings(muted: sub.muted, minAlertPriority: sub.minAlertPriority)
     }
 
     public func caughtUpTo(forServer serverID: UUID) throws -> Date? {

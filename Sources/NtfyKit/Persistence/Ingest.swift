@@ -18,8 +18,20 @@ import Foundation
 ///   has seen lines covering events still sitting in this actor's buffer or
 ///   in the stream's. Deriving from the batch removes the read entirely.
 public actor Ingest {
+    /// Called with the messages a flush **actually stored**, and the server
+    /// they belong to. This is the seam the app target notifies from.
+    ///
+    /// `[NtfyEvent]`, not `[MessageSnapshot]`: the events are already in
+    /// hand here, and `NotificationDecision` is written against the wire
+    /// event, so handing over rows would mean a second read of what was just
+    /// written and a lossy round trip through `Message` (actions survive only
+    /// as JSON).
+    public typealias StoredHandler = @Sendable ([NtfyEvent], UUID) async -> Void
+
     private let store: MessageStore
     private let batchWindow: Duration
+    /// Runs inside the flush that stored the batch — see `performFlush`.
+    private let onStored: StoredHandler?
     public private(set) var insertedCount = 0
 
     /// Serializes flushes rather than letting a concurrent one skip. `flush`
@@ -41,9 +53,11 @@ public actor Ingest {
     /// one currently draining.
     private var inFlight: Task<Void, Never>?
 
-    public init(store: MessageStore, batchWindow: Duration = .milliseconds(250)) {
+    public init(store: MessageStore, batchWindow: Duration = .milliseconds(250),
+                onStored: StoredHandler? = nil) {
         self.store = store
         self.batchWindow = batchWindow
+        self.onStored = onStored
     }
 
     /// Buffers events collected from one `attach` call between flushes. A
@@ -235,8 +249,9 @@ public actor Ingest {
             .map(\.date)
             .max()
 
+        let result: MessageStore.InsertResult
         do {
-            let result = try await store.insert(events, serverID: serverID)
+            result = try await store.insert(events, serverID: serverID)
             insertedCount += result.inserted
         } catch {
             // Never silent, and never lossy: the batch goes back on the front
@@ -250,6 +265,29 @@ public actor Ingest {
             let ns = error as NSError
             Log.store.error("message batch insert failed; batch held for retry: \(ns.domain, privacy: .public) \(ns.code, privacy: .public)")
             return
+        }
+
+        // Notified on stored, never on received — the same rule as the resume
+        // point above, for the same reason: a notification for a message that
+        // is not in the archive is one the user cannot go back and find, and a
+        // failed insert must not raise a phantom alert. `result.stored` is the
+        // rows this transaction actually wrote, so a duplicate a reconnect
+        // replayed does not notify a second time.
+        //
+        // Placed here, *above* the `batchMark` guard: most batches carry no
+        // keepalive and persist no resume point, and a hook below that guard
+        // would never fire for them.
+        //
+        // Awaited rather than spawned. It runs inside the `inFlight` chain, so
+        // the next flush — and, at quit, `stop()` — waits for it. That is the
+        // point: a notification for the batch is raised before the app can
+        // tear the store down under it, and a test can await a deterministic
+        // result rather than polling a detached task. The cost is that the
+        // `caughtUpTo` write below, and the next batch, wait on the handler,
+        // so a handler must stay bounded (the app target's is one
+        // `UNUserNotificationCenter.add` per stored message).
+        if let onStored, !result.stored.isEmpty {
+            await onStored(result.stored, serverID)
         }
 
         // Reached only past a successful insert, which is what makes the mark

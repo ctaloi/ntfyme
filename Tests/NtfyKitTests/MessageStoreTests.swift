@@ -201,3 +201,35 @@ private func makeStore() throws -> (MessageStore, UUID) {
     let page = try await store.messages(forServer: serverID, topic: nil, limit: 10)
     #expect(page.first?.isRead == true)
 }
+
+@Test func alertSettingsComeFromTheSubscriptionRow() async throws {
+    let container = try StoreFixtures.inMemoryContainer()
+    let id = UUID()
+    let context = ModelContext(container)
+    let server = Server(id: id, name: "Alpha", baseURLString: "https://a.example.com")
+    context.insert(server)
+    context.insert(Subscription(topic: "alerts", server: server,
+                                muted: true, minAlertPriority: 4))
+    try context.save()
+
+    let store = MessageStore(modelContainer: container)
+    let settings = try await store.alertSettings(forServer: id, topic: "alerts")
+    #expect(settings.muted == true)
+    #expect(settings.minAlertPriority == 4)
+}
+
+/// A message for a topic with no subscription row must not be silently
+/// suppressed — defaulting to muted would hide messages the user can see in
+/// the archive but was never told about.
+@Test func alertSettingsForAnUnknownTopicDefaultToAlerting() async throws {
+    let container = try StoreFixtures.inMemoryContainer()
+    let id = UUID()
+    let context = ModelContext(container)
+    context.insert(Server(id: id, name: "Alpha", baseURLString: "https://a.example.com"))
+    try context.save()
+
+    let settings = try await MessageStore(modelContainer: container)
+        .alertSettings(forServer: id, topic: "nope")
+    #expect(settings.muted == false)
+    #expect(settings.minAlertPriority == 1)
+}

@@ -54,6 +54,30 @@ final class NotificationPresenter: NSObject, UNUserNotificationCenterDelegate {
         }
     }
 
+    /// Shows the banner even when NtfyMe is the active app.
+    ///
+    /// Without this delegate method, macOS silently swallows a notification
+    /// that is delivered while the app is frontmost — nothing is shown and
+    /// nothing is logged. That is rare for a menu-bar app with no Dock icon,
+    /// but it is exactly the state the app is in whenever a window of its own
+    /// is focused, which would make a real notification look like a broken
+    /// one. `.list` keeps it in Notification Center afterwards; `.sound` only
+    /// does anything if `present(_:)` set one, which is the priority rule from
+    /// `NotificationDecision`, not a second decision made here.
+    /// `nonisolated`, with the completion-handler form rather than the `async`
+    /// one: the protocol requirement is not main-actor isolated, and neither
+    /// `UNUserNotificationCenter` nor `UNNotification` is `Sendable`, so a
+    /// `@MainActor` implementation cannot legally receive them under Swift 6.
+    /// Nothing here touches either argument or any state of this class, so
+    /// answering off the actor is safe as well as necessary.
+    nonisolated func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        willPresent notification: UNNotification,
+        withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
+    ) {
+        completionHandler([.banner, .list, .sound])
+    }
+
     func present(_ request: NotificationRequest) async {
         if let categoryID = request.categoryIdentifier {
             await registerCategory(for: categoryID, actions: request.actions)

@@ -390,3 +390,63 @@ private func makeServer() throws -> (ModelContainer, MessageStore, UUID) {
     await connectionA.stop()
     await connectionB.stop()
 }
+
+/// Collects what the notify hook was handed, so a test can assert on it.
+private actor StoredEventRecorder {
+    private(set) var events: [NtfyEvent] = []
+    private(set) var serverIDs: [UUID] = []
+
+    func record(_ batch: [NtfyEvent], serverID: UUID) {
+        events.append(contentsOf: batch)
+        serverIDs.append(serverID)
+    }
+}
+
+/// The notify hook fires on what `insert` actually **stored**, not on what the
+/// stream delivered. Two consequences, both asserted here:
+///
+/// - A replayed duplicate raises nothing. A reconnect re-delivers the tail of
+///   the cache, and every one of those messages was already stored — and
+///   already notified — on its first pass. `insert` skips them, so they never
+///   reach the hook.
+/// - A non-message line raises nothing. `open` and `keepalive` are protocol,
+///   with no title, body, or priority to present.
+///
+/// Feeding the hook the batch rather than `InsertResult.stored` would produce
+/// all four ids here instead of the one.
+@Test func theNotifyHookFiresOnlyForNewlyStoredMessages() async throws {
+    let (_, store, serverID) = try makeServer()
+    // Already in the archive before the stream ever runs — what a reconnect
+    // replay looks like from the store's side.
+    _ = try await store.insert([bufferEvent("already-stored", time: 1_788_800_000)],
+                               serverID: serverID)
+
+    let recorder = StoredEventRecorder()
+    let fake = FakeStreamClient()
+    await fake.enqueue([
+        .event(try Fixtures.decode(Fixtures.openEvent)),
+        .event(bufferEvent("already-stored", time: 1_788_800_000)),
+        .event(bufferEvent("brand-new", time: 1_788_800_001)),
+        .event(try Fixtures.decode(Fixtures.laterKeepaliveEvent)),
+    ])
+
+    let connection = ServerConnection(
+        endpoint: NtfyEndpoint(baseURL: URL(string: "https://ntfy.example.com")!,
+                               credential: .unauthenticated),
+        watermarks: [TopicWatermark(topic: "alerts", lastMessageTime: nil)],
+        client: fake, sleeper: ManualSleeper())
+
+    let ingest = Ingest(store: store) { batch, id in
+        await recorder.record(batch, serverID: id)
+    }
+    let pump = await ingest.attach(connection, serverID: serverID)
+    defer { pump.cancel() }
+
+    await connection.start()
+    // `brand-new` is last of the four in stream order, so once it has been
+    // recorded every earlier line has already been through a flush — the
+    // assertion below cannot pass merely by being early.
+    #expect(await waitUntil { await recorder.events.map(\.id) == ["brand-new"] })
+    #expect(await recorder.serverIDs == [serverID])
+    await connection.stop()
+}
