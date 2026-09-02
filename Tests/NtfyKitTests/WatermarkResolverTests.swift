@@ -50,6 +50,16 @@ private func wm(_ topic: String, _ offset: TimeInterval?) -> TopicWatermark {
     #expect(r.hasHistoryGap == false)
 }
 
+/// The boundary sliver: a watermark inside the cache window whose `since`
+/// value — watermark minus margin — falls outside it.
+@Test func flagsAGapWhenTheMarginPushesSinceOutsideTheWindow() {
+    let r = WatermarkResolver.resolve(
+        watermarks: [wm("a", -(window - 2))],
+        cacheWindow: window, now: now, margin: 5
+    )
+    #expect(r.hasHistoryGap == true)
+}
+
 @Test func resolvesToAllForAnEmptyTopicSet() {
     let r = WatermarkResolver.resolve(watermarks: [], cacheWindow: window, now: now)
     #expect(r.since == .all)

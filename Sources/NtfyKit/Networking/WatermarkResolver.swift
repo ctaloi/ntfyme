@@ -39,8 +39,15 @@ public enum WatermarkResolver {
             return Resolution(since: .all, hasHistoryGap: false)
         }
 
-        let gap = now.timeIntervalSince(oldest) > cacheWindow
-        let since = Int((oldest.timeIntervalSince1970 - margin).rounded(.down))
-        return Resolution(since: .unixTime(since), hasHistoryGap: gap)
+        // The gap is measured from the value actually sent to the server
+        // (oldest - margin), not from `oldest` itself. The margin exists to
+        // pull `since` slightly earlier than the watermark so a message
+        // landing exactly on the boundary isn't missed — but that same shift
+        // can push `since` past the cache window even when `oldest` sits
+        // inside it. Measuring from `oldest` would report a clean resume in
+        // that sliver while the server silently replays its whole cache.
+        let sinceDate = oldest.addingTimeInterval(-margin)
+        let gap = now.timeIntervalSince(sinceDate) > cacheWindow
+        return Resolution(since: .unixTime(Int(sinceDate.timeIntervalSince1970.rounded(.down))), hasHistoryGap: gap)
     }
 }
