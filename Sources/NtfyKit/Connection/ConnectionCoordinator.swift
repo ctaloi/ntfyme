@@ -132,17 +132,32 @@ public actor ConnectionCoordinator {
     /// cancellation is *observed* inside that task, which happens on its own
     /// schedule. So every pump is awaited to completion before this returns.
     ///
-    /// Two passes rather than one cancel-then-await per entry: cancelling
-    /// every pump first lets them all start draining concurrently in the
-    /// background, so the awaits below mostly find work already done rather
-    /// than serializing each pump's flush behind the one before it.
+    /// Two passes, but *not* "cancel every pump, then stop every connection
+    /// and await every pump" — `entry.connection.stop()` is paired with
+    /// `entry.pump.cancel()` in the same, first pass, one entry at a time.
+    /// With multiple live entries, splitting cancel-every-pump from
+    /// stop-every-connection into separate passes leaves every
+    /// not-yet-reached connection still fully running — still pulling lines
+    /// off the wire and yielding them onto `connection.events` — while its
+    /// own pump's collector has *already* exited (cancelled in the first
+    /// pass). Nothing is left to drain what it yields during that window, so
+    /// it is lost the same way an un-drained trailing buffer is, and the
+    /// window is not narrow: it lasts as long as *every earlier* entry's own
+    /// pump takes to finish draining, which can be a real batch's worth of
+    /// `store.insert` calls. Stopping each connection in the same breath as
+    /// cancelling its pump closes that window — nothing is still producing
+    /// once this first pass finishes an entry. The second pass then only
+    /// awaits already-cancelled, already-stopped pumps to finish draining
+    /// whatever they already held, which is where the entries genuinely can,
+    /// and should, drain concurrently in the background rather than being
+    /// serialized behind one another.
     public func stop() async {
         pathMonitor.cancel()
         for entry in live.values {
             entry.pump.cancel()
+            await entry.connection.stop()
         }
         for entry in live.values {
-            await entry.connection.stop()
             await entry.pump.value
         }
         live.removeAll()
