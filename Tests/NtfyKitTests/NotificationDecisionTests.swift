@@ -229,3 +229,58 @@ private let sid = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
     }
     #expect(value.count == 1024)
 }
+
+/// `String.count` measures grapheme clusters, not bytes: one base character
+/// plus thousands of combining marks is still a single grapheme, so a
+/// `count`-based cap lets an unbounded byte payload straight onto the
+/// clipboard. This value is one grapheme cluster (`count == 1`) but tens of
+/// thousands of UTF-8 bytes, so a correct cap must still shrink it — and
+/// verifying `value.count` (as the sibling test above does) would not catch
+/// a regression back to a `count`-based cap, since `count` never moves here
+/// either way. Confirmed against the pre-fix implementation: reverting
+/// `truncatedToUTF8Bytes` to `String(stripped.prefix(maxCopyValueBytes))`
+/// (a `count`-based prefix) leaves `value.utf8.count` at ~20001 and fails
+/// this assertion; the byte-bounding implementation passes it.
+@Test func aCopyActionValueIsCappedByUTF8BytesNotGraphemeClusters() {
+    let combiningMark = "\u{0301}" // U+0301 COMBINING ACUTE ACCENT, 2 UTF-8 bytes
+    let value = "e" + String(repeating: combiningMark, count: 10_000)
+    #expect(value.count == 1) // one grapheme cluster: base + all its combining marks
+    let actions = "[{\"id\":\"a1\",\"action\":\"copy\",\"label\":\"Copy\",\"value\":\"\(value)\"}]"
+    guard case .present(let r) = NotificationDecision.decide(
+        event: message(priority: 3, actions: actions), serverID: sid,
+        settings: unmuted, preferences: .default) else { Issue.record("suppressed"); return }
+    guard case .copy(let sanitized) = r.actions.first?.kind else {
+        Issue.record("expected a copy action"); return
+    }
+    #expect(sanitized.utf8.count <= 1024)
+    #expect(sanitized.utf8.count > 0)
+}
+
+/// `attachmentURL` went through no scheme check at all until this fix — the
+/// one URL field the earlier sweep of `clickURL`/action URLs missed. It is
+/// dead code today (nothing reads it yet), which is exactly why a missing
+/// check here is easy to overlook: there is no visible symptom until a
+/// downloader starts reading it.
+@Test func anAttachmentURLWithAnUnsupportedSchemeBecomesNil() throws {
+    let json = """
+    {"id":"m1","time":1788353322,"event":"message","topic":"alerts","priority":3,\
+    "attachment":{"name":"a.txt","url":"file:///etc/passwd"},"message":"B"}
+    """
+    let event = try JSONDecoder().decode(NtfyEvent.self, from: Data(json.utf8))
+    guard case .present(let r) = NotificationDecision.decide(
+        event: event, serverID: sid, settings: unmuted, preferences: .default)
+    else { Issue.record("suppressed"); return }
+    #expect(r.attachmentURL == nil)
+}
+
+@Test func anAttachmentURLWithASupportedSchemeIsKept() throws {
+    let json = """
+    {"id":"m1","time":1788353322,"event":"message","topic":"alerts","priority":3,\
+    "attachment":{"name":"a.txt","url":"https://example.com/a.txt"},"message":"B"}
+    """
+    let event = try JSONDecoder().decode(NtfyEvent.self, from: Data(json.utf8))
+    guard case .present(let r) = NotificationDecision.decide(
+        event: event, serverID: sid, settings: unmuted, preferences: .default)
+    else { Issue.record("suppressed"); return }
+    #expect(r.attachmentURL == URL(string: "https://example.com/a.txt"))
+}

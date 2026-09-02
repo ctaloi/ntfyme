@@ -36,7 +36,10 @@ public enum NotificationDecision: Sendable, Equatable {
     /// A URL macOS will actually open safely. `file://` reads local files;
     /// a custom scheme can launch another app. Restricting to the schemes a
     /// browser would treat as ordinary web content removes both.
-    private static let allowedURLSchemes: Set<String> = ["http", "https"]
+    ///
+    /// Internal, not `private`: `AttachmentDownloader` rejects attachment
+    /// URLs against this same allow-list rather than keeping its own copy.
+    static let allowedURLSchemes: Set<String> = ["http", "https"]
 
     /// The only methods an `http` action may use. Anything else — `TRACE`,
     /// a made-up verb — drops the action rather than being forwarded as-is.
@@ -53,8 +56,11 @@ public enum NotificationDecision: Sendable, Equatable {
     private static let deniedHeaderPrefixes = ["proxy-", "x-forwarded-"]
 
     /// A copy value long enough to be useful, short enough to not be abused
-    /// as a way to dump arbitrary data onto the clipboard.
-    private static let maxCopyValueLength = 1024
+    /// as a way to dump arbitrary data onto the clipboard. Measured in UTF-8
+    /// bytes, not `String.count`: a single base character plus many
+    /// combining marks is one grapheme cluster, so a `count`-based cap does
+    /// not bound the size of what actually lands on the clipboard at all.
+    private static let maxCopyValueBytes = 1024
 
     public static func decide(event: NtfyEvent, serverID: UUID,
                               settings: TopicAlertSettings,
@@ -82,7 +88,7 @@ public enum NotificationDecision: Sendable, Equatable {
             categoryIdentifier: actions.isEmpty ? nil : categoryIdentifier(for: actions),
             actions: actions,
             clickURL: sanitizedURL(event.click),
-            attachmentURL: event.attachment.flatMap { URL(string: $0.url) }))
+            attachmentURL: event.attachment.flatMap { sanitizedURL($0.url) }))
     }
 
     private static func interruption(for priority: NtfyPriority) -> NotificationInterruption {
@@ -149,7 +155,23 @@ public enum NotificationDecision: Sendable, Equatable {
     /// safe one.
     private static func sanitizedCopyValue(_ value: String) -> String {
         let stripped = String(value.unicodeScalars.filter { $0.value >= 0x20 && $0.value != 0x7F })
-        return String(stripped.prefix(maxCopyValueLength))
+        return truncatedToUTF8Bytes(stripped, limit: maxCopyValueBytes)
+    }
+
+    /// Truncates to at most `limit` UTF-8 bytes without splitting a
+    /// multi-byte scalar — building the result one whole scalar at a time,
+    /// stopping before any scalar that would push the running byte count
+    /// past `limit`, rather than slicing raw UTF-8 bytes.
+    private static func truncatedToUTF8Bytes(_ string: String, limit: Int) -> String {
+        var result = String.UnicodeScalarView()
+        var byteCount = 0
+        for scalar in string.unicodeScalars {
+            let scalarBytes = String(scalar).utf8.count
+            guard byteCount + scalarBytes <= limit else { break }
+            result.append(scalar)
+            byteCount += scalarBytes
+        }
+        return String(result)
     }
 
     /// Stable for a given action shape, different for a different one. macOS
