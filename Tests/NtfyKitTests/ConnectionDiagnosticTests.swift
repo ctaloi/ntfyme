@@ -24,17 +24,22 @@ private func connection(_ fake: FakeStreamClient,
 
     await c.start()
     #expect(await waitUntil { await seen.contains { if case .historyGap = $0 { return true }; return false } })
-    // And the state has moved past the transient `.degraded(.historyGap)`,
-    // proving the diagnostic outlived it rather than being read back off the
-    // still-current state. Asserted as disequality rather than pinned to
-    // `.open`: `FakeStreamClient`'s single-element script finishes the
-    // instant `.open` is processed, and the run loop races on to `.backoff`
-    // before this line runs — `waitUntil`'s 10ms polling granularity cannot
-    // reliably observe a transient that narrow. `ServerConnectionTests.swift`
-    // hits the identical race against `MockNtfyServer` and works around it by
-    // holding the connection open instead; nothing here needs the connection
-    // held at `.open`, only proof it got there and moved on.
-    #expect(await waitUntil { await c.state != .degraded(reason: .historyGap) })
+    // The open line was processed — `caughtUpTo` is written only from a
+    // stream line with `time > 0`, and `Fixtures.openEvent` carries
+    // `time: 1788352812` — and the state machine has since run on to
+    // `.backoff`, where `ManualSleeper` parks it forever. The diagnostic is
+    // still readable at that point, which is the whole point: it outlived
+    // both transitions. Asserted on `caughtUpTo` and `.backoff` rather than
+    // pinned to `.open`: `FakeStreamClient`'s single-element script finishes
+    // the instant `.open` is processed, and the run loop races through it to
+    // `.backoff` before this line runs — `waitUntil`'s 10ms polling
+    // granularity cannot reliably observe a transient that narrow (see
+    // `reachesOpenStateAndEmitsMessages` in `ServerConnectionTests.swift`,
+    // which hits the identical race against `MockNtfyServer` and works around
+    // it by holding the connection open instead).
+    #expect(await waitUntil { await c.caughtUpTo == Date(timeIntervalSince1970: 1_788_352_812) })
+    #expect(await waitUntil { await c.state == .backoff(attempt: 1) })
+    #expect(await seen.contains { if case .historyGap = $0 { return true }; return false })
     await c.stop()
 }
 
