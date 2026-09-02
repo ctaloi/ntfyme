@@ -257,15 +257,34 @@ window drags the shared `since` outside that window on *every* reconnect — eve
 lid-open — producing a full-cache replay of every topic and a `hasHistoryGap`
 that is false: nothing was missed, the topic was simply quiet.
 
-The connection receives a better signal: every `open` and `keepalive` line
-carries a server `time`, and receiving one means everything up to that time has
-been delivered on *all* subscribed topics. `ServerConnection` now records it as
-`caughtUpTo`, and the correct resume point is:
+The connection receives a better signal, but **only the `keepalive` line carries
+it**. An earlier revision of this section said "every `open` and `keepalive`
+line", and that was wrong in a way that silently lost history.
 
-    since = max(min(topic watermarks), lastLineTime) − margin
+ntfy sends the `open` line *before* it replays cached messages — its subscribe
+handler calls `sub(v, NewOpenMessage(...))` and only then `sendOldMessages(...)`
+— and `open` carries `time = now`. So `open`'s timestamp does not prove delivery;
+it proves the replay has not started. Treating it as a delivery proof meant that
+a socket drop mid-replay advanced the resume point past every message the replay
+had not yet sent, and nothing ever asked for them again.
 
-where `lastLineTime` is the server timestamp of the most recent line of any kind.
+Demonstrated 2026-09-02 in the Stage 3 whole-branch review: scripting
+`open(t=1788352812)`, then `message(t=1788335966)`, then a drop, produced a
+reconnect asking `since=1788352807` rather than `1788335961` — about 4.7 hours
+of history skipped, with `hasHistoryGap` reporting `false`.
+
+Keepalives are emitted only after `sendOldMessages` returns, which is exactly
+what makes them the line that proves delivery. So `caughtUpTo` advances on
+`keepalive`, and the correct resume point is:
+
+    since = max(min(topic watermarks), caughtUpTo) − margin
+
 This makes `hasHistoryGap` true only after a genuinely long disconnect.
+
+**Resume state must advance on persisted, not received.** `caughtUpTo` is only
+safe to persist for a batch that has actually been written to the store: if a
+write fails and the resume point has already moved past it, the messages are
+permanently absent from the archive and no reconnect will ask for them again.
 
 The persisted `Subscription` model must therefore store a per-server "caught up
 to" time alongside the per-topic message watermarks. Deciding this now is what
