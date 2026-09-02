@@ -34,15 +34,20 @@ Verified in-process against this repo's toolchain on 2026-09-02 (Task 4,
 from documentation; they were measured, including a positive control —
 `@Attribute(.unique)` was removed, the same tests were re-run and failed
 cleanly (`count == 2`, surviving body `"first"`), then it was restored and
-the tests passed again.
+the tests passed again. **Scope of what was measured:** a single long-lived
+`ModelContext` against an in-memory store, per the brief's own fixture — not
+the on-disk SQLite store or inserts split across separate `ModelContext`
+instances (as `MessageStore`'s `@ModelActor` will do). Task 6 exercises that
+case; this table does not claim to.
 
 | Fact | Consequence for this plan |
 |---|---|
-| `@Attribute(.unique)` on `Message.uniqueKey` upserts a duplicate-key `insert()` + `save()` — the row count stays 1, it does not throw | The unique constraint alone already prevents duplicate rows on this toolchain |
-| The **second** insert's field values win (`body == "second"`): **last write wins**, not keep-first | Task 6's dedupe may safely treat a re-received message as replacing the stored row, not merely rejecting it |
+| `@Attribute(.unique)` on `Message.uniqueKey` upserts a duplicate-key `insert()` + `save()` — the row count stays 1, it does not throw | The unique constraint alone already prevents duplicate *rows* on this toolchain |
+| The **second** insert's field values win at the constraint level (`body == "second"`): **last write wins**, not keep-first | This is the raw mechanism only — see the reconciliation row below for what Task 6 must actually do, which is the opposite |
 | Distinct `uniqueKey`s coexist normally (2 rows in, 2 rows out) | No unexpected cross-row interaction from the unique constraint |
-| With `@Attribute(.unique)` removed (the positive control), the same duplicate-key insert produces 2 rows when tests run individually, and segfaults `swiftpm-testing-helper` when the whole file runs together under parallel test execution | SwiftData's behavior without the unique constraint is not just "wrong," it is unstable under this toolchain's parallel test runner — never ship without `@Attribute(.unique)` present |
-| The spec's hedge ("query existing keys... rather than relying solely on unique-constraint upsert semantics") is **not required for correctness** on this toolchain: the unique constraint alone already dedupes and upserts | Task 6 still implements query-before-insert anyway — it is the only way to produce an accurate `InsertResult.duplicatesSkipped` count and to control watermark advancement explicitly, not because the constraint is unsafe to rely on |
+| With `@Attribute(.unique)` removed (the positive control), the same duplicate-key insert produces 2 rows when tests run individually, and segfaults `swiftpm-testing-helper` when the whole file runs together under parallel test execution — observed only with the constraint removed, not on the real schema | SwiftData's behavior without the unique constraint is not just "wrong," it is unstable under this toolchain's parallel test runner — never ship without `@Attribute(.unique)` present |
+| **Reconciled:** the constraint's raw behavior (last-write-wins) is *not* what Task 6 should use. `Message` carries `isRead`, local state the server knows nothing about. Reconnect deliberately re-requests an overlapping window, so replayed rows are routine — if insert let a replay overwrite the stored row, every reconnect would silently reset `isRead` back to `false`, undoing what the user had already read | Task 6's `insert` must **skip on duplicate key (first-write-wins)**, not upsert. Query-before-insert is therefore **load-bearing for correctness after all** — not as a backstop against duplicate rows (the constraint already prevents those), but as the thing that keeps server replay from clobbering locally-owned fields. The next local-only field added to `Message` (a star, a snooze, a note) inherits this same protection for free, as long as insert keeps skipping rather than upserting |
+| The spec's hedge ("query existing keys... rather than relying solely on unique-constraint upsert semantics") is resolved: the unique constraint alone is sufficient to prevent duplicate *rows*, but insufficient by itself to prevent replay from *clobbering local state*, which only an explicit skip-on-duplicate query achieves | Task 6 implements query-before-insert as the primary correctness mechanism for local-state safety, and incidentally gets an accurate `InsertResult.duplicatesSkipped` count and explicit control over watermark advancement from the same query |
 
 ### The test rule this plan exists under
 

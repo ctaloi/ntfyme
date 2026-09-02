@@ -107,14 +107,20 @@ Mirrors the ntfy message JSON:
 `actionsJSON: Data?`, `attachment: Attachment?`, `isRead: Bool`.
 
 `uniqueKey` is what makes replay-on-reconnect safe: overlapping windows
-upsert rather than duplicate. Measured against this project's toolchain
-(Plan 2 Task 4): `@Attribute(.unique)` alone already upserts a duplicate-key
-insert, last write wins, and the row count never exceeds one — the
-unique constraint is not merely a belt-and-braces backstop here, it is
-sufficient on its own. The store actor still queries existing keys for a
-batch before inserting, not because the constraint is unsafe, but because an
-explicit query is the only way to produce an accurate skipped-duplicate count
-and to control watermark advancement deliberately.
+deduplicate rather than duplicate. Measured against this project's toolchain
+(Plan 2 Task 4): `@Attribute(.unique)` alone already prevents a duplicate-key
+insert from producing a second row — the row count never exceeds one — but
+its raw behavior is last-write-wins, letting the replayed row's values
+overwrite the stored one. That is wrong here: `Message.isRead` is local
+state the server knows nothing about, and reconnect deliberately re-requests
+an overlapping window, so an unconditional upsert would silently reset
+`isRead` to `false` on every reconnect, undoing what the user had already
+read. The store actor therefore queries existing keys for a batch before
+inserting and **skips** rather than upserts on a hit (first-write-wins) —
+not as a backstop against duplicate rows, which the constraint already
+prevents on its own, but as the mechanism that protects locally-owned fields
+from server replay. The same protection extends to any future local-only
+field on `Message`.
 
 `contentType == "text/markdown"` selects markdown rendering.
 
