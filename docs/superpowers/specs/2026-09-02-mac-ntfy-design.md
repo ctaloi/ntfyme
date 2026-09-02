@@ -188,14 +188,45 @@ A brand-new topic has no watermark. Folding it into the shared stream would drag
 `?poll=1&since=all` for that topic **alone** in a one-shot request, set its
 watermark from the result, then rebuild the shared stream.
 
-**The rebuild must resume by message ID, not wall clock.** Between the backfill
-poll completing and the rebuilt stream opening, messages published to that topic
-land nowhere. A `since = time − 5s` margin closes only a five-second window, and
-a slow rebuild exceeds it. The rebuild therefore uses the backfill's last
-message **ID** as `since`, which ntfy honors exactly and which has no race
-regardless of how long the rebuild takes. `lastMessageID` exists on
-`Subscription` for this reason; `lastMessageTime` is a fallback for the case
-where a server's cache has already evicted that ID.
+There is **no race** between the backfill completing and the stream rebuilding.
+`since` is a lower bound, not a window: the rebuilt stream requests
+`since = min(watermark) − 5s`, and the server replays everything from that point
+to now, however long the rebuild took. Messages published during the gap are
+delivered on reconnect.
+
+### `since` semantics, as measured
+
+Verified against ntfy.sh on 2026-09-02 (see §5.1 below for why this matters):
+
+| `since` value | Behavior |
+|---|---|
+| Unix timestamp | Lower bound. Returns everything from that time to now. |
+| Message ID (12-char base62) | Exclusive lower bound. **Resolves across a multi-topic subscription** — an ID belonging to topic A correctly positions a stream over `A,B`. |
+| Message ID, well-formed but unknown or evicted | **HTTP 200 and a full cache replay.** No error. |
+| Malformed value (wrong shape) | HTTP 400, `{"code":40008,"error":"invalid since parameter"}`. |
+| Duration (`48h`) or `all` | Lower bound, clamped to the server's cache window. |
+
+### 5.1 Why resume uses a timestamp, not a message ID
+
+Both forms work, and message IDs are more precise — they avoid re-fetching the
+overlap. Timestamps are used anyway, for one reason: **their failure mode is
+observable and theirs is not.**
+
+A watermark older than the server's cache window is the normal case after a long
+offline period. With a message ID, the server cannot resolve it and silently
+returns the entire cache with HTTP 200 — a response indistinguishable from a
+correct one. With a timestamp, an out-of-window value produces the same full
+replay, but the client already knows the watermark predates the window and can
+say so. Deduplication by `uniqueKey` makes either correct; only the timestamp
+lets the app tell the difference between "resumed cleanly" and "replayed
+everything," which §10 requires it to surface.
+
+Timestamps also carry no clock-skew risk, because the values come from the
+server's own `time` field rather than the local clock. The 5-second margin
+guards only the boundary case of a message whose timestamp equals the watermark.
+
+`lastMessageID` is still recorded on `Subscription` for diagnostics and log
+correlation; it is not used to construct `since`.
 
 ### `ConnectionCoordinator`
 
@@ -346,6 +377,8 @@ No silent failures. Every condition below is visible in the UI:
 | Attachment download failure | Keep the message; offer retry. |
 | Keychain read failure | Treat as no credential; surface in Settings. |
 | Network unreachable | `offline` status in the menu bar icon; resume on path-satisfied. |
+| Watermark older than the server cache window | Detectable client-side before the request. Log it, surface "history gap" on the topic, and reconnect anyway. A silent full-cache replay must never be mistaken for a clean resume. |
+| HTTP 400 `40008` invalid since | A client bug, not a server condition. Log loudly, fall back to `since=all`, and do not retry the malformed value. |
 
 ## 11. Build and distribution
 
@@ -407,7 +440,9 @@ Unit tests:
   new-subscription case that must **not** collapse to zero
 - backfill-to-stream handoff: a message published between the backfill poll and
   the stream rebuild is still delivered, including when the rebuild is delayed
-  well past any wall-clock margin
+  well past the 5-second margin (`since` is a lower bound, so this must hold)
+- a watermark older than the mock server's cache window is detected and reported
+  as a history gap rather than being silently treated as a clean resume
 - deduplication by `uniqueKey` across overlapping replay windows
 - priority to interruption-level mapping across all five levels
 - action encode/decode round-trip for all four action types
