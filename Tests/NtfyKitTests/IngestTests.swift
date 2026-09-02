@@ -280,7 +280,7 @@ private func makeServer() throws -> (ModelContainer, MessageStore, UUID) {
 /// point freezes: no later keepalive can honestly claim everything before it
 /// was stored. That costs a replay on the next launch; advancing instead would
 /// cost the messages themselves.
-@Test func afullBufferDropsTheNewestAndFreezesTheResumePoint() async {
+@Test func aFullBufferDropsTheNewestAndFreezesTheResumePoint() async {
     let buffer = Ingest.Buffer()
     for index in 0..<Ingest.Buffer.capacity {
         _ = await buffer.append(bufferEvent("held-\(index)"))
