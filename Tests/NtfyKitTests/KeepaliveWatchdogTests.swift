@@ -141,7 +141,11 @@ actor Signal {
     func waitOrTimeout() async -> Bool {
         for _ in 0..<100 {
             if hasFired { return true }
-            try? await Task.sleep(for: .milliseconds(10))
+            // Explicit `do`/`catch` rather than `try?`, matching the other wait
+            // helpers in this suite: a cancelled poll means the test task
+            // itself is going away, and `try?` would spin out the remaining
+            // iterations instead of stopping.
+            do { try await Task.sleep(for: .milliseconds(10)) } catch { break }
         }
         return hasFired
     }

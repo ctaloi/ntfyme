@@ -26,8 +26,18 @@ sed -e "s|__PRODUCT_NAME__|$PRODUCT_NAME|g" \
     -e "s|__MINIMUM_MACOS__|$MINIMUM_MACOS|g" \
     "$HERE/Info.plist.in" > "$APP/Contents/Info.plist"
 
-echo "==> codesign as: $SIGN_IDENTITY"
-codesign --force --options runtime --timestamp \
+# `--timestamp` contacts Apple's timestamp authority, so it needs the network
+# and an offline build fails at signing rather than producing a runnable app.
+# A trusted timestamp is only load-bearing for distribution, so it is required
+# on the notarizing path and skipped on the local dev path.
+if [ "$NOTARIZE" = "1" ]; then
+    TIMESTAMP_FLAG="--timestamp"
+else
+    TIMESTAMP_FLAG="--timestamp=none"
+fi
+
+echo "==> codesign as: $SIGN_IDENTITY ($TIMESTAMP_FLAG)"
+codesign --force --options runtime "$TIMESTAMP_FLAG" \
     --entitlements "$HERE/$PRODUCT_NAME.entitlements" \
     --sign "$SIGN_IDENTITY" "$APP"
 codesign --verify --strict --verbose=2 "$APP"

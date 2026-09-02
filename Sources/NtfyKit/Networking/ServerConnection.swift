@@ -29,9 +29,15 @@ public actor ServerConnection {
     private let continuation: AsyncStream<NtfyEvent>.Continuation
     public nonisolated let events: AsyncStream<NtfyEvent>
 
+    /// `topics` is derived from `watermarks` rather than passed alongside it.
+    /// They were two inputs to one truth, and they could disagree: a topic
+    /// present in `topics` but absent from `watermarks` was subscribed to on
+    /// the wire, while `record` silently dropped every message it produced,
+    /// so that topic never advanced its resume point and replayed on every
+    /// reconnect. A subscription with no watermark yet is represented by a
+    /// `TopicWatermark` whose `lastMessageTime` is `nil`.
     public init(
         endpoint: NtfyEndpoint,
-        topics: [String],
         watermarks: [TopicWatermark],
         client: NtfyStreamClient = NtfyStreamClient(),
         backoff: BackoffPolicy = .standard,
@@ -44,7 +50,7 @@ public actor ServerConnection {
         self.continuation = capturedContinuation
 
         self.endpoint = endpoint
-        self.topics = topics
+        self.topics = watermarks.map(\.topic)
         self.watermarks = watermarks
         self.client = client
         self.backoff = backoff
@@ -98,7 +104,23 @@ public actor ServerConnection {
                 // stop() ran must not write state over `.idle` on its way out.
                 guard !Task.isCancelled else { return }
                 state = .unauthorized
-                await watchdog.stop()
+                // `connectOnce`'s catch already stopped the watchdog on every
+                // path that reaches here, so a second `await watchdog.stop()`
+                // is redundant — and it was worse than redundant: it is a
+                // suspension point in the middle of what is otherwise an
+                // atomic tail, which is what makes clearing `runTask` below
+                // safe against a concurrent `reconnectNow()`.
+                //
+                // Clearing the handle matters because `start()` guards on
+                // `runTask == nil`: leaving a finished task in place made every
+                // future `start()` a silent no-op, so a server whose token the
+                // user had just fixed could never be restarted. A public method
+                // that ignores its caller is exactly what this project forbids.
+                //
+                // Safe against `reconnectNow()` installing a replacement: that
+                // path cancels this task first, the guard above observes it,
+                // and there is no suspension point between the guard and here.
+                runTask = nil
                 return
             } catch NtfyStreamClient.Error.rateLimited(let retryAfter) {
                 guard !Task.isCancelled else { return }
@@ -171,6 +193,18 @@ public actor ServerConnection {
             await self?.handleWatchdogTimeout()
         }
 
+        // Arming the watchdog is a cross-actor hop, so `stop()` or
+        // `reconnectNow()` can run to completion while this loop is suspended
+        // on it. Without this guard the loop resumes and calls
+        // `client.stream(request)`, which issues a real HTTP request before the
+        // cancelled loop's first `next()` gets a chance to tear it down — one
+        // stray connect to the server per stop.
+        //
+        // It deliberately does *not* stop the watchdog on the way out, for the
+        // same reason both exits below are guarded: the loop that replaced this
+        // one may already own the arm.
+        guard !Task.isCancelled else { return }
+
         // The watchdog is stopped inline, on this task, rather than from a
         // `defer { Task { ... } }`. A detached teardown task escapes this run
         // loop's cancellation scope — `Task.isCancelled` is false inside a
@@ -239,10 +273,16 @@ public actor ServerConnection {
         // `stop()` then never clears — leaving `state == .idle` while a live
         // loop reconnects forever, with nothing reporting it.
         //
-        // The condition is exact, not defensive: every path that starts a run
-        // loop assigns `runTask`, and only `stop()` clears it, while the
-        // watchdog holds a handler at all only because some `connectOnce`
-        // armed it — which implies a live `runTask`.
+        // This guard is load-bearing rather than a restatement of an invariant
+        // that already holds. An earlier version of this comment claimed that
+        // the watchdog holding a handler at all implies a live `runTask`,
+        // because only a `connectOnce` arms it. That is false: `stop()`'s
+        // `await watchdog.stop()` and a run loop's `await watchdog.start` can
+        // both be queued on the watchdog actor and run in that order, leaving a
+        // handler armed after `stop()` has returned. `runTask` is also cleared
+        // by the unauthorized branch now, not only by `stop()`. What does hold,
+        // and is all this needs, is the converse: a live run loop always has a
+        // non-nil handle.
         guard runTask != nil else { return }
 
         degrade(.keepaliveTimeout)

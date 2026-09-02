@@ -53,6 +53,36 @@ private let base = URL(string: "https://ntfy.example.com")!
     }
 }
 
+/// Validated against ntfy's own rule, `[-_A-Za-z0-9]{1,64}`, rather than
+/// against the shorter list of characters that happen to break this client's
+/// URL building. `#` was the concrete hole: it survived the old check and
+/// truncated the request path at a URL fragment.
+@Test func rejectsTopicsOutsideNtfysOwnCharacterSet() {
+    let ep = NtfyEndpoint(baseURL: base, credential: .none)
+    for topic in ["a#b", "a b", "a\tb", "héllo", "a.b", "a:b", "a%b", ""] {
+        #expect(throws: NtfyEndpoint.Error.invalidTopic(topic)) {
+            _ = try ep.streamRequest(topics: [topic], since: nil)
+        }
+    }
+}
+
+@Test func acceptsTheLongestLegalTopicAndRejectsOneCharacterMore() throws {
+    let ep = NtfyEndpoint(baseURL: base, credential: .none)
+    let longest = String(repeating: "a", count: 64)
+    _ = try ep.streamRequest(topics: [longest], since: nil)
+
+    let tooLong = String(repeating: "a", count: 65)
+    #expect(throws: NtfyEndpoint.Error.invalidTopic(tooLong)) {
+        _ = try ep.streamRequest(topics: [tooLong], since: nil)
+    }
+}
+
+@Test func acceptsEveryCharacterClassNtfyAllows() throws {
+    let ep = NtfyEndpoint(baseURL: base, credential: .none)
+    let req = try ep.streamRequest(topics: ["Ops-alerts_9"], since: nil)
+    #expect(req.url?.absoluteString == "https://ntfy.example.com/Ops-alerts_9/json")
+}
+
 @Test func preservesABaseURLSubpath() throws {
     let ep = NtfyEndpoint(baseURL: URL(string: "https://example.com/ntfy")!, credential: .none)
     let req = try ep.streamRequest(topics: ["a"], since: nil)

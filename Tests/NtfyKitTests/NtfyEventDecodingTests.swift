@@ -16,7 +16,7 @@ private func decode(_ json: String) throws -> NtfyEvent {
     #expect(e.tags == ["white_check_mark"])
     #expect(e.contentType == "text/markdown")
     #expect(e.actions?.count == 1)
-    #expect(e.actions?.first?.action == .view)
+    #expect(e.actions?.first?.kind == .view)
     #expect(e.actions?.first?.label == "Open")
 }
 
@@ -59,4 +59,24 @@ private func decode(_ json: String) throws -> NtfyEvent {
     #expect(NtfyPriority(rawValue: 5) == .max)
     #expect(NtfyPriority(rawValue: 0) == nil)
     #expect(NtfyPriority(rawValue: 6) == nil)
+}
+
+/// An action kind ntfy adds after this build shipped must cost at most the
+/// button. With `action` typed as a closed enum, the whole *message* failed to
+/// decode and was dropped as malformed — body, title and all — for the sake of
+/// one control the UI could simply have omitted. Same reasoning as
+/// `NtfyEvent.event`, which was already a raw string for exactly this.
+@Test func keepsAMessageWhoseActionKindIsUnknown() throws {
+    let json = #"""
+    {"id":"fut1","time":1788353400,"event":"message","topic":"alerts","message":"A1","actions":[{"id":"a1","action":"some_future_action","label":"Do it"},{"id":"a2","action":"view","label":"Open","url":"https://example.com/x"}]}
+    """#
+    let e = try decode(json)
+    #expect(e.kind == .message)
+    #expect(e.message == "A1")
+    #expect(e.actions?.count == 2)
+    // The unknown one survives with its raw value and reports no `kind`, so a
+    // caller renders what it understands and skips the rest.
+    #expect(e.actions?.first?.action == "some_future_action")
+    #expect(e.actions?.first?.kind == nil)
+    #expect(e.actions?.last?.kind == .view)
 }

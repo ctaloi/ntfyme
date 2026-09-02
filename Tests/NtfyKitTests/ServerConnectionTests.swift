@@ -2,6 +2,9 @@ import Foundation
 import Testing
 @testable import NtfyKit
 
+/// `topics` here is shorthand for "one un-synced watermark per topic", which is
+/// what `ServerConnection` now takes: the subscribed set is derived from the
+/// watermarks rather than passed alongside them.
 private func makeConnection(
     base: URL,
     topics: [String] = ["alerts"],
@@ -11,8 +14,7 @@ private func makeConnection(
 ) -> ServerConnection {
     ServerConnection(
         endpoint: NtfyEndpoint(baseURL: base, credential: .none),
-        topics: topics,
-        watermarks: watermarks ?? [TopicWatermark(topic: "alerts", lastMessageTime: nil)],
+        watermarks: watermarks ?? topics.map { TopicWatermark(topic: $0, lastMessageTime: nil) },
         client: NtfyStreamClient(),
         backoff: .standard,
         sleeper: sleeper,
@@ -115,6 +117,31 @@ private func waitUntil(
 
     #expect(await waitUntil { await connection.state == .unauthorized })
     #expect(await server.receivedRequestPaths.count == 1)
+    await connection.stop()
+}
+
+/// `.unauthorized` is terminal until the credential changes — but "until the
+/// credential changes" has to mean something. The unauthorized branch ends its
+/// run loop by returning, and leaving that finished task in `runTask` made
+/// `start()`'s `runTask == nil` guard reject every later call, so a server
+/// whose token the user had just fixed could never be restarted and `start()`
+/// silently did nothing.
+@Test func startWorksAgainAfterUnauthorized() async throws {
+    let server = MockNtfyServer()
+    let base = try await server.start()
+    defer { Task { await server.stop() } }
+    await server.setResponse(status: 401, body: #"{"code":40101,"error":"unauthorized"}"#)
+
+    let connection = makeConnection(base: base)
+    await connection.start()
+    #expect(await waitUntil { await connection.state == .unauthorized })
+    #expect(await server.receivedRequestPaths.count == 1)
+
+    // A second connect attempt is the observable proof, not a state read: a
+    // silently ignored `start()` leaves the state at `.unauthorized` too.
+    await connection.start()
+    #expect(await waitUntil { await server.receivedRequestPaths.count >= 2 },
+            "start() after .unauthorized was silently ignored")
     await connection.stop()
 }
 
