@@ -1169,8 +1169,12 @@ import Testing
 @testable import NtfyKit
 
 /// Randomness is injected so the schedule is asserted exactly, not sampled.
-private let noJitter: () -> Double = { 0.0 }
-private let maxJitter: () -> Double = { 1.0 }
+/// The `@Sendable` annotations are required: a `private let` closure at file
+/// scope is global state, which Swift 6 strict concurrency rejects unless the
+/// closure type is Sendable. Note this belongs on the test globals only —
+/// `BackoffPolicy.delay`'s parameter stays unannotated.
+private let noJitter: @Sendable () -> Double = { 0.0 }
+private let maxJitter: @Sendable () -> Double = { 1.0 }
 
 @Test func firstAttemptWaitsTheBaseDelay() {
     let p = BackoffPolicy.standard
