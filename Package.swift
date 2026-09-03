@@ -11,7 +11,12 @@ let package = Package(
     targets: [
         .target(name: "NtfyKit"),
         .executableTarget(name: "NtfyMe", dependencies: ["NtfyKit"]),
-        .testTarget(name: "NtfyKitTests", dependencies: ["NtfyKit"]),
+        .testTarget(
+            name: "NtfyKitTests",
+            dependencies: ["NtfyKit"],
+            // A store written by an older schema, used to prove the current
+            // schema can still open it. See SchemaMigrationSafetyTests.
+            resources: [.copy("Fixtures")]),
         .testTarget(name: "NtfyMeTests", dependencies: ["NtfyMe"]),
     ]
 )
