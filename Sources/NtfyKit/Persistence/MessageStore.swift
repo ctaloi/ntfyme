@@ -241,6 +241,19 @@ public actor MessageStore {
         try modelContext.fetchCount(FetchDescriptor<Message>())
     }
 
+    /// Fetches one message by its `uniqueKey`, or `nil` if no such row
+    /// exists — pruned by retention between whoever captured the key and
+    /// this call, or the key never matched a message at all. An indexed
+    /// lookup on `uniqueKey`'s `.unique` attribute (`Models.swift`), the
+    /// same pattern `setAttachmentLocalFilename` uses, not a table scan —
+    /// this is the resolve step behind "open this message" from a stored
+    /// key (a notification click, or a menu bar popover tap).
+    public func message(uniqueKey: String) throws -> MessageSnapshot? {
+        var descriptor = FetchDescriptor<Message>(predicate: #Predicate { $0.uniqueKey == uniqueKey })
+        descriptor.fetchLimit = 1
+        return try modelContext.fetch(descriptor).first?.snapshot
+    }
+
     /// Every configured server, as `Sendable` snapshots, ordered by `sortOrder`.
     ///
     /// A row whose `baseURLString` does not parse is skipped and logged rather
