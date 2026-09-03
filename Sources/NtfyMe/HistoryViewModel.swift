@@ -88,8 +88,38 @@ final class HistoryViewModel {
     /// `messages` already holds — those rows are still good and must not be
     /// blanked by an unrelated action failing.
     private(set) var actionErrorMessage: String?
+    /// Set whenever the current page comes back empty, to tell apart the
+    /// two reasons `messages` can be empty: nothing has ever arrived, or
+    /// the scope/filters exclude everything that has. `HistoryListView`'s
+    /// empty state reads this to choose the right words — an unconditional
+    /// "nothing matches the current filters" told a brand-new user with no
+    /// filters set that their (nonexistent) filters were hiding messages,
+    /// which sent them hunting for a control that was never the problem.
+    private(set) var archiveIsEmpty = false
     private var nextOffset = 0
     private var debounceTask: Task<Void, Never>?
+
+    /// Whether anything narrower than "no constraint at all" is active —
+    /// used the same place `archiveIsEmpty` is (to tell a genuinely empty
+    /// archive from a filtered-to-nothing one) and to gate the "Clear
+    /// Filters" action to when there is actually something to clear.
+    var hasActiveFilters: Bool {
+        scope != .all || !searchText.isEmpty || !tagFilter.isEmpty
+            || priorityFilter != .any || dateRangeFilter != .any
+    }
+
+    /// Clears every filter `reveal(messageKey:)` already clears for the
+    /// same reason — a message, or in this case an entire archive, hidden
+    /// by an active filter reads as broken rather than merely filtered —
+    /// exposed here so the filtered-empty state's "Clear Filters" button
+    /// isn't the only way that behavior is reachable.
+    func clearFilters() {
+        scope = .all
+        searchText = ""
+        tagFilter = ""
+        priorityFilter = .any
+        dateRangeFilter = .any
+    }
 
     init(store: MessageStore, attachmentsDirectory: URL? = nil) {
         self.store = store
@@ -121,10 +151,26 @@ final class HistoryViewModel {
             messages = page
             nextOffset = page.count
             canLoadMore = page.count == Self.pageSize
+            archiveIsEmpty = page.isEmpty ? await isArchiveEmpty() : false
         } catch {
             messages = []
             canLoadMore = false
             recordSearchFailure("search messages", error)
+        }
+    }
+
+    /// Only called when the current page is already empty, so this is never
+    /// on the hot path a keystroke drives. A failure here is not worth
+    /// failing the whole refresh over — the search above already succeeded,
+    /// `messages` is trustworthy — so it falls back to the more common
+    /// wording (filtered-empty) rather than guessing wrong in the rarer
+    /// direction (claiming a non-empty archive is empty).
+    private func isArchiveEmpty() async -> Bool {
+        do {
+            return try await store.messageCount() == 0
+        } catch {
+            log("check whether the archive is empty", error)
+            return false
         }
     }
 
@@ -171,6 +217,7 @@ final class HistoryViewModel {
             messages = page
             nextOffset = page.count
             canLoadMore = page.count == span
+            archiveIsEmpty = page.isEmpty ? await isArchiveEmpty() : false
         } catch {
             // Keep the stale `messages` rather than blanking a perfectly
             // good list over an unrelated refresh failure — the mutation

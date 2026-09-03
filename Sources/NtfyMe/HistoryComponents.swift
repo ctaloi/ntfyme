@@ -84,11 +84,23 @@ extension View {
 }
 
 /// A centered icon + message, for empty and loading states that say
-/// something useful rather than leaving a blank pane.
-struct HistoryStatusView: View {
+/// something useful rather than leaving a blank pane. `actions` defaults to
+/// nothing — most callers (loading, "no message selected", a search error)
+/// have no action that makes sense; the filtered-empty state is the one
+/// that does (clearing the filters that caused it).
+struct HistoryStatusView<Actions: View>: View {
     let systemImage: String
     let title: String
     let message: String?
+    @ViewBuilder var actions: Actions
+
+    init(systemImage: String, title: String, message: String?,
+        @ViewBuilder actions: () -> Actions = { EmptyView() }) {
+        self.systemImage = systemImage
+        self.title = title
+        self.message = message
+        self.actions = actions()
+    }
 
     var body: some View {
         ContentUnavailableView {
@@ -97,6 +109,8 @@ struct HistoryStatusView: View {
             if let message {
                 Text(message)
             }
+        } actions: {
+            actions
         }
     }
 }

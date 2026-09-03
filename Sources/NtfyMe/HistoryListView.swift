@@ -53,8 +53,26 @@ struct HistoryListView: View {
         } else if viewModel.isLoading && viewModel.messages.isEmpty {
             HistoryStatusView(systemImage: "hourglass", title: "Loading…", message: nil)
         } else if viewModel.messages.isEmpty {
-            HistoryStatusView(systemImage: "tray", title: "No Messages",
-                              message: "Nothing matches the current filters.")
+            // Two different causes for the same empty page, that want
+            // different words: nothing has ever arrived, or the scope/
+            // filters exclude everything that has. Telling a brand-new
+            // user with no filters set that their (nonexistent) filters
+            // are hiding messages sends them hunting for a control that
+            // was never the problem — see `archiveIsEmpty`'s doc comment.
+            if viewModel.archiveIsEmpty && !viewModel.hasActiveFilters {
+                if viewModel.servers.isEmpty {
+                    HistoryStatusView(systemImage: "server.rack", title: "No Servers Configured",
+                                      message: "Add a server in Settings to start receiving messages.")
+                } else {
+                    HistoryStatusView(systemImage: "tray", title: "No Messages Yet",
+                                      message: "New messages appear here as they arrive.")
+                }
+            } else {
+                HistoryStatusView(systemImage: "line.3.horizontal.decrease.circle", title: "No Messages",
+                                  message: "Nothing matches the current filters.") {
+                    Button("Clear Filters") { viewModel.clearFilters() }
+                }
+            }
         } else {
             list
         }

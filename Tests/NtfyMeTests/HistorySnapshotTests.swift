@@ -153,9 +153,22 @@ private enum HistorySnapshotFixtures {
             deployFailedID: d2.uniqueKey, alertsFirstUnreadID: a1.uniqueKey, longStressID: stress.uniqueKey)
     }
 
-    /// No servers, no topics, no messages at all.
+    /// No servers, no topics, no messages at all — the fresh-install case.
     static func makeEmpty() throws -> MessageStore {
         MessageStore(modelContainer: try inMemoryContainer())
+    }
+
+    /// A server and a topic, genuinely no messages yet — distinct from
+    /// `makeEmpty()`: this is "nothing has arrived", not "nothing is
+    /// configured", and the empty state's copy differs between the two.
+    static func makeEmptyWithServerConfigured() throws -> MessageStore {
+        let container = try inMemoryContainer()
+        let context = ModelContext(container)
+        let server = Server(name: "Home Lab", baseURLString: "https://ntfy.homelab.example", sortOrder: 0)
+        context.insert(server)
+        context.insert(Subscription(topic: "alerts", server: server))
+        try context.save()
+        return MessageStore(modelContainer: container)
     }
 }
 
@@ -290,12 +303,20 @@ private let minimumMeanAlpha = 0.85
     #expect(alpha > minimumMeanAlpha)
 }
 
+/// Fresh install: no server configured at all. `HistoryViewModel
+/// .archiveIsEmpty` is true and `hasActiveFilters` is false, and
+/// `viewModel.servers.isEmpty` is what picks this over
+/// `historyEmptyNoMessagesYet`'s wording — "Add a server in Settings"
+/// rather than "New messages appear here", since Settings is the actual
+/// next step here and a message will never arrive without one.
 @MainActor
-@Test(requiresSnapshotRendering) func historyEmpty() async throws {
+@Test(requiresSnapshotRendering) func historyEmptyNoServerConfigured() async throws {
     let store = try HistorySnapshotFixtures.makeEmpty()
     let viewModel = HistoryViewModel(store: store)
     await viewModel.loadSidebar()
     await viewModel.refreshMessages()
+    #expect(viewModel.archiveIsEmpty)
+    #expect(!viewModel.hasActiveFilters)
 
     _ = try renderSnapshot(HistoryView(viewModel: viewModel),
                            size: CGSize(width: 900, height: 560), to: "history-empty.png")
@@ -306,6 +327,55 @@ private let minimumMeanAlpha = 0.85
     let colors = try distinctColorCount(ofPNGAt: "/tmp/ntfyshots/history-empty.png")
     #expect(colors > 12)
     let alpha = try meanAlpha(ofPNGAt: "/tmp/ntfyshots/history-empty.png")
+    #expect(alpha > minimumMeanAlpha)
+}
+
+/// A server and topic exist; nothing has arrived on them yet. The other
+/// half of the bug the team lead found: an unconditional "nothing matches
+/// the current filters" told this exact user — no filters set, archive
+/// genuinely empty — that filters they never touched were hiding messages.
+@MainActor
+@Test(requiresSnapshotRendering) func historyEmptyNoMessagesYet() async throws {
+    let store = try HistorySnapshotFixtures.makeEmptyWithServerConfigured()
+    let viewModel = HistoryViewModel(store: store)
+    await viewModel.loadSidebar()
+    await viewModel.refreshMessages()
+    #expect(viewModel.archiveIsEmpty)
+    #expect(!viewModel.hasActiveFilters)
+    #expect(!viewModel.servers.isEmpty)
+
+    _ = try renderSnapshot(HistoryView(viewModel: viewModel),
+                           size: CGSize(width: 900, height: 560), to: "history-empty-no-messages-yet.png")
+    let colors = try distinctColorCount(ofPNGAt: "/tmp/ntfyshots/history-empty-no-messages-yet.png")
+    #expect(colors > 12)
+    let alpha = try meanAlpha(ofPNGAt: "/tmp/ntfyshots/history-empty-no-messages-yet.png")
+    #expect(alpha > minimumMeanAlpha)
+}
+
+/// Messages exist; the active scope excludes all of them. This is the
+/// state that keeps "Nothing matches the current filters." plus the new
+/// "Clear Filters" button — `hasActiveFilters` is what routes here instead
+/// of the two states above, regardless of what `archiveIsEmpty` says.
+@MainActor
+@Test(requiresSnapshotRendering) func historyFilteredEmpty() async throws {
+    let fixture = try HistorySnapshotFixtures.makePopulated()
+    let viewModel = HistoryViewModel(store: fixture.store)
+    await viewModel.loadSidebar()
+    viewModel.scope = .topic(serverID: fixture.homeLabID, topic: "backups")
+    viewModel.searchText = "no message body contains this exact string"
+    await viewModel.refreshMessages()
+    #expect(viewModel.hasActiveFilters)
+    #expect(viewModel.messages.isEmpty)
+
+    _ = try renderSnapshot(HistoryView(viewModel: viewModel),
+                           size: CGSize(width: 900, height: 560), to: "history-filtered-empty.png")
+    // Sparser than a populated three-column render for the same reason
+    // `historyEmptyNoServerConfigured` is — a centered placeholder plus one
+    // button, not message rows — so this uses the same lower floor rather
+    // than `minimumDistinctColors`.
+    let colors = try distinctColorCount(ofPNGAt: "/tmp/ntfyshots/history-filtered-empty.png")
+    #expect(colors > 12)
+    let alpha = try meanAlpha(ofPNGAt: "/tmp/ntfyshots/history-filtered-empty.png")
     #expect(alpha > minimumMeanAlpha)
 }
 
