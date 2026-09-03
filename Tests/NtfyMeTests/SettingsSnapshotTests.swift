@@ -94,6 +94,17 @@ private let onboardingSize = CGSize(width: 420, height: 340)
 /// this file measures in the dozens. 5 sits well clear of both.
 private let minPlausibleColorCount = 5
 
+/// Catches a root that forgot to paint its own ground — the exact bug
+/// `ContentUnavailableView` had in `SettingsServersTab`'s empty state, and
+/// the one `distinctColorCount` cannot see once it composites onto white.
+/// Calibrated across this wave's four affected surfaces: every legitimate
+/// render measures 0.889 or above, an unpainted one 0.053 — an order of
+/// magnitude apart. 0.85 clears the lowest legitimate case
+/// (`settings-servers-empty.png` at 0.889) with room, while still failing a
+/// broken one hard. If a render's measured alpha ever drifts down toward
+/// this line, that is a real regression to report, not a reason to lower it.
+private let minPlausibleAlpha = 0.85
+
 private func path(_ filename: String) -> String { "/tmp/ntfyshots/\(filename)" }
 
 @MainActor @Test func renderGeneralTab() async throws {
@@ -102,6 +113,7 @@ private func path(_ filename: String) -> String { "/tmp/ntfyshots/\(filename)" }
     let filename = "settings-general.png"
     _ = try renderSnapshot(SettingsGeneralTab(model: model), size: settingsSize, to: filename)
     #expect(try distinctColorCount(ofPNGAt: path(filename)) > minPlausibleColorCount)
+    #expect(try meanAlpha(ofPNGAt: path(filename)) > minPlausibleAlpha)
 }
 
 @MainActor @Test func renderServersTabPopulatedAndEmptyDiffer() async throws {
@@ -119,6 +131,11 @@ private func path(_ filename: String) -> String { "/tmp/ntfyshots/\(filename)" }
 
     #expect(try distinctColorCount(ofPNGAt: path(populatedFile)) > minPlausibleColorCount)
     #expect(try distinctColorCount(ofPNGAt: path(emptyFile)) > minPlausibleColorCount)
+    #expect(try meanAlpha(ofPNGAt: path(populatedFile)) > minPlausibleAlpha)
+    // The closest-to-the-line case (see `minPlausibleAlpha`'s doc comment):
+    // this state's `ContentUnavailableView` painted no ground of its own
+    // until `SettingsServersTab` gave it one explicitly.
+    #expect(try meanAlpha(ofPNGAt: path(emptyFile)) > minPlausibleAlpha)
 
     // Three server rows vs. a `ContentUnavailableView` must not coincide.
     #expect(populatedBytes != emptyBytes)
@@ -130,6 +147,7 @@ private func path(_ filename: String) -> String { "/tmp/ntfyshots/\(filename)" }
     let filename = "settings-notifications.png"
     _ = try renderSnapshot(SettingsNotificationsTab(model: model), size: settingsSize, to: filename)
     #expect(try distinctColorCount(ofPNGAt: path(filename)) > minPlausibleColorCount)
+    #expect(try meanAlpha(ofPNGAt: path(filename)) > minPlausibleAlpha)
 }
 
 @MainActor @Test func renderAdvancedTab() async throws {
@@ -138,6 +156,7 @@ private func path(_ filename: String) -> String { "/tmp/ntfyshots/\(filename)" }
     let filename = "settings-advanced.png"
     _ = try renderSnapshot(SettingsAdvancedTab(model: model), size: settingsSize, to: filename)
     #expect(try distinctColorCount(ofPNGAt: path(filename)) > minPlausibleColorCount)
+    #expect(try meanAlpha(ofPNGAt: path(filename)) > minPlausibleAlpha)
 }
 
 /// The alert path: `errorMessage` set on the shared model, rendered through
@@ -167,6 +186,8 @@ private func path(_ filename: String) -> String { "/tmp/ntfyshots/\(filename)" }
 
     #expect(try distinctColorCount(ofPNGAt: path(cleanFile)) > minPlausibleColorCount)
     #expect(try distinctColorCount(ofPNGAt: path(errorFile)) > minPlausibleColorCount)
+    #expect(try meanAlpha(ofPNGAt: path(cleanFile)) > minPlausibleAlpha)
+    #expect(try meanAlpha(ofPNGAt: path(errorFile)) > minPlausibleAlpha)
 
     withKnownIssue("""
         The .alert(...) is presented from an offscreen NSWindow that is never \
@@ -204,6 +225,8 @@ private func path(_ filename: String) -> String { "/tmp/ntfyshots/\(filename)" }
 
     #expect(try distinctColorCount(ofPNGAt: path(lightFile)) > minPlausibleColorCount)
     #expect(try distinctColorCount(ofPNGAt: path(darkFile)) > minPlausibleColorCount)
+    #expect(try meanAlpha(ofPNGAt: path(lightFile)) > minPlausibleAlpha)
+    #expect(try meanAlpha(ofPNGAt: path(darkFile)) > minPlausibleAlpha)
 }
 
 /// First-run onboarding (spec §6), at the size `AppDelegate` actually hosts
@@ -217,4 +240,5 @@ private func path(_ filename: String) -> String { "/tmp/ntfyshots/\(filename)" }
     let filename = "onboarding.png"
     _ = try renderSnapshot(view, size: onboardingSize, to: filename)
     #expect(try distinctColorCount(ofPNGAt: path(filename)) > minPlausibleColorCount)
+    #expect(try meanAlpha(ofPNGAt: path(filename)) > minPlausibleAlpha)
 }
