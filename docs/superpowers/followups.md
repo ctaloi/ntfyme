@@ -10,6 +10,15 @@ the user.
 
 ## App layer
 
+**The Quick Look preview panel has never been opened.** Attachment download is
+verified end to end — a real message published to a live topic produced a file
+on disk with its generated filename recorded in the store — and the detail
+pane's preview button is wired against it. But nobody has clicked that button
+and watched a panel appear. Snapshot renders cannot show it, and driving it
+through the accessibility API proved unreliable. Verify interactively before
+claiming it works.
+
+
 **⌘, does not open Settings.** Settings is now hosted by
 `SettingsWindowController` rather than the SwiftUI `Settings` scene, because
 that scene could not be opened from a menu-bar accessory at all (see that
