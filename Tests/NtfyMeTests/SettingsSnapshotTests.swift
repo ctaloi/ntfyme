@@ -273,3 +273,26 @@ private func path(_ filename: String) -> String { "/tmp/ntfyshots/\(filename)" }
     #expect(try distinctColorCount(ofPNGAt: path(filename)) > minPlausibleColorCount)
     #expect(try meanAlpha(ofPNGAt: path(filename)) > minPlausibleAlpha)
 }
+
+/// The Edit Server sheet's credential-only editor, at its real sheet size.
+/// Specifically checks the fix for a review finding: the server's name and
+/// address used to render as `LabeledContent` rows inside a `Form` section
+/// — visually identical to the editable rows elsewhere in this same sheet —
+/// with the "this can't be changed" sentence sitting below them. A user
+/// found out only by trying to click into one. Plain content still has to
+/// clear the same floors as a `Section`'s; the fix is what draws it with,
+/// not whether it draws at all, which these assertions cannot see — this
+/// test exists as a rendered artifact for a human to look at, not to prove
+/// the layout choice by assertion.
+@MainActor @Test(requiresSnapshotRendering) func renderEditServerSheet() async throws {
+    let (store, model) = try makeStoreAndModel()
+    try await seedServers(store: store, model: model)
+    let server = try #require(model.servers.first)
+
+    let filename = "settings-edit-server.png"
+    _ = try renderSnapshot(
+        SettingsServerEditor(model: model, mode: .editCredential(server), onDismiss: {}),
+        size: CGSize(width: 420, height: 440), to: filename)
+    #expect(try distinctColorCount(ofPNGAt: path(filename)) > minPlausibleColorCount)
+    #expect(try meanAlpha(ofPNGAt: path(filename)) > minPlausibleAlpha)
+}

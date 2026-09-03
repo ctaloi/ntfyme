@@ -243,78 +243,103 @@ struct SettingsServerEditor: View {
     @State private var isTesting = false
 
     var body: some View {
-        Form {
-            switch mode {
-            case .add:
-                Section {
-                    TextField("Name", text: $name)
-                        .accessibilityLabel("Server name")
-                    TextField("https://ntfy.example.com", text: $baseURLString)
-                        .accessibilityLabel("Server address")
-                } header: {
-                    Text("Server")
-                } footer: {
-                    // Spec §9, stated at the point a server is configured,
-                    // ahead of the first topic this server will carry.
-                    Text("On public ntfy.sh, a topic name works like a password \u{2014} anyone who knows it can read and publish to it.")
-                }
-
-            case .editCredential(let server):
-                Section {
-                    LabeledContent("Name", value: server.name)
-                    LabeledContent("Address", value: server.baseURL.absoluteString)
-                } header: {
-                    Text("Server")
-                } footer: {
-                    Text("Renaming a server or changing its address isn't supported yet \u{2014} remove and re-add the server to change either.")
-                }
-            }
-
-            Section("Credential") {
-                Picker("Type", selection: $kind) {
-                    ForEach(SettingsCredentialKind.allCases) { kind in
-                        Text(kind.displayName).tag(kind)
-                    }
-                }
-                .accessibilityLabel("Credential type")
-
-                switch kind {
-                case .unauthenticated:
-                    EmptyView()
-                case .bearer:
-                    SecureField("Token", text: $token)
-                        .accessibilityLabel("Bearer token")
-                case .basic:
-                    TextField("Username", text: $username)
-                        .accessibilityLabel("Username")
-                    SecureField("Password", text: $password)
-                        .accessibilityLabel("Password")
-                }
-            }
-
-            if let validationError {
-                Text(validationError)
-                    .font(.caption)
-                    .foregroundStyle(.red)
-            }
-
-            Section {
-                Button {
-                    Task { await runConnectionTest() }
-                } label: {
-                    Label(isTesting ? "Testing\u{2026}" : "Test Connection", systemImage: "network")
-                }
-                .disabled(isTesting)
-
-                if let testResult {
-                    Text(testResult)
+        VStack(spacing: 0) {
+            // Deliberately outside the `Form` for `.editCredential`, not a
+            // `Section` of `LabeledContent` rows: `.formStyle(.grouped)`
+            // gives a read-only row the exact same rounded-rect background
+            // as an editable one, so "Name"/"Address" rows here used to
+            // look exactly like the editable rows elsewhere in Settings — a
+            // user had to try clicking into one to learn otherwise, which
+            // is the opposite of what the sentence below already says. A
+            // plain header above the form, matching how `ServerRow` already
+            // presents a server's identity in the list this sheet was
+            // opened from, reads as this sheet's title rather than a field.
+            if case .editCredential(let server) = mode {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(server.name)
+                        .font(.title3.bold())
+                    Text(server.baseURL.absoluteString)
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                    Text("Renaming a server or changing its address isn't supported yet \u{2014} remove and re-add the server to change either.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .padding(.top, 2)
+                }
+                .accessibilityElement(children: .combine)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding([.horizontal, .top])
+                Divider()
+            }
+
+            Form {
+                if case .add = mode {
+                    Section {
+                        TextField("Name", text: $name)
+                            .accessibilityLabel("Server name")
+                        TextField("https://ntfy.example.com", text: $baseURLString)
+                            .accessibilityLabel("Server address")
+                    } header: {
+                        Text("Server")
+                    } footer: {
+                        // Spec §9, stated at the point a server is configured,
+                        // ahead of the first topic this server will carry.
+                        Text("On public ntfy.sh, a topic name works like a password \u{2014} anyone who knows it can read and publish to it.")
+                    }
+                }
+
+                Section("Credential") {
+                    Picker("Type", selection: $kind) {
+                        ForEach(SettingsCredentialKind.allCases) { kind in
+                            Text(kind.displayName).tag(kind)
+                        }
+                    }
+                    .accessibilityLabel("Credential type")
+
+                    switch kind {
+                    case .unauthenticated:
+                        EmptyView()
+                    case .bearer:
+                        SecureField("Token", text: $token)
+                            .accessibilityLabel("Bearer token")
+                    case .basic:
+                        TextField("Username", text: $username)
+                            .accessibilityLabel("Username")
+                        SecureField("Password", text: $password)
+                            .accessibilityLabel("Password")
+                    }
+                }
+
+                if let validationError {
+                    Text(validationError)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
+
+                Section {
+                    Button {
+                        Task { await runConnectionTest() }
+                    } label: {
+                        Label(isTesting ? "Testing\u{2026}" : "Test Connection", systemImage: "network")
+                    }
+                    .disabled(isTesting)
+
+                    if let testResult {
+                        Text(testResult)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
             }
+            .formStyle(.grouped)
         }
-        .formStyle(.grouped)
         .frame(width: 420, height: 440)
+        // The header added for `.editCredential` sits outside the `Form`,
+        // which paints its own ground, so without this explicit background
+        // that header area painted none of its own — the same "forgot to
+        // paint a ground" shape this wave's snapshot review already caught
+        // twice elsewhere (`meanAlpha` is what caught it here too).
+        .background(Color(nsColor: .windowBackgroundColor))
         .toolbar {
             ToolbarItem(placement: .cancellationAction) {
                 Button("Cancel", action: onDismiss)
