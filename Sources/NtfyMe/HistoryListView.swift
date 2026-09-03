@@ -1,32 +1,18 @@
 import SwiftUI
 import NtfyKit
 
-/// The list column: one grouped Filter menu, Mark All Read, `.searchable`,
-/// and the page of messages the current scope and filters resolve to.
+/// The list column: the page of messages the current scope and filters
+/// resolve to, and the window title naming that scope.
 ///
-/// The toolbar used to be three loose `ToolbarItemGroup` capsules
-/// (priority, date range) plus a raw `TextField` for tags sitting directly
-/// in the toolbar — two competing text-entry affordances next to
-/// `.searchable`'s own field, which the approved redesign
-/// (`Tests/NtfyMeTests/RedesignMockups.swift`) identified as the single
-/// biggest cause of the window not reading as a Mac app. Replaced with one
-/// Filter menu holding all four filter dimensions (unread, priority, tag,
-/// date range), matching the mockup.
+/// The Filter menu, Mark All Read and the search field used to be declared
+/// here and are now on `HistoryView` — a toolbar belongs to the window, and
+/// declaring it on a column made its items move whenever a column did. See
+/// that file's doc comment for the three bugs that came from it.
 struct HistoryListView: View {
     @Bindable var viewModel: HistoryViewModel
-    @State private var dateRangePopoverShown = false
-    @State private var customSince: Date = Calendar.current.date(byAdding: .day, value: -7, to: Date()) ?? Date()
-    @State private var customUntil: Date = Date()
 
     var body: some View {
         content
-            .searchable(text: $viewModel.searchText, placement: .toolbar, prompt: "Search title or body")
-            .toolbar {
-                ToolbarItemGroup {
-                    filterMenu
-                    markAllReadButton
-                }
-            }
             .navigationTitle(scopeTitle)
     }
 
@@ -167,73 +153,6 @@ struct HistoryListView: View {
     /// at the bottom. The icon fills when any of the four is active, the
     /// same "something is filtering this view" affordance `hasActiveFilters`
     /// already drives for the empty state's wording.
-    private var filterMenu: some View {
-        Menu {
-            Toggle(isOn: $viewModel.unreadOnly) {
-                Label("Unread Only", systemImage: "circle.inset.filled")
-            }
-
-            Menu {
-                Picker("Priority", selection: $viewModel.priorityFilter) {
-                    ForEach(PriorityFilter.allCases) { filter in
-                        Text(filter.label).tag(filter)
-                    }
-                }
-                .pickerStyle(.inline)
-            } label: {
-                Label("Priority: \(viewModel.priorityFilter.label)", systemImage: "flag")
-            }
-
-            Menu {
-                Button("Any Time") { viewModel.dateRangeFilter = .any }
-                Button("Today") { viewModel.dateRangeFilter = .today }
-                Button("Last 7 Days") { viewModel.dateRangeFilter = .last7Days }
-                Button("Last 30 Days") { viewModel.dateRangeFilter = .last30Days }
-                Divider()
-                Button("Custom Range…") { dateRangePopoverShown = true }
-            } label: {
-                Label("Date: \(viewModel.dateRangeFilter.label)", systemImage: "calendar")
-            }
-
-            Divider()
-
-            TextField("Tag", text: $viewModel.tagFilter)
-                .accessibilityLabel(Text("Filter by tag"))
-        } label: {
-            Label("Filter", systemImage: viewModel.hasActiveFilters
-                  ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease")
-        }
-        .help("Filter messages")
-        .accessibilityLabel(Text(viewModel.hasActiveFilters ? "Filter (active)" : "Filter"))
-        // Attached to the menu rather than nested inside it: a `Menu`
-        // presenting a `.popover` from one of its own items works, but
-        // anchoring the popover at the toolbar control itself (not the
-        // transient menu item) is what keeps it from disappearing the
-        // instant the menu that spawned it closes.
-        .popover(isPresented: $dateRangePopoverShown) {
-            VStack(alignment: .leading, spacing: 12) {
-                DatePicker("From", selection: $customSince, displayedComponents: .date)
-                DatePicker("To", selection: $customUntil, displayedComponents: .date)
-                Button("Apply") {
-                    viewModel.dateRangeFilter = .custom(since: customSince, until: customUntil)
-                    dateRangePopoverShown = false
-                }
-                .keyboardShortcut(.defaultAction)
-            }
-            .padding()
-            .frame(width: 220)
-        }
-    }
-
-    private var markAllReadButton: some View {
-        Button {
-            Task { await viewModel.markAllRead(serverID: viewModel.scope.serverID, topic: viewModel.scope.topic) }
-        } label: {
-            Label("Mark All Read", systemImage: "envelope.open")
-        }
-        .help("Mark All Read")
-    }
-
     private var scopeTitle: String {
         switch viewModel.scope {
         case .all: return "All Messages"
