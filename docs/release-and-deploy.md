@@ -12,6 +12,7 @@ deployed, how Sparkle updates are cut, and what is safe to commit.
 - **Website:** `https://ntfyme.aloi.dev`
 - **GitHub homepage / About:** set manually (one `gh repo edit` command; see below)
 - **Website deploy:** GitHub Pages via `.github/workflows/pages.yml`
+- **Pages custom domain:** `ntfyme.aloi.dev` is already attached to the repo
 - **DNS:** Cloudflare zone `aloi.dev`, record `ntfyme.aloi.dev -> ctaloi.github.io` (`DNS only`)
 - **App updates:** Sparkle 2, appcast at repo root `appcast.xml`
 
@@ -58,6 +59,10 @@ CNAME  ntfyme  ctaloi.github.io   proxied: false
 ```
 
 Keep it **DNS only** unless there is a specific reason to proxy it.
+
+The GitHub Pages custom domain is already set to `ntfyme.aloi.dev`. If
+HTTP works but HTTPS does not yet, wait a few minutes for GitHub to issue the
+certificate and flip `https_enforced` on.
 
 ## Sparkle auto-update setup
 
@@ -176,9 +181,10 @@ gh repo edit ctaloi/ntfyme \
 Check:
 1. the commit with `site/` and `.github/workflows/pages.yml` is on `main`
 2. Actions → **Deploy site** has run successfully
-3. GitHub Pages is enabled for **workflow** builds
+3. GitHub Pages is enabled for **workflow** builds and the custom domain is set to `ntfyme.aloi.dev`
 4. the Cloudflare CNAME still points at `ctaloi.github.io`
 5. proxy is still off (`DNS only`)
+6. if the custom domain was just attached, give GitHub time to issue HTTPS
 
 ## If Sparkle release signing fails
 
