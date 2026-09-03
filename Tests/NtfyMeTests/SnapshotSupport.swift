@@ -239,33 +239,38 @@ func meanAlpha(ofPNGAt path: String, sampleEvery stride: Int = 3) throws -> Doub
 }
 
 
-/// Whether this machine has a GUI session, and so can render a snapshot.
+/// Whether snapshot rendering should run here at all.
 ///
-/// **Why this exists.** These tests draw through AppKit — a real
-/// `NSHostingView` in a real `NSWindow`, captured with `cacheDisplay`. That
-/// needs a window server. A headless CI runner has none, and the failure is
-/// not clean: `bitmapImageRepForCachingDisplay` returns nil, the render
-/// throws, and the surrounding work stalls the shared test process badly
-/// enough that unrelated timing-sensitive tests fail too. On the first CI run
-/// after these landed, one snapshot test reported `couldNotAllocateBitmap`
-/// and thirty-nine unrelated failures followed, including a helper asserting
-/// a 200ms bound that measured 1.674s.
+/// **Two separate reasons to say no, and the second was a surprise.**
 ///
-/// That is the same shape as the `RLIMIT_FSIZE` harness this project already
-/// removed: a test whose failure mode is not confined to itself. So these are
-/// skipped where they cannot run rather than left to take the suite down.
-///
-/// `CGSessionCopyCurrentDictionary` returns nil with no GUI session, and is
+/// *No window server.* These tests draw through AppKit — a real
+/// `NSHostingView` in a real `NSWindow` captured with `cacheDisplay`.
+/// Without a GUI session `bitmapImageRepForCachingDisplay` returns nil and
+/// the render throws. `CGSessionCopyCurrentDictionary` answers that, and is
 /// not main-actor isolated — which matters, because a trait's condition is
 /// evaluated at registration on an arbitrary thread. An earlier attempt
 /// probed the real thing behind `MainActor.assumeIsolated` and trapped
-/// immediately (signal 5), since a global's initializer runs on whichever
-/// thread touches it first.
-nonisolated let snapshotRenderingIsAvailable: Bool = CGSessionCopyCurrentDictionary() != nil
+/// immediately with signal 5.
+///
+/// *On CI, even where rendering works.* The GitHub runner does have a
+/// session, and these tests genuinely passed there — but twenty-two
+/// window-creating tests running in parallel with the socket-level
+/// `MockNtfyServer` suite starved it. Nineteen `ServerConnectionTests`
+/// timed out, and a helper asserting a 200ms bound measured **1.674s**. The
+/// renders were fine; everything around them was not.
+///
+/// So they are skipped on CI deliberately. They are a local verification
+/// tool — the thing that caught six invisible-in-dark-mode surfaces — and
+/// what CI is for here is the logic and networking they were drowning out.
+/// A skip reads as a skip rather than a pass, so their absence stays visible.
+nonisolated let snapshotRenderingIsAvailable: Bool = {
+    guard ProcessInfo.processInfo.environment["CI"] == nil else { return false }
+    return CGSessionCopyCurrentDictionary() != nil
+}()
 
 /// Applied to every test that renders. Reads as a skip in the results rather
 /// than a pass, so a machine that silently stops rendering is visible instead
 /// of quietly covering nothing.
 let requiresSnapshotRendering = ConditionTrait.enabled(
     if: snapshotRenderingIsAvailable,
-    "needs a window server: these tests draw through AppKit and cannot run headless")
+    "needs a window server, and is skipped on CI where these renders starve the socket-level tests")
