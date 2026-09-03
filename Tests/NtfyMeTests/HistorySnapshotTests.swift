@@ -207,7 +207,7 @@ private let minimumDistinctColors = 25
 private let minimumMeanAlpha = 0.85
 
 @MainActor
-@Test func historyPopulatedThreeColumns() async throws {
+@Test(requiresSnapshotRendering) func historyPopulatedThreeColumns() async throws {
     let fixture = try HistorySnapshotFixtures.makePopulated()
     let viewModel = HistoryViewModel(store: fixture.store)
     await viewModel.loadSidebar()
@@ -232,7 +232,7 @@ private let minimumMeanAlpha = 0.85
 /// itself (markdown, link, tags, two actions, an attachment), not window
 /// proportions, which `historyPopulatedThreeColumns` already covers.
 @MainActor
-@Test func historyDetailRichContent() async throws {
+@Test(requiresSnapshotRendering) func historyDetailRichContent() async throws {
     let fixture = try HistorySnapshotFixtures.makePopulated()
     let viewModel = HistoryViewModel(store: fixture.store, attachmentsDirectory: FileManager.default.temporaryDirectory)
     await viewModel.loadSidebar()
@@ -268,7 +268,7 @@ private let minimumMeanAlpha = 0.85
 /// everywhere) and `meanLuminance` being low enough that the render is
 /// actually dark, not merely different from something else.
 @MainActor
-@Test func historyDetailRichContentDarkMode() async throws {
+@Test(requiresSnapshotRendering) func historyDetailRichContentDarkMode() async throws {
     let fixture = try HistorySnapshotFixtures.makePopulated()
     let viewModel = HistoryViewModel(store: fixture.store, attachmentsDirectory: FileManager.default.temporaryDirectory)
     await viewModel.loadSidebar()
@@ -291,7 +291,7 @@ private let minimumMeanAlpha = 0.85
 }
 
 @MainActor
-@Test func historyEmpty() async throws {
+@Test(requiresSnapshotRendering) func historyEmpty() async throws {
     let store = try HistorySnapshotFixtures.makeEmpty()
     let viewModel = HistoryViewModel(store: store)
     await viewModel.loadSidebar()
@@ -310,7 +310,7 @@ private let minimumMeanAlpha = 0.85
 }
 
 @MainActor
-@Test func historyNoSelection() async throws {
+@Test(requiresSnapshotRendering) func historyNoSelection() async throws {
     let fixture = try HistorySnapshotFixtures.makePopulated()
     let viewModel = HistoryViewModel(store: fixture.store)
     await viewModel.loadSidebar()
@@ -331,7 +331,7 @@ private let minimumMeanAlpha = 0.85
 /// diluting the thing this render exists to check: the three status dots
 /// read as visually distinct.
 @MainActor
-@Test func historySidebarStatusDots() async throws {
+@Test(requiresSnapshotRendering) func historySidebarStatusDots() async throws {
     let fixture = try HistorySnapshotFixtures.makePopulated()
     let viewModel = HistoryViewModel(store: fixture.store)
     await viewModel.loadSidebar()
@@ -367,7 +367,7 @@ private let minimumMeanAlpha = 0.85
 /// is where "is dark actually dark" is asserted, on a view with no such
 /// confound.
 @MainActor
-@Test func historyPopulatedDarkMode() async throws {
+@Test(requiresSnapshotRendering) func historyPopulatedDarkMode() async throws {
     let fixture = try HistorySnapshotFixtures.makePopulated()
     let viewModel = HistoryViewModel(store: fixture.store)
     await viewModel.loadSidebar()
@@ -384,7 +384,7 @@ private let minimumMeanAlpha = 0.85
 }
 
 @MainActor
-@Test func historyLongContentStress() async throws {
+@Test(requiresSnapshotRendering) func historyLongContentStress() async throws {
     let fixture = try HistorySnapshotFixtures.makePopulated()
     let viewModel = HistoryViewModel(store: fixture.store)
     await viewModel.loadSidebar()
