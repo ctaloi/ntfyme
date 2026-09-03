@@ -107,7 +107,7 @@ private let minPlausibleAlpha = 0.85
 
 private func path(_ filename: String) -> String { "/tmp/ntfyshots/\(filename)" }
 
-@MainActor @Test func renderGeneralTab() async throws {
+@MainActor @Test(requiresSnapshotRendering) func renderGeneralTab() async throws {
     let (_, model) = try makeStoreAndModel()
     model.refreshPreferences()
     let filename = "settings-general.png"
@@ -116,7 +116,7 @@ private func path(_ filename: String) -> String { "/tmp/ntfyshots/\(filename)" }
     #expect(try meanAlpha(ofPNGAt: path(filename)) > minPlausibleAlpha)
 }
 
-@MainActor @Test func renderServersTabPopulatedAndEmptyDiffer() async throws {
+@MainActor @Test(requiresSnapshotRendering) func renderServersTabPopulatedAndEmptyDiffer() async throws {
     let (store, populatedModel) = try makeStoreAndModel()
     try await seedServers(store: store, model: populatedModel)
     let populatedFile = "settings-servers-populated.png"
@@ -141,7 +141,7 @@ private func path(_ filename: String) -> String { "/tmp/ntfyshots/\(filename)" }
     #expect(populatedBytes != emptyBytes)
 }
 
-@MainActor @Test func renderNotificationsTab() async throws {
+@MainActor @Test(requiresSnapshotRendering) func renderNotificationsTab() async throws {
     let (_, model) = try makeStoreAndModel()
     model.refreshPreferences()
     let filename = "settings-notifications.png"
@@ -150,7 +150,7 @@ private func path(_ filename: String) -> String { "/tmp/ntfyshots/\(filename)" }
     #expect(try meanAlpha(ofPNGAt: path(filename)) > minPlausibleAlpha)
 }
 
-@MainActor @Test func renderAdvancedTab() async throws {
+@MainActor @Test(requiresSnapshotRendering) func renderAdvancedTab() async throws {
     let (_, model) = try makeStoreAndModel()
     await model.refreshMessageCount()
     let filename = "settings-advanced.png"
@@ -174,7 +174,7 @@ private func path(_ filename: String) -> String { "/tmp/ntfyshots/\(filename)" }
 /// the colour-count floors, this test would have had no assertion capable
 /// of failing on its own account once the known issue is set aside, which
 /// is the same shape of gap `distinctColorCount` was written to close.
-@MainActor @Test func renderErrorStateDiffersFromNoError() async throws {
+@MainActor @Test(requiresSnapshotRendering) func renderErrorStateDiffersFromNoError() async throws {
     let (store, model) = try makeStoreAndModel()
     try await seedServers(store: store, model: model)
     let cleanFile = "settings-no-error.png"
@@ -210,7 +210,7 @@ private func path(_ filename: String) -> String { "/tmp/ntfyshots/\(filename)" }
 /// regression. `distinctColorCount` per render, independently, is what
 /// actually distinguishes them: broken renders measure 1-2, correct ones
 /// 25-29.
-@MainActor @Test func renderServersTabPopulatedLightAndDark() async throws {
+@MainActor @Test(requiresSnapshotRendering) func renderServersTabPopulatedLightAndDark() async throws {
     let (store, model) = try makeStoreAndModel()
     try await seedServers(store: store, model: model)
 
@@ -232,7 +232,7 @@ private func path(_ filename: String) -> String { "/tmp/ntfyshots/\(filename)" }
 /// First-run onboarding (spec §6), at the size `AppDelegate` actually hosts
 /// it in (`presentOnboardingIfNeeded`'s `NSWindow`). The literal first thing
 /// a new user sees.
-@MainActor @Test func renderOnboarding() async throws {
+@MainActor @Test(requiresSnapshotRendering) func renderOnboarding() async throws {
     let view = OnboardingView(
         onRequestAuthorization: { true },
         onFinish: {},
