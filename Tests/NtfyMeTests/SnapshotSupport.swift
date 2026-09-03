@@ -96,3 +96,40 @@ func meanLuminance(ofPNGAt path: String) throws -> Double {
     guard samples > 0 else { throw SnapshotError.couldNotAllocateBitmap }
     return total / Double(samples)
 }
+
+/// How many distinct colours a rendered PNG contains.
+///
+/// **Use this, not a byte-count floor.** A PNG of a completely blank surface
+/// is not small — it is 38,199 bytes at the History window's size and 18,960
+/// at the Settings tabs', because the encoder still writes a full-resolution
+/// image. Measured on this machine, not estimated. Every byte floor written
+/// against these surfaces was calibrated by eye and sat *below* its own blank
+/// render, so thirteen snapshot tests could not have failed on a surface that
+/// drew nothing at all — the exact regression they existed to catch.
+///
+/// Byte counts are also resolution-dependent: `bitmapImageRepForCachingDisplay`
+/// returns a 2x rep on a Retina display and 1x elsewhere, so the same
+/// assertion has different sensitivity on a dev machine and a CI runner.
+///
+/// A distinct-colour count does not have either problem. A blank surface has
+/// one or two colours whatever its size or scale; a real one has hundreds,
+/// from text antialiasing alone.
+@MainActor
+func distinctColorCount(ofPNGAt path: String, sampleEvery stride: Int = 3) throws -> Int {
+    guard let image = NSImage(contentsOfFile: path),
+          let tiff = image.tiffRepresentation,
+          let rep = NSBitmapImageRep(data: tiff) else {
+        throw SnapshotError.couldNotAllocateBitmap
+    }
+    var seen = Set<Int>()
+    for y in Swift.stride(from: 0, to: rep.pixelsHigh, by: stride) {
+        for x in Swift.stride(from: 0, to: rep.pixelsWide, by: stride) {
+            guard let c = rep.colorAt(x: x, y: y) else { continue }
+            // Quantised to 5 bits per channel: ignores imperceptible
+            // antialiasing noise while still separating real content.
+            let r = Int(c.redComponent * 31), g = Int(c.greenComponent * 31), b = Int(c.blueComponent * 31)
+            seen.insert(r << 10 | g << 5 | b)
+        }
+    }
+    return seen.count
+}
