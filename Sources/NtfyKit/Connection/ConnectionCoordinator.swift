@@ -179,9 +179,24 @@ public actor ConnectionCoordinator {
         await open(snapshot)
     }
 
-    /// Stops one connection and awaits its pump, so anything already received
-    /// is durably written before the entry is dropped — the same contract
-    /// `stop()` gives for all of them.
+    /// Stops one server's connection and awaits its pump, so anything already
+    /// received is durably written before the entry is dropped — the same
+    /// contract `stop()` gives for all of them. Returns once nothing is
+    /// streaming for that server.
+    ///
+    /// Public because removing a server has to stop its connection *before*
+    /// the store purge, not after. `MessageStore.removeServer` deletes the
+    /// server row, its subscriptions and all its messages in one atomic call,
+    /// so there is no way to decompose it caller-side; the ordering can only
+    /// come from here. Purging while the connection is live leaves its pump
+    /// inserting rows keyed to a server row that no longer exists — orphans
+    /// that are visible in History and the popover, still raise
+    /// notifications, and can never be removed again, because `removeServer`
+    /// early-returns on an unknown id.
+    public func close(serverID: UUID) async {
+        await close(serverID)
+    }
+
     private func close(_ id: UUID) async {
         guard let entry = live.removeValue(forKey: id) else { return }
         entry.pump.cancel()
