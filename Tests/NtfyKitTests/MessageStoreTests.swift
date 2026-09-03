@@ -41,6 +41,73 @@ private func run(_ executable: String, _ arguments: [String]) throws -> String {
     return output
 }
 
+/// Opens a `MessageStore`-ready container on a tiny scratch HFS+ disk
+/// image, seeded with a `Server`/`Subscription("alerts")` for `serverID`,
+/// and returns it alongside `fillerURL` — pass it to `fillVolume(at:)` to
+/// force a real `ENOSPC` on demand — and a `cleanup` closure the caller
+/// MUST invoke (typically via `defer`) to unmount the image and remove its
+/// scratch directory.
+///
+/// Shared by every test that needs a genuine, connection-scoped `save()`
+/// failure. See `aFailedSaveRollsBackSoARetriedBatchIsNotMistakenForA
+/// Duplicate`'s doc comment for why a disk image, not `RLIMIT_FSIZE` or a
+/// permission-revoked connection.
+private func makeFullDiskFixture(serverID: UUID) throws
+    -> (container: ModelContainer, fillerURL: URL, cleanup: () -> Void) {
+    let workDirectory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("MessageStoreTests-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: workDirectory, withIntermediateDirectories: true)
+
+    let imagePath = workDirectory.appendingPathComponent("tiny.dmg").path
+    let mountPoint = workDirectory.appendingPathComponent("mnt")
+    try FileManager.default.createDirectory(at: mountPoint, withIntermediateDirectories: true)
+
+    // 8 MiB comfortably fits this schema's catalog plus a handful of rows
+    // (asserted below by `try`, not caught) while still filling in well
+    // under a second.
+    _ = try run("/usr/bin/hdiutil", ["create", "-size", "8m", "-fs", "HFS+",
+                                     "-volname", "NtfyTinyTestVolume", "-quiet", imagePath])
+    _ = try run("/usr/bin/hdiutil", ["attach", imagePath, "-nobrowse", "-quiet",
+                                     "-mountpoint", mountPoint.path])
+    let cleanup = {
+        // Always detach, even if an assertion later throws — an undetached
+        // scratch volume leaks for the rest of the test run, and possibly
+        // beyond it.
+        _ = try? run("/usr/bin/hdiutil", ["detach", mountPoint.path, "-quiet"])
+        try? FileManager.default.removeItem(at: workDirectory)
+    }
+
+    let storeURL = mountPoint.appendingPathComponent("store.sqlite")
+    let container = try ModelContainer(
+        for: Message.self, Subscription.self, Server.self, Attachment.self,
+        configurations: ModelConfiguration(url: storeURL))
+    let setupContext = ModelContext(container)
+    let server = Server(id: serverID, name: "Example", baseURLString: "https://ntfy.example.com")
+    setupContext.insert(server)
+    setupContext.insert(Subscription(topic: "alerts", server: server))
+    try setupContext.save()
+
+    return (container, mountPoint.appendingPathComponent("filler"), cleanup)
+}
+
+/// Writes to `fillerURL` until the volume backing it is exhausted. Shrinking
+/// chunk sizes, each looped to exhaustion, rather than one fixed size: a
+/// single 64 KiB loop leaves however much slack is smaller than 64 KiB
+/// unclaimed, and that slack was enough room for SQLite to grow its WAL by
+/// one small page — confirmed empirically against the first version of this
+/// fill, which left enough room that a write meant to fail succeeded
+/// outright. Working down to a 1-byte chunk squeezes out whatever is left,
+/// well under SQLite's default page size.
+private func fillVolume(at fillerURL: URL) throws {
+    FileManager.default.createFile(atPath: fillerURL.path, contents: nil)
+    let fillerHandle = try FileHandle(forWritingTo: fillerURL)
+    for chunkSize in [1_048_576, 65_536, 4_096, 512, 64, 8, 1] {
+        let chunk = Data(repeating: 0, count: chunkSize)
+        while (try? fillerHandle.write(contentsOf: chunk)) != nil {}
+    }
+    try? fillerHandle.close()
+}
+
 private func makeStore() throws -> (MessageStore, UUID) {
     let container = try StoreFixtures.inMemoryContainer()
     let serverID = UUID()
@@ -127,71 +194,16 @@ private func makeStore() throws -> (MessageStore, UUID) {
 /// concurrently running test. `hdiutil` is a system tool; if it is ever
 /// unavailable, `run(_:_:)` throws rather than this test silently skipping.
 @Test func aFailedSaveRollsBackSoARetriedBatchIsNotMistakenForADuplicate() async throws {
-    let workDirectory = FileManager.default.temporaryDirectory
-        .appendingPathComponent("MessageStoreTests-\(UUID().uuidString)", isDirectory: true)
-    try FileManager.default.createDirectory(at: workDirectory, withIntermediateDirectories: true)
-    defer { try? FileManager.default.removeItem(at: workDirectory) }
-
-    let imagePath = workDirectory.appendingPathComponent("tiny.dmg").path
-    let mountPoint = workDirectory.appendingPathComponent("mnt")
-    try FileManager.default.createDirectory(at: mountPoint, withIntermediateDirectories: true)
-
-    // 8 MiB comfortably fits this schema's catalog plus a `Server` and
-    // `Subscription` row (step 1 below asserts that explicitly) while still
-    // filling in well under a second.
-    _ = try run("/usr/bin/hdiutil", ["create", "-size", "8m", "-fs", "HFS+",
-                                     "-volname", "NtfyTinyTestVolume", "-quiet", imagePath])
-    _ = try run("/usr/bin/hdiutil", ["attach", imagePath, "-nobrowse", "-quiet",
-                                     "-mountpoint", mountPoint.path])
-    defer {
-        // Always detach, even if an assertion above threw — an undetached
-        // scratch volume leaks for the rest of the test run, and possibly
-        // beyond it.
-        _ = try? run("/usr/bin/hdiutil", ["detach", mountPoint.path, "-quiet"])
-    }
-
-    let storeURL = mountPoint.appendingPathComponent("store.sqlite")
     let serverID = UUID()
+    let fixture = try makeFullDiskFixture(serverID: serverID)
+    defer { fixture.cleanup() }
 
-    // Step 1: open the store and do the initial write on the small,
-    // otherwise-empty volume. This must succeed — asserted by `try`, not
-    // caught — or a later failure could be the store never opening at all
-    // rather than the `save()` this test actually means to exercise.
-    let container = try ModelContainer(
-        for: Message.self, Subscription.self, Server.self, Attachment.self,
-        configurations: ModelConfiguration(url: storeURL))
-    let setupContext = ModelContext(container)
-    let server = Server(id: serverID, name: "Example", baseURLString: "https://ntfy.example.com")
-    setupContext.insert(server)
-    setupContext.insert(Subscription(topic: "alerts", server: server))
-    try setupContext.save()
-
-    // Step 2: fill whatever room is left. Writes a filler file until one
-    // chunk fails, rather than trusting a precomputed free-space number —
-    // filesystem metadata overhead makes that number imprecise.
-    // Shrinking chunk sizes, each looped to exhaustion: a single 64 KiB
-    // loop leaves however much slack is smaller than 64 KiB unclaimed, and
-    // that slack was enough room for SQLite to grow its WAL by one small
-    // page — confirmed empirically, the first version of this fill (one
-    // fixed 64 KiB chunk size) left enough room that `insert` below
-    // succeeded outright. Working down to a 1-byte chunk squeezes out
-    // whatever is left, well under SQLite's default page size, so even the
-    // smallest possible WAL growth has nowhere to go.
-    let fillerURL = mountPoint.appendingPathComponent("filler")
-    FileManager.default.createFile(atPath: fillerURL.path, contents: nil)
-    let fillerHandle = try FileHandle(forWritingTo: fillerURL)
-    for chunkSize in [1_048_576, 65_536, 4_096, 512, 64, 8, 1] {
-        let chunk = Data(repeating: 0, count: chunkSize)
-        while (try? fillerHandle.write(contentsOf: chunk)) != nil {}
-    }
-    try? fillerHandle.close()
-
-    let store = MessageStore(modelContainer: container)
+    let store = MessageStore(modelContainer: fixture.container)
     let batch = [event("a", time: 100, body: "one")]
 
-    // Step 3: the volume is full, not the store misconfigured or
-    // unopenable — this is the `save()` failure the test is actually
-    // about.
+    // The volume is full, not the store misconfigured or unopenable — this
+    // is the `save()` failure the test is actually about.
+    try fillVolume(at: fixture.fillerURL)
     await #expect(throws: (any Error).self) {
         try await store.insert(batch, serverID: serverID)
     }
@@ -200,12 +212,117 @@ private func makeStore() throws -> (MessageStore, UUID) {
     // disk-full condition would clear — and retry the SAME batch,
     // unchanged, on the SAME store (same actor, same `modelContext`),
     // exactly as `Ingest.Buffer` does after a failed flush.
-    try FileManager.default.removeItem(at: fillerURL)
+    try FileManager.default.removeItem(at: fixture.fillerURL)
 
     let retry = try await store.insert(batch, serverID: serverID)
     #expect(retry.stored.map(\.id) == ["a"])
     #expect(retry.duplicatesSkipped == 0)
     #expect(try await store.messageCount() == 1)
+}
+
+/// `deleteMessages` must not delete the attachment file before `save()`
+/// commits the row deletion — the sharpest case among the mutator-rollback
+/// fixes, because the file, unlike a database row, has no `rollback()`. If
+/// the file were removed first, a failed save would leave it gone, the row
+/// still present, and the caller told the delete failed: data loss with no
+/// way for the caller to detect it. This proves the file survives a failed
+/// save.
+///
+/// Deliberately retries on a FRESH `MessageStore`, not the one that
+/// experienced the failure. A genuine finding surfaced while writing this
+/// test: after a `save()` fails, that SAME actor's `modelContext` can
+/// report an already-rolled-back-but-still-persisted row as absent from a
+/// plain `fetch`/`fetchCount` — verified against a second, independent
+/// context on the same container, which sees it correctly; unaffected by
+/// `includePendingChanges`, since `rollback()` already empties the
+/// pending-changes set this flag controls. One arbitrary fetch on the
+/// affected context clears the condition. `deleteMessages` has no
+/// production retry path — deletion is user-initiated, unlike `insert`,
+/// which `Ingest.Buffer` retries automatically — so pinning a same-context
+/// retry here would assert a contract this store does not claim to
+/// support. A fresh store instead proves what this fix actually
+/// guarantees: the underlying row and file are intact and deletable.
+///
+/// Mutation-verified: moving the file-deletion loop back to before
+/// `modelContext.save()` (the ordering this replaced) makes the first
+/// assertion FAIL as expected — the file is gone even though `save()`
+/// threw.
+@Test func deleteMessagesLeavesTheFileInPlaceWhenSaveFails() async throws {
+    let serverID = UUID()
+    let fixture = try makeFullDiskFixture(serverID: serverID)
+    defer { fixture.cleanup() }
+
+    let attachmentsDirectory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("deleteMessages-fail-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: attachmentsDirectory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: attachmentsDirectory) }
+    let file = attachmentsDirectory.appendingPathComponent("graph.png")
+    try Data("png".utf8).write(to: file)
+
+    // Written on the not-yet-full volume, via a second context, exactly as
+    // `aFailedSaveRollsBackSoARetriedBatchIsNotMistakenForADuplicate` seeds
+    // its `Server`/`Subscription` row.
+    let setupContext = ModelContext(fixture.container)
+    let message = Message(serverID: serverID, topic: "alerts", messageID: "a",
+                          time: Date(timeIntervalSince1970: 1), body: "m",
+                          attachment: Attachment(name: "graph.png",
+                                                 urlString: "https://example.com/graph.png",
+                                                 localFilename: "graph.png"))
+    setupContext.insert(message)
+    try setupContext.save()
+
+    let store = MessageStore(modelContainer: fixture.container)
+    let key = Message.uniqueKey(serverID: serverID, topic: "alerts", messageID: "a")
+
+    try fillVolume(at: fixture.fillerURL)
+    await #expect(throws: (any Error).self) {
+        try await store.deleteMessages([key], attachmentsDirectory: attachmentsDirectory)
+    }
+    #expect(FileManager.default.fileExists(atPath: file.path) == true)
+
+    try FileManager.default.removeItem(at: fixture.fillerURL)
+    let retryStore = MessageStore(modelContainer: fixture.container)
+    try await retryStore.deleteMessages([key], attachmentsDirectory: attachmentsDirectory)
+    #expect(FileManager.default.fileExists(atPath: file.path) == false)
+    #expect(try await retryStore.messageCount() == 0)
+}
+
+/// The `addTopic` counterpart: proves `server.caughtUpTo = nil` does not
+/// survive a failed save to leak into an unrelated LATER successful one.
+/// Asserting `caughtUpTo == t` immediately after the failed call would only
+/// prove `rollback()` cleaned the object graph for THIS context; it would
+/// not prove the actual leak the team flagged — an unrelated `insert()`
+/// later committing `caughtUpTo = nil` behind the caller's back, silently
+/// forcing a full-cache replay for a topic the caller was told was never
+/// added. The independent `insert()` after the failure is what makes this
+/// a leak test rather than a same-call rollback test.
+///
+/// Mutation-verified: removing the `catch { rollback() }` around
+/// `addTopic`'s `save()` makes the final assertion FAIL as expected —
+/// `caughtUpTo` comes back `nil` after the unrelated `insert()`, even
+/// though `addTopic` itself threw.
+@Test func addTopicDoesNotLeakCaughtUpToResetWhenSaveFails() async throws {
+    let serverID = UUID()
+    let fixture = try makeFullDiskFixture(serverID: serverID)
+    defer { fixture.cleanup() }
+
+    let store = MessageStore(modelContainer: fixture.container)
+    let t = Date(timeIntervalSince1970: 1_788_353_322)
+    try await store.setCaughtUpTo(t, forServer: serverID)
+    #expect(try await store.caughtUpTo(forServer: serverID) == t)
+
+    try fillVolume(at: fixture.fillerURL)
+    await #expect(throws: (any Error).self) {
+        try await store.addTopic("deploys", toServer: serverID)
+    }
+
+    try FileManager.default.removeItem(at: fixture.fillerURL)
+
+    // An unrelated, independently-successful save — exactly the kind that
+    // would otherwise commit the leaked `caughtUpTo = nil` mutation.
+    _ = try await store.insert([event("a", time: 100, body: "one")], serverID: serverID)
+
+    #expect(try await store.caughtUpTo(forServer: serverID) == t)
 }
 
 /// Same message id on two different topics is two different messages.

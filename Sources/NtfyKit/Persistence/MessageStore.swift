@@ -193,7 +193,16 @@ public actor MessageStore {
         }
         if server.caughtUpTo == nil || date > server.caughtUpTo! {
             server.caughtUpTo = date
-            try modelContext.save()
+            do {
+                try modelContext.save()
+            } catch {
+                // Same shape as `addTopic`'s `caughtUpTo = nil`: a failed
+                // save must not leave this mutation sitting uncommitted,
+                // or an unrelated later `save()` could commit a resume
+                // point the caller was told did not persist.
+                modelContext.rollback()
+                throw error
+            }
         }
     }
 
@@ -309,26 +318,58 @@ public actor MessageStore {
             if count > policy.maxMessagesPerTopic { doomed.append(message) }
         }
 
-        var filesDeleted = 0
+        // Capture filenames before deleting the rows, and delete files only
+        // after the row deletion is durably saved — see
+        // `deleteAttachmentFile`'s doc comment for why the ordering matters:
+        // deleting a file before the row that owned it is committed risks a
+        // failed `save()` leaving the file gone but the row still pending,
+        // later committed silently by an unrelated `save()`.
+        let doomedAttachmentFilenames = doomed.map { $0.attachment?.localFilename }
         for message in doomed {
-            if deleteAttachmentFileIfAny(for: message, in: attachmentsDirectory) {
-                filesDeleted += 1
-            }
             modelContext.delete(message)
         }
+        do {
+            try modelContext.save()
+        } catch {
+            // Same reasoning as `insert`'s catch: leaving `doomed`'s pending
+            // deletions (and the `tagsJoined` migration above) sitting
+            // uncommitted risks them being silently committed later by an
+            // unrelated `save()`, at which point neither this call's
+            // `throw` nor its (never returned) `PruneResult` reflected what
+            // actually happened.
+            modelContext.rollback()
+            throw error
+        }
 
-        try modelContext.save()
+        var filesDeleted = 0
+        for filename in doomedAttachmentFilenames {
+            if deleteAttachmentFile(named: filename, in: attachmentsDirectory) {
+                filesDeleted += 1
+            }
+        }
         return PruneResult(messagesDeleted: doomed.count, attachmentFilesDeleted: filesDeleted)
     }
 
-    /// Deletes `message`'s attachment file from `directory`, if it has one.
-    /// Returns whether a file was actually removed, for callers (`prune`)
-    /// that count it. Shared by `prune` and `deleteMessages` so the
-    /// path-traversal guard on `localFilename` — a real fix, not defensive
-    /// boilerplate — exists in exactly one place rather than being
-    /// re-derived, and potentially re-broken, at each call site.
-    private func deleteAttachmentFileIfAny(for message: Message, in directory: URL?) -> Bool {
-        guard let directory, let filename = message.attachment?.localFilename else { return false }
+    /// Deletes the attachment file named `filename` from `directory`, if
+    /// both are given. Returns whether a file was actually removed, for
+    /// callers (`prune`) that count it. Shared by `prune` and
+    /// `deleteMessages` so the path-traversal guard on `localFilename` — a
+    /// real fix, not defensive boilerplate — exists in exactly one place
+    /// rather than being re-derived, and potentially re-broken, at each
+    /// call site.
+    ///
+    /// Takes the filename directly rather than a `Message`, and is always
+    /// called strictly *after* the row deletion that made the file
+    /// obsolete has already been durably `save()`d — never before. Both
+    /// callers capture `message.attachment?.localFilename` before deleting
+    /// the row precisely so this ordering is possible: deleting the file
+    /// first and the row second would mean a failed `save()` leaves the
+    /// file gone, the row still present-but-pending-deleted, and the
+    /// caller told the delete failed — until an unrelated later `save()`
+    /// (from any other method) commits the row deletion nobody was told
+    /// succeeded.
+    private func deleteAttachmentFile(named filename: String?, in directory: URL?) -> Bool {
+        guard let directory, let filename else { return false }
         // `localFilename` must be a bare path component. No downloader wrote
         // this field when this guard was first added, but the safety of a
         // `removeItem` call should not depend on every future writer being
@@ -501,7 +542,16 @@ extension MessageStore {
         let messages = try modelContext.fetch(
             FetchDescriptor<Message>(predicate: #Predicate { keys.contains($0.uniqueKey) }))
         for message in messages { message.isRead = read }
-        try modelContext.save()
+        do {
+            try modelContext.save()
+        } catch {
+            // Same reasoning as `insert`'s catch: a failed save must not
+            // leave these `isRead` flips sitting uncommitted, or an
+            // unrelated later `save()` could commit a read/unread state
+            // the caller was told did not persist.
+            modelContext.rollback()
+            throw error
+        }
     }
 
     /// Marks every currently-unread message in scope as read.
@@ -514,26 +564,50 @@ extension MessageStore {
             }))
         guard !messages.isEmpty else { return }
         for message in messages { message.isRead = true }
-        try modelContext.save()
+        do {
+            try modelContext.save()
+        } catch {
+            modelContext.rollback()
+            throw error
+        }
     }
 
     /// Deletes exactly the rows named by `uniqueKeys`. `Message.attachment`
     /// cascades (`deleteRule: .cascade` in `Models.swift`), so its
     /// `Attachment` row goes with it — and, when `attachmentsDirectory` is
     /// given, its downloaded FILE goes too, via the same guarded deletion
-    /// `prune` uses (see `deleteAttachmentFileIfAny`). The parameter
-    /// defaults to `nil`, matching `prune`'s signature, for tests and for a
-    /// build with no downloader.
+    /// `prune` uses (see `deleteAttachmentFile`). The parameter defaults to
+    /// `nil`, matching `prune`'s signature, for tests and for a build with
+    /// no downloader.
+    ///
+    /// Attachment filenames are captured before the rows are deleted, and
+    /// the files themselves are only removed *after* `save()` durably
+    /// commits the row deletions — never before. Deleting a file first
+    /// would mean a failed `save()` leaves the file gone, the row still
+    /// present-but-pending-deleted, and the caller told the delete failed
+    /// — until an unrelated later `save()` (from any other method) commits
+    /// a deletion nobody was told succeeded. That is data loss the caller
+    /// has no way to detect, not just a stale read.
     public func deleteMessages(_ uniqueKeys: [String], attachmentsDirectory: URL? = nil) throws {
         guard !uniqueKeys.isEmpty else { return }
         let keys = Set(uniqueKeys)
         let messages = try modelContext.fetch(
             FetchDescriptor<Message>(predicate: #Predicate { keys.contains($0.uniqueKey) }))
+        let attachmentFilenames = messages.map { $0.attachment?.localFilename }
         for message in messages {
-            _ = deleteAttachmentFileIfAny(for: message, in: attachmentsDirectory)
             modelContext.delete(message)
         }
-        try modelContext.save()
+        do {
+            try modelContext.save()
+        } catch {
+            modelContext.rollback()
+            throw error
+        }
+
+        guard attachmentsDirectory != nil else { return }
+        for filename in attachmentFilenames {
+            _ = deleteAttachmentFile(named: filename, in: attachmentsDirectory)
+        }
     }
 
     /// Adds a server and returns its id. Credentials go to the Keychain by
@@ -546,7 +620,12 @@ extension MessageStore {
         let server = Server(name: name, baseURLString: baseURL.absoluteString,
                             authKindRaw: authKindRaw, sortOrder: nextSortOrder)
         modelContext.insert(server)
-        try modelContext.save()
+        do {
+            try modelContext.save()
+        } catch {
+            modelContext.rollback()
+            throw error
+        }
         return server.id
     }
 
@@ -576,7 +655,12 @@ extension MessageStore {
             FetchDescriptor<Message>(predicate: #Predicate { $0.serverID == serverID }))
         for message in messages { modelContext.delete(message) }
         modelContext.delete(server)
-        try modelContext.save()
+        do {
+            try modelContext.save()
+        } catch {
+            modelContext.rollback()
+            throw error
+        }
     }
 
     /// Subscribes `serverID` to `topic`. A topic already subscribed is left
@@ -595,7 +679,17 @@ extension MessageStore {
         // which was never true of this one — leaving it set would skip
         // anything the new topic published before the old resume point.
         server.caughtUpTo = nil
-        try modelContext.save()
+        do {
+            try modelContext.save()
+        } catch {
+            // A failed save must not leave the new `Subscription` or the
+            // `caughtUpTo = nil` mutation sitting uncommitted — an
+            // unrelated later `save()` (e.g. from `insert`) could commit
+            // `caughtUpTo = nil` alone, silently forcing a full-cache
+            // replay for a topic the caller was told was never added.
+            modelContext.rollback()
+            throw error
+        }
     }
 
     /// Unsubscribes `serverID` from `topic`. Message history for the topic
@@ -615,7 +709,12 @@ extension MessageStore {
             return
         }
         modelContext.delete(subscription)
-        try modelContext.save()
+        do {
+            try modelContext.save()
+        } catch {
+            modelContext.rollback()
+            throw error
+        }
     }
 
     /// Writes per-topic alert settings to the `Subscription` row.
@@ -633,6 +732,11 @@ extension MessageStore {
         }
         subscription.muted = settings.muted
         subscription.minAlertPriority = settings.minAlertPriority
-        try modelContext.save()
+        do {
+            try modelContext.save()
+        } catch {
+            modelContext.rollback()
+            throw error
+        }
     }
 }
