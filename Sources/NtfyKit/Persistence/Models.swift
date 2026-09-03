@@ -90,7 +90,38 @@ public final class Message {
     public var title: String?
     public var body: String
     public var priority: Int
+    /// `[String]` is stored by SwiftData as a transformable blob, not a
+    /// SQL-queryable column: a `#Predicate` using `Array.contains` against
+    /// this property does not just fail to filter, it crashes the process
+    /// outright — confirmed down to the bare-literal case
+    /// (`message.tags.contains("literal")`, no captured variable, no
+    /// optional handling involved). Never write a predicate against `tags`
+    /// directly; see `tagsJoined` below for how tag filtering does this
+    /// instead, and reach for the same "join to a searchable `String`"
+    /// pattern for any other array-typed attribute that needs to be
+    /// predicate-filterable.
     public var tags: [String]
+    /// Denormalized `tags`, delimited as `"|tag1|tag2|"` (empty string when
+    /// no tag survives encoding — see `joinTags`) purely so
+    /// `MessageStore.search`'s tag filter can push a plain `String.contains`
+    /// predicate to SQL — the same shape `searchText` already pushes
+    /// successfully — instead of fetching every row into memory to filter
+    /// in Swift. Not meant to be read directly by anything other than that
+    /// predicate; `tags` is still the source of truth for display.
+    ///
+    /// **The default is load-bearing and must not be removed.** This app ships
+    /// no `VersionedSchema` or `SchemaMigrationPlan`, so it relies on
+    /// lightweight migration. Adding a non-optional attribute with no default
+    /// is the canonical case lightweight migration cannot infer: Core Data
+    /// fails the store open outright with "Validation error missing attribute
+    /// values on mandatory destination attribute", `AppGraph.init()` throws,
+    /// and the user's entire archive becomes unreachable. Measured against a
+    /// store written by the previous schema with rows in it, not assumed.
+    ///
+    /// With the default, an upgraded row arrives as `""` — searchable for
+    /// nothing — and `prune`'s repair pass rewrites it from `tags` on its next
+    /// run. That repair is only reachable because the store opens at all.
+    public var tagsJoined: String = ""
     public var click: String?
     public var iconURL: String?
     public var contentType: String?
@@ -102,6 +133,28 @@ public final class Message {
 
     public static func uniqueKey(serverID: UUID, topic: String, messageID: String) -> String {
         "\(serverID.uuidString)/\(topic)/\(messageID)"
+    }
+
+    /// Builds `tagsJoined` from `tags`. The leading AND trailing `"|"`
+    /// matter: without them, a search for `"alert"` would also match a
+    /// message tagged only `"alerts"`, since `"tag1|alerts|tag3".contains
+    /// ("alert")` is true. With them, `"|alert|"` cannot be a substring of
+    /// `"|alerts|"`.
+    ///
+    /// A tag containing `"|"` would break that delimiter scheme — it could
+    /// make two adjacent, unrelated tags look like a match for a third. ntfy
+    /// tags are comma-separated in the wire protocol, so `"|"` should never
+    /// actually appear in one; this is a defensive fallback for malformed
+    /// input, not an expected path. Such a tag is rejected (dropped) from
+    /// this joined form rather than escaped: escaping would add a second
+    /// piece of code the search-side matcher must agree with, to guard
+    /// against a case that should not arise. The tag is untouched in `tags`
+    /// itself and still displays normally — it is just not findable via
+    /// `MessageStore.search`'s tag filter.
+    public static func joinTags(_ tags: [String]) -> String {
+        let safe = tags.filter { !$0.contains("|") }
+        guard !safe.isEmpty else { return "" }
+        return "|" + safe.joined(separator: "|") + "|"
     }
 
     public init(serverID: UUID, topic: String, messageID: String, time: Date,
@@ -120,6 +173,7 @@ public final class Message {
         self.body = body
         self.priority = priority
         self.tags = tags
+        self.tagsJoined = Message.joinTags(tags)
         self.click = click
         self.iconURL = iconURL
         self.contentType = contentType
@@ -130,8 +184,11 @@ public final class Message {
 }
 
 /// Attachment metadata. The FILE lives outside the database under
-/// Application Support, so pruning reclaims real disk. Downloading is not
-/// implemented in this plan.
+/// Application Support, so pruning reclaims real disk. `localFilename` is
+/// `nil` until `AttachmentDownloader` actually downloads it and
+/// `MessageStore.setAttachmentLocalFilename` records the result — a row
+/// with attachment metadata but no local file is the normal state for a
+/// message that arrived but was never (or not yet) downloaded.
 @Model
 public final class Attachment {
     public var name: String

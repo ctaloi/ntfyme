@@ -1224,12 +1224,30 @@ enum NotificationActionHandler {
 
 - [ ] **Step 3: Add the `app` log category**
 
-In `Sources/NtfyKit/Log.swift`, add alongside the existing categories:
+`Log` and its categories are currently **internal**, so the app target cannot
+use them at all. Make the enum and every category `public`, and add the new one:
 
 ```swift
+public enum Log {
+    private static let subsystem = "dev.aloi.NtfyMe"
+
+    /// Connection lifecycle: state changes, reconnects, resume decisions.
+    public static let connection = Logger(subsystem: subsystem, category: "connection")
+
+    /// Wire-level events: lines that could not be used.
+    public static let stream = Logger(subsystem: subsystem, category: "stream")
+
+    /// Persistence: inserts, watermark advances, retention.
+    public static let store = Logger(subsystem: subsystem, category: "store")
+
     /// App-target concerns: notifications, login item, scheduling.
     public static let app = Logger(subsystem: subsystem, category: "app")
+}
 ```
+
+Widening this rather than giving the app target its own logger is deliberate:
+the value of this file is that it is a **single** audit trail of what every
+site may interpolate, and splitting it in two would degrade exactly that.
 
 and extend that file's doc comment to describe the new sites: they interpolate a fixed literal plus, at most, an HTTP status code or an `NSError` domain and code. **A notification's title and body are shown to the user but must never be logged**, and neither must an action's URL — it is server-supplied.
 

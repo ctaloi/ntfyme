@@ -4,10 +4,34 @@ A native macOS menu-bar client for [ntfy](https://ntfy.sh). It watches your
 subscriptions, delivers native notifications, and keeps a searchable local
 archive of every message it has seen.
 
-This project is under active development; most features described in
-`docs/` do not exist yet. This repository currently proves out the build
-path only: a SwiftPM package that produces a launchable, code-signed
-`NtfyMe.app`.
+This project is under active development. Publishing messages, attachment
+handling, and notarized distribution are not built yet; everything below is.
+Attachment metadata arrives and is modelled, but files are not yet downloaded,
+so the History window's Quick Look preview is inert for now.
+
+## What works
+
+- **Multiple servers and topics**, with bearer-token or username/password
+  authentication. Credentials live in the Keychain, keyed by a server UUID so
+  not even the server's hostname is written alongside them.
+- **A menu-bar popover** listing recent messages grouped by topic and server,
+  with an unread badge, search, and a connection-status row.
+- **A History window** — a three-column browser with a per-server/per-topic
+  sidebar showing live connection state, a message list, and a detail pane
+  that renders markdown bodies, tags, and the message's own action buttons.
+- **Native notifications** with ntfy's priority levels mapped to macOS
+  interruption levels, per-topic mute and priority thresholds, a global
+  "record only, never alert" switch, and working action buttons. Clicking a
+  notification opens its `click` URL, or the History window.
+- **A local archive** of every message seen, pruned on a rolling window by
+  both age and per-topic count.
+- **Resumable streaming**: reconnect with backoff, a keepalive watchdog, and
+  per-topic watermarks so a reconnect replays what was missed without
+  re-notifying about messages already stored.
+
+Every URL that arrives in a message — a `click` target, an action, a markdown
+link — is passed through a single scheme allow-list before it can be opened.
+Message content is treated as untrusted input throughout.
 
 ## Security: topics and credentials
 
@@ -67,8 +91,11 @@ Developer Program account and Developer ID are available.
 
 [![CI](https://github.com/ctaloi/ntfyme/actions/workflows/ci.yml/badge.svg)](https://github.com/ctaloi/ntfyme/actions/workflows/ci.yml)
 
-`swift test` runs the full `NtfyKit` suite, including socket-level tests
-against a loopback `MockNtfyServer`:
+`swift test` runs both suites: `NtfyKit`, including socket-level tests
+against a loopback `MockNtfyServer`, and `NtfyMe`, which covers the app
+layer's logic and renders each UI surface to a PNG offscreen (see
+`Tests/NtfyMeTests/SnapshotSupport.swift` for why `ImageRenderer` is not
+used for this):
 
 ```bash
 export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer

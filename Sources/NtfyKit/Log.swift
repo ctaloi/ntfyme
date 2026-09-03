@@ -61,6 +61,11 @@ import os
 ///   `messageID`.
 /// - `Ingest.Buffer`'s overflow site is a string literal only. It reports
 ///   that events were dropped, never which ones.
+/// - `MessageStore.servers`'s skipped-row site is a string literal only. It
+///   reports that a server row's base URL did not parse, never the string
+///   that failed to parse — that value is the same server-configuration
+///   content a user could set to a personal hostname, so it is withheld the
+///   same way a topic or `messageID` is.
 /// - `Backfill.run`'s success site interpolates only `result.inserted`, an
 ///   `Int` this process counted — the same fixed-shape, locally-generated
 ///   category as `serverID` above. It deliberately does not name the topic
@@ -71,21 +76,50 @@ import os
 ///   bounded `ignoredUnknownEvent` carve-out) as `ServerConnection`'s
 ///   skipped-line site. The two are worded differently on purpose, so a log
 ///   read can tell a one-shot poll's bad line from a subscription's.
+/// - `ConnectionCoordinator.start`'s server-load-failure site interpolates
+///   only the failed `NSError`'s `domain` and `code`, the same reasoning as
+///   `Ingest.flush`'s two sites above.
+/// - `ConnectionCoordinator.open`'s keychain-read-failure site interpolates
+///   only `serverID.uuidString`, the same locally-generated, fixed-shape
+///   category as `MessageStore`'s missing-subscription site above. Never the
+///   underlying `KeychainStore.Error`: a malformed-data case carries no wire
+///   content today, but the credential itself must never become logged
+///   content regardless of what the error type could grow to carry later.
+/// - The `app` category's sites (app-target concerns: notification
+///   presentation, action handling, retention scheduling) follow the same
+///   rule as every site above: a fixed literal plus, at most, an HTTP status
+///   code or an `NSError`'s `domain` and `code`. **Never** a notification's
+///   title or body, even though both are shown to the user by design — this
+///   is the one place where a value is simultaneously user-visible and
+///   log-forbidden. Never an action's URL either: it is server-supplied, the
+///   same category `messageID` and topic are barred for above.
+/// - `RetentionScheduler.pruneNow`'s two sites use `Log.store`, not `Log.app`
+///   — they report on `MessageStore.prune`, the same operation
+///   `MessageStore`'s own prune sites above report on, so they share its
+///   category rather than the app target's. The success site interpolates
+///   only `PruneResult`'s two counts, `Int`s this process counted — the same
+///   fixed-shape, locally-generated category as `Backfill.run`'s
+///   `result.inserted` above. The failure site interpolates only the failed
+///   `NSError`'s `domain` and `code`, the same reasoning as `Ingest.flush`'s
+///   two sites above.
 ///
 /// `privacy: .public` is used deliberately, to keep these labels readable in
 /// `log stream`. The alternative is not a safety net: `.private` hides a value
 /// from an ordinary log read but is not a promise it was never recorded, so
 /// anything genuinely sensitive must not be logged at all rather than logged
 /// privately.
-enum Log {
+public enum Log {
     private static let subsystem = "dev.aloi.NtfyMe"
 
     /// Connection lifecycle: state changes, reconnects, resume decisions.
-    static let connection = Logger(subsystem: subsystem, category: "connection")
+    public static let connection = Logger(subsystem: subsystem, category: "connection")
 
     /// Wire-level events: lines that could not be used.
-    static let stream = Logger(subsystem: subsystem, category: "stream")
+    public static let stream = Logger(subsystem: subsystem, category: "stream")
 
     /// Persistence: inserts, watermark advances, retention.
-    static let store = Logger(subsystem: subsystem, category: "store")
+    public static let store = Logger(subsystem: subsystem, category: "store")
+
+    /// App-target concerns: notifications, login item, scheduling.
+    public static let app = Logger(subsystem: subsystem, category: "app")
 }

@@ -18,22 +18,46 @@ import Foundation
 ///   has seen lines covering events still sitting in this actor's buffer or
 ///   in the stream's. Deriving from the batch removes the read entirely.
 public actor Ingest {
+    /// Called with the messages a flush **actually stored**, and the server
+    /// they belong to. This is the seam the app target notifies from.
+    ///
+    /// `[NtfyEvent]`, not `[MessageSnapshot]`: the events are already in
+    /// hand here, and `NotificationDecision` is written against the wire
+    /// event, so handing over rows would mean a second read of what was just
+    /// written and a lossy round trip through `Message` (actions survive only
+    /// as JSON).
+    public typealias StoredHandler = @Sendable ([NtfyEvent], UUID) async -> Void
+
     private let store: MessageStore
     private let batchWindow: Duration
+    /// Runs inside the flush that stored the batch — see `performFlush`.
+    private let onStored: StoredHandler?
     public private(set) var insertedCount = 0
 
-    /// Only one flush may be in flight. `flush` is called from both of `pump`'s
-    /// child tasks — the collector on the count ceiling, the ticker on its
-    /// cadence — and it suspends at `store.insert`, so without this they
-    /// interleave. That is not merely wasteful: a flush holding a failed batch
-    /// for retry could be overtaken by a second flush that drains later
-    /// events, succeeds, and persists a resume point *past* the batch still
-    /// waiting to be written. The retry that closes I2 would have reopened it.
-    private var isFlushing = false
+    /// Serializes flushes rather than letting a concurrent one skip. `flush`
+    /// is called from both of `pump`'s own child tasks for one connection —
+    /// the collector on the count ceiling, the ticker on its cadence — and,
+    /// because this actor is shared across every server `ConnectionCoordinator`
+    /// attaches, potentially from a *different connection's* `pump` at the
+    /// same moment too. Either way it suspends at `store.insert`, so without
+    /// serializing them they interleave.
+    ///
+    /// A previous version of this guarded with a `Bool` and had a *skipping*
+    /// flush return immediately, relying on the skipped batch being picked up
+    /// by whichever flush wins — true for a flush with a later retry, but not
+    /// for the trailing flush `pump` makes on its way out after cancellation:
+    /// there is no later call, so a skip there drops whatever the buffer held
+    /// the moment `pump` returns and its local `buffer` goes out of scope.
+    /// This chains through a stored `Task` instead: every flush actually
+    /// runs, in the order requested, however many are queued up behind the
+    /// one currently draining.
+    private var inFlight: Task<Void, Never>?
 
-    public init(store: MessageStore, batchWindow: Duration = .milliseconds(250)) {
+    public init(store: MessageStore, batchWindow: Duration = .milliseconds(250),
+                onStored: StoredHandler? = nil) {
         self.store = store
         self.batchWindow = batchWindow
+        self.onStored = onStored
     }
 
     /// Buffers events collected from one `attach` call between flushes. A
@@ -192,11 +216,21 @@ public actor Ingest {
         await flush(buffer, serverID: serverID)
     }
 
+    /// Queues this flush behind whatever is already draining, and waits for
+    /// its own turn to finish before returning — so a caller (notably
+    /// `pump`'s trailing call) that awaits `flush` has a real guarantee that
+    /// draining actually happened, not just that some flush or other did.
     private func flush(_ buffer: Buffer, serverID: UUID) async {
-        guard !isFlushing else { return }
-        isFlushing = true
-        defer { isFlushing = false }
+        let previous = inFlight
+        let task = Task {
+            await previous?.value
+            await self.performFlush(buffer, serverID: serverID)
+        }
+        inFlight = task
+        await task.value
+    }
 
+    private func performFlush(_ buffer: Buffer, serverID: UUID) async {
         let events = await buffer.drain()
         guard !events.isEmpty else { return }
 
@@ -215,8 +249,9 @@ public actor Ingest {
             .map(\.date)
             .max()
 
+        let result: MessageStore.InsertResult
         do {
-            let result = try await store.insert(events, serverID: serverID)
+            result = try await store.insert(events, serverID: serverID)
             insertedCount += result.inserted
         } catch {
             // Never silent, and never lossy: the batch goes back on the front
@@ -230,6 +265,29 @@ public actor Ingest {
             let ns = error as NSError
             Log.store.error("message batch insert failed; batch held for retry: \(ns.domain, privacy: .public) \(ns.code, privacy: .public)")
             return
+        }
+
+        // Notified on stored, never on received — the same rule as the resume
+        // point above, for the same reason: a notification for a message that
+        // is not in the archive is one the user cannot go back and find, and a
+        // failed insert must not raise a phantom alert. `result.stored` is the
+        // rows this transaction actually wrote, so a duplicate a reconnect
+        // replayed does not notify a second time.
+        //
+        // Placed here, *above* the `batchMark` guard: most batches carry no
+        // keepalive and persist no resume point, and a hook below that guard
+        // would never fire for them.
+        //
+        // Awaited rather than spawned. It runs inside the `inFlight` chain, so
+        // the next flush — and, at quit, `stop()` — waits for it. That is the
+        // point: a notification for the batch is raised before the app can
+        // tear the store down under it, and a test can await a deterministic
+        // result rather than polling a detached task. The cost is that the
+        // `caughtUpTo` write below, and the next batch, wait on the handler,
+        // so a handler must stay bounded (the app target's is one
+        // `UNUserNotificationCenter.add` per stored message).
+        if let onStored, !result.stored.isEmpty {
+            await onStored(result.stored, serverID)
         }
 
         // Reached only past a successful insert, which is what makes the mark

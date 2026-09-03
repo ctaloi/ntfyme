@@ -309,3 +309,144 @@ private func makeServer() throws -> (ModelContainer, MessageStore, UUID) {
     #expect(await buffer.shouldPersist(mark.addingTimeInterval(-1)) == false)
     #expect(await buffer.shouldPersist(mark.addingTimeInterval(1)) == true)
 }
+
+/// A single server's `Ingest` is not necessarily paired 1:1 with one
+/// connection's `pump()` -- nothing about `attach` prevents a second call for
+/// the same `Ingest` instance, and `ConnectionCoordinator` shares one `Ingest`
+/// across every server it attaches, so two connections' pumps CAN share one
+/// `Ingest` even for what is, from the store's point of view, a single
+/// server. That matters because two independent `pump()` invocations have no
+/// structural relationship to each other, unlike one pump's own collector,
+/// ticker, and trailing calls: `withTaskGroup` already serializes those
+/// against each other (the group does not return until every child task,
+/// including one suspended mid-`store.insert`, has fully finished, so a lone
+/// pump's own trailing flush can never observe a sibling call still in
+/// flight). Two separate pumps have no such guarantee, so their trailing
+/// flushes can genuinely race on the shared actor's serialization state.
+/// Before the fix, whichever one lost that race skipped instead of draining,
+/// and permanently dropped whatever its own buffer held.
+@Test func twoPumpsSharingOneIngestBothDrainOnCancellation() async throws {
+    let (_, store, serverID) = try makeServer()
+
+    // 3033, not 3000: the collector flushes on every 500-event ceiling, so a
+    // round multiple would let the ceiling drain everything on its own,
+    // leaving nothing for the trailing flush to prove. The 33-event
+    // remainder past the last ceiling can ONLY ever be drained by a trailing
+    // flush -- never a ceiling crossing -- so it is a *guaranteed*, not
+    // merely likely, tail still sitting in each buffer at cancellation time.
+    let total = 3033
+    let fakeA = FakeStreamClient()
+    let fakeB = FakeStreamClient()
+    await fakeA.enqueueThenHang((0..<total).map { .event(bufferEvent("pump-a-\($0)", time: 1_788_800_000 + $0)) })
+    await fakeB.enqueueThenHang((0..<total).map { .event(bufferEvent("pump-b-\($0)", time: 1_788_900_000 + $0)) })
+
+    let connectionA = ServerConnection(
+        endpoint: NtfyEndpoint(baseURL: URL(string: "https://ntfy.example.com")!,
+                               credential: .unauthenticated),
+        watermarks: [TopicWatermark(topic: "alerts", lastMessageTime: nil)],
+        client: fakeA, sleeper: ManualSleeper())
+    let connectionB = ServerConnection(
+        endpoint: NtfyEndpoint(baseURL: URL(string: "https://ntfy.example.com")!,
+                               credential: .unauthenticated),
+        watermarks: [TopicWatermark(topic: "alerts", lastMessageTime: nil)],
+        client: fakeB, sleeper: ManualSleeper())
+
+    // A window this test's own bound can't reach: with the ticker parked,
+    // only ceiling crossings and the eventual trailing flush move any data,
+    // so the 33-event remainder is untouched by anything but the race this
+    // test is pinning.
+    let ingest = Ingest(store: store, batchWindow: .seconds(60))
+    let pumpA = await ingest.attach(connectionA, serverID: serverID)
+    let pumpB = await ingest.attach(connectionB, serverID: serverID)
+
+    await connectionA.start()
+    await connectionB.start()
+    // Every event was processed by BOTH connections: each watermark only
+    // reaches its own batch's last timestamp once that specific event has
+    // been recorded, in stream order. Waiting for genuine completion here
+    // (rather than cancelling early) matters: `pumpA.cancel()` only stops
+    // Ingest's collector, not `connectionA` itself, and cancelling before
+    // production finished would leave the connection free to keep yielding
+    // events nobody drains anymore -- a real, separate loss, but not the one
+    // this test exists to catch.
+    #expect(await waitUntil(timeout: .seconds(10)) {
+        await connectionA.watermarkSnapshot().first?.lastMessageTime
+            == Date(timeIntervalSince1970: TimeInterval(1_788_800_000 + total - 1))
+    })
+    #expect(await waitUntil(timeout: .seconds(10)) {
+        await connectionB.watermarkSnapshot().first?.lastMessageTime
+            == Date(timeIntervalSince1970: TimeInterval(1_788_900_000 + total - 1))
+    })
+
+    pumpA.cancel()
+    pumpB.cancel()
+    // No further waitUntil: awaiting both tasks to completion is itself the
+    // guarantee under test -- once they return, every trailing flush they
+    // made must have actually drained.
+    await pumpA.value
+    await pumpB.value
+    #expect(try await store.messageCount() == total * 2)
+
+    await connectionA.stop()
+    await connectionB.stop()
+}
+
+/// Collects what the notify hook was handed, so a test can assert on it.
+private actor StoredEventRecorder {
+    private(set) var events: [NtfyEvent] = []
+    private(set) var serverIDs: [UUID] = []
+
+    func record(_ batch: [NtfyEvent], serverID: UUID) {
+        events.append(contentsOf: batch)
+        serverIDs.append(serverID)
+    }
+}
+
+/// The notify hook fires on what `insert` actually **stored**, not on what the
+/// stream delivered. Two consequences, both asserted here:
+///
+/// - A replayed duplicate raises nothing. A reconnect re-delivers the tail of
+///   the cache, and every one of those messages was already stored — and
+///   already notified — on its first pass. `insert` skips them, so they never
+///   reach the hook.
+/// - A non-message line raises nothing. `open` and `keepalive` are protocol,
+///   with no title, body, or priority to present.
+///
+/// Feeding the hook the batch rather than `InsertResult.stored` would produce
+/// all four ids here instead of the one.
+@Test func theNotifyHookFiresOnlyForNewlyStoredMessages() async throws {
+    let (_, store, serverID) = try makeServer()
+    // Already in the archive before the stream ever runs — what a reconnect
+    // replay looks like from the store's side.
+    _ = try await store.insert([bufferEvent("already-stored", time: 1_788_800_000)],
+                               serverID: serverID)
+
+    let recorder = StoredEventRecorder()
+    let fake = FakeStreamClient()
+    await fake.enqueue([
+        .event(try Fixtures.decode(Fixtures.openEvent)),
+        .event(bufferEvent("already-stored", time: 1_788_800_000)),
+        .event(bufferEvent("brand-new", time: 1_788_800_001)),
+        .event(try Fixtures.decode(Fixtures.laterKeepaliveEvent)),
+    ])
+
+    let connection = ServerConnection(
+        endpoint: NtfyEndpoint(baseURL: URL(string: "https://ntfy.example.com")!,
+                               credential: .unauthenticated),
+        watermarks: [TopicWatermark(topic: "alerts", lastMessageTime: nil)],
+        client: fake, sleeper: ManualSleeper())
+
+    let ingest = Ingest(store: store) { batch, id in
+        await recorder.record(batch, serverID: id)
+    }
+    let pump = await ingest.attach(connection, serverID: serverID)
+    defer { pump.cancel() }
+
+    await connection.start()
+    // `brand-new` is last of the four in stream order, so once it has been
+    // recorded every earlier line has already been through a flush — the
+    // assertion below cannot pass merely by being early.
+    #expect(await waitUntil { await recorder.events.map(\.id) == ["brand-new"] })
+    #expect(await recorder.serverIDs == [serverID])
+    await connection.stop()
+}
