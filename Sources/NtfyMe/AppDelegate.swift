@@ -39,10 +39,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     private static let refreshInterval: TimeInterval = 30
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        // Menu-bar-first: no Dock icon until a window opens (spec §7). The
-        // controller takes over from here — every later change goes through it
-        // so that two windows cannot fight over one app-wide setting.
-        NSApp.setActivationPolicy(.accessory)
+        // A real Mac app: Dock icon, app menu, and a main window at launch.
+        // This used to start `.accessory` with no Dock icon, which is what
+        // made the whole thing feel like a utility with windows bolted on
+        // rather than an application — the components were always native, the
+        // shape was not.
+        //
+        // `ActivationPolicyController` still owns the policy from here, and
+        // still flips to `.accessory` when the last window closes. That is now
+        // the *demotion* path rather than the resting state: the app keeps
+        // running and receiving messages in the menu bar, which is what a
+        // notification client has to do to be worth anything.
+        NSApp.setActivationPolicy(.regular)
         activationPolicy.start()
 
         do {
@@ -102,6 +110,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             graph.onStoredBatch = { [weak menuBar] in
                 Task { await menuBar?.refreshNow() }
             }
+
+            // The main window *is* the app now, so it opens at launch rather
+            // than waiting to be summoned from a menu.
+            openHistory()
 
             Task {
                 await graph.start()
@@ -229,6 +241,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     /// is synchronous and the process exits the moment it returns, so a
     /// `Task` started there would be killed mid-flush — the exact loss
     /// `ConnectionCoordinator.stop()` exists to prevent.
+    /// Closing the last window leaves the app running in the menu bar rather
+    /// than quitting. For a notification client, quitting on window-close
+    /// would silently stop the one thing it exists to do; the menu bar icon
+    /// is what tells the user it is still working.
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        false
+    }
+
+    /// Clicking the Dock icon, or reopening from the Finder, brings the main
+    /// window back — the standard behaviour for an app that outlives its
+    /// windows.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if !flag { openHistory() }
+        return true
+    }
+
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         refreshTimer?.invalidate()
         refreshTimer = nil

@@ -10,7 +10,6 @@
     <key>CFBundleVersion</key><string>__BUILD_VERSION__</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>LSMinimumSystemVersion</key><string>__MINIMUM_MACOS__</string>
-    <key>LSUIElement</key><true/>
     <key>NSHumanReadableCopyright</key><string>MIT licensed</string>
 </dict>
 </plist>
