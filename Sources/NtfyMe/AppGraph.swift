@@ -161,10 +161,13 @@ final class AppGraph {
                 try await store.unreadCount(serverID: nil, topic: nil)
             },
             connectionStatuses: { [store] in
-                // Non-throwing by contract: the popover shows stale statuses
-                // rather than an empty list, because an empty list reads as
-                // "no servers configured" — the silent failure spec §10 forbids.
-                guard let servers = try? await store.servers() else { return [] }
+                // Non-throwing by contract: `nil` on failure, not `[]` — an
+                // empty list reads as "no servers configured", which is the
+                // silent failure spec §10 forbids and is exactly what this
+                // comment used to claim `[]` avoided while the code returned
+                // it anyway. `MenuBarViewModel.refresh` keeps the previous
+                // `serverStatuses` and surfaces `loadErrorMessage` on `nil`.
+                guard let servers = try? await store.servers() else { return nil }
                 let coordinator = await MainActor.run { self.coordinator }
                 var statuses: [MenuBarServerStatus] = []
                 for server in servers {

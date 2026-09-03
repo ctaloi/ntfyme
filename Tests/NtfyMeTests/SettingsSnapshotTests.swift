@@ -187,12 +187,18 @@ private func path(_ filename: String) -> String { "/tmp/ntfyshots/\(filename)" }
 }
 
 /// Servers is the densest tab (rows, toggles, steppers, inline fields), so
-/// it is the one rendered in dark mode. Compared against the light render
-/// with `meanLuminance`, not a colour-count or byte-size diff: a dark-mode
-/// render that forgot to recolour its text would still differ from its
-/// light counterpart by both of those measures while being unreadable
-/// white-on-white — only "is it actually darker" catches that.
-@MainActor @Test func renderServersTabDarkIsActuallyDarker() async throws {
+/// it is the one rendered in dark mode.
+///
+/// Deliberately **not** a comparison between the light and dark renders —
+/// no `!=`, no byte-size or luminance diff. Measured on this exact pair: a
+/// broken render (dark mode without a recoloured background, unreadable
+/// white-on-white) diverges from its light counterpart *more* than a
+/// correct one does, so any divergence threshold has its ordering inverted
+/// and nothing between "always trips" and "never trips" catches the
+/// regression. `distinctColorCount` per render, independently, is what
+/// actually distinguishes them: broken renders measure 1-2, correct ones
+/// 25-29.
+@MainActor @Test func renderServersTabPopulatedLightAndDark() async throws {
     let (store, model) = try makeStoreAndModel()
     try await seedServers(store: store, model: model)
 
@@ -207,7 +213,6 @@ private func path(_ filename: String) -> String { "/tmp/ntfyshots/\(filename)" }
 
     #expect(try distinctColorCount(ofPNGAt: path(lightFile)) > minPlausibleColorCount)
     #expect(try distinctColorCount(ofPNGAt: path(darkFile)) > minPlausibleColorCount)
-    #expect(try meanLuminance(ofPNGAt: path(darkFile)) < meanLuminance(ofPNGAt: path(lightFile)))
 }
 
 /// First-run onboarding (spec §6), at the size `AppDelegate` actually hosts

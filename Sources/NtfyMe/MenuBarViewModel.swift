@@ -14,7 +14,10 @@ final class MenuBarViewModel: ObservableObject {
     struct Dependencies {
         var recentMessages: @Sendable () async throws -> [MessageSnapshot]
         var unreadCount: @Sendable () async throws -> Int
-        var connectionStatuses: @Sendable () async -> [MenuBarServerStatus]
+        /// `nil` reports "the read failed", distinct from `[]` ("read
+        /// succeeded, there are no servers") — see `refresh()`'s handling
+        /// and `AppGraph.menuBarDependencies`'s implementation.
+        var connectionStatuses: @Sendable () async -> [MenuBarServerStatus]?
         var markRead: @Sendable ([String], Bool) async throws -> Void
         var markAllRead: @Sendable () async throws -> Void
     }
@@ -73,14 +76,30 @@ final class MenuBarViewModel: ObservableObject {
     /// this running, not on the popover being open (`MenuBarController`
     /// exposes it as `refreshNow()` for exactly that).
     func refresh() async {
-        serverStatuses = await dependencies.connectionStatuses()
+        // `nil` means the read failed, not "zero servers" — see
+        // `Dependencies.connectionStatuses`'s doc comment. Tracked in a local
+        // rather than written straight to `loadErrorMessage` here, because
+        // the messages `do`/`catch` below unconditionally sets
+        // `loadErrorMessage = nil` on its own success; without this, a
+        // connection-status failure immediately followed by a successful
+        // message fetch would silently erase the very banner this exists to
+        // show — the same shape of silent failure `AppGraph
+        // .menuBarDependencies`'s `connectionStatuses` closure had before
+        // this fix (it returned `[]` on failure, which read as "no servers
+        // configured").
+        var connectionStatusesFailed = false
+        if let statuses = await dependencies.connectionStatuses() {
+            serverStatuses = statuses
+        } else {
+            connectionStatusesFailed = true
+        }
 
         do {
             async let messages = dependencies.recentMessages()
             async let unread = dependencies.unreadCount()
             groups = MenuBarTopicGroup.group(try await messages)
             unreadCount = try await unread
-            loadErrorMessage = nil
+            loadErrorMessage = connectionStatusesFailed ? "Couldn't refresh connection status." : nil
         } catch {
             let ns = error as NSError
             Log.app.error("menu bar refresh failed: \(ns.domain, privacy: .public) \(ns.code, privacy: .public)")
@@ -88,7 +107,10 @@ final class MenuBarViewModel: ObservableObject {
             // list would look identical to "no messages", which is exactly
             // the silent failure spec §10 forbids. The stale-but-labeled data
             // stays up, `loadErrorMessage` says the refresh failed, and the
-            // view is responsible for showing both.
+            // view is responsible for showing both. Takes precedence over
+            // `connectionStatusesFailed`'s message when both failed, rather
+            // than concatenating: a failed store is the more actionable,
+            // more severe of the two for the user to see.
             loadErrorMessage = "Couldn't refresh messages."
         }
     }

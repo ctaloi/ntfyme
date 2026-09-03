@@ -10,15 +10,17 @@ import NtfyKit
 /// `NotificationRouter.handleStored` via `NotificationDecision`, and
 /// `SettingsModel.addTopic` seeds a newly added topic's
 /// `TopicAlertSettings.minAlertPriority` from this picker's stored value —
-/// see its doc comment. "Play a sound" is still display-only: it persists
-/// under its own `UserDefaults` key, but nothing in `NotificationPresenter`
-/// reads it yet, and the user has been asked whether to wire it or remove
-/// it (see the wave2 report) — do not act on it without that answer.
+/// see its doc comment.
+///
+/// **No "play a sound" toggle.** Wiring it needs a new `Preferences` field
+/// plus changes to `NotificationDecision`/`NotificationRequest.playsSound` —
+/// new `NtfyKit` surface with no test coverage, decided against at the merge
+/// gate. Sound stays governed entirely by priority, per spec §6's table. Can
+/// come back with its own plumbing and tests later.
 struct SettingsNotificationsTab: View {
     let model: SettingsModel
 
     @AppStorage(SettingsDefaultsKey.defaultMinPriority) private var defaultMinPriority = NtfyPriority.default.rawValue
-    @AppStorage("settings.notifications.soundEnabled") private var soundEnabled = true
 
     var body: some View {
         Form {
@@ -33,7 +35,6 @@ struct SettingsNotificationsTab: View {
                         Text(priorityLabel(priority)).tag(priority.rawValue)
                     }
                 }
-                Toggle("Play a sound", isOn: $soundEnabled)
             } header: {
                 Text("Defaults for New Topics")
             } footer: {

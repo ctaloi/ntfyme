@@ -5,15 +5,13 @@ import NtfyKit
 
 /// Spec §7: "export history to JSON, clear data, log level."
 ///
-/// **Log level is display-only.** `Log.swift` defines four fixed `os.Logger`
-/// categories with no runtime verbosity knob, and that file is outside
-/// `Settings*.swift`. The picker below persists a choice to `UserDefaults`
-/// so the control exists and its intent is captured, but nothing reads it
-/// yet. Flagged in the wave2-settings report.
+/// **No log-level control.** `Log.swift` defines four fixed `os.Logger`
+/// categories with no runtime verbosity knob, and adding one is new
+/// `NtfyKit` surface with no test coverage — decided against at the merge
+/// gate, the same call as "play a sound" in the Notifications tab. Can come
+/// back with its own plumbing and tests later.
 struct SettingsAdvancedTab: View {
     let model: SettingsModel
-
-    @AppStorage("settings.advanced.logLevel") private var logLevelRaw = SettingsLogLevel.normal.rawValue
 
     @State private var isExporting = false
     @State private var isClearing = false
@@ -44,18 +42,6 @@ struct SettingsAdvancedTab: View {
                     Label(isClearing ? "Clearing\u{2026}" : "Clear All Message History\u{2026}", systemImage: "trash")
                 }
                 .disabled(isClearing || model.messageCount == 0)
-            }
-
-            Section {
-                Picker("Log level", selection: $logLevelRaw) {
-                    ForEach(SettingsLogLevel.allCases) { level in
-                        Text(level.displayName).tag(level.rawValue)
-                    }
-                }
-            } header: {
-                Text("Logging")
-            } footer: {
-                Text("Verbose logging never records message bodies, topic names, or server addresses \u{2014} it only adds detail to connection and store events (see NtfyKit's Log.swift).")
             }
         }
         .formStyle(.grouped)

@@ -136,22 +136,6 @@ enum SettingsRetentionValidation {
     }
 }
 
-// MARK: - Log level (display-only; see wave2-settings report)
-
-enum SettingsLogLevel: String, CaseIterable, Identifiable, Sendable {
-    case normal
-    case verbose
-
-    var id: String { rawValue }
-
-    var displayName: String {
-        switch self {
-        case .normal: "Normal"
-        case .verbose: "Verbose"
-        }
-    }
-}
-
 // MARK: - JSON export
 
 /// A dependency-free mirror of `MessageSnapshot` shaped for JSON export.
