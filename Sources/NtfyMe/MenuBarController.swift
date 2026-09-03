@@ -28,6 +28,11 @@ final class MenuBarController: NSObject {
     /// `configurePopover()` to close the popover first: leaving it floating
     /// over the window it just summoned would be wrong.
     var onOpenMessage: (String) -> Void = { _ in }
+    /// Reconnects every server (`ConnectionCoordinator.reconnectAll()` on
+    /// the wiring pass's side). Unlike `onOpenMessage`, this does not close
+    /// the popover — retrying doesn't summon another window, and the user
+    /// likely wants to watch the status row update.
+    var onRetryConnection: () -> Void = {}
     /// Defaults to the standard terminate call — unlike History and
     /// Settings, quitting needs nothing from another agent's types.
     var onQuit: () -> Void = { NSApplication.shared.terminate(nil) }
@@ -132,7 +137,8 @@ final class MenuBarController: NSObject {
                 onOpenMessage: { [weak self] uniqueKey in
                     self?.closePopover()
                     self?.onOpenMessage(uniqueKey)
-                }
+                },
+                onRetryConnection: { [weak self] in self?.onRetryConnection() }
             )
         )
     }
