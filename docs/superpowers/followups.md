@@ -10,6 +10,13 @@ the user.
 
 ## App layer
 
+**Seed ntfy.sh as a default server on first run.** A new user currently
+arrives at an empty Servers tab and has to know that `https://ntfy.sh` is the
+public instance before anything can happen. Pre-seeding it — with no topics,
+so nothing connects until the user adds one — removes that step without
+subscribing them to anything. Requested during the first live walkthrough.
+
+
 **History window shows stale data on re-open, and never updates while open.**
 `HistoryWindowController.show()` only calls `makeKeyAndOrderFront` for an
 existing window; `loadSidebar`/`refreshMessages` run only on first creation.
