@@ -86,6 +86,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             menuBar.onOpenHistory = { [weak self] in self?.openHistory() }
             menuBar.onOpenSettings = { [weak self] in self?.openSettings() }
             menuBar.onOpenMessage = { [weak self] key in self?.openHistory(revealing: key) }
+            menuBar.onRetryConnection = { [weak graph, weak menuBar] in
+                Task {
+                    await graph?.reconnectAll()
+                    // Refresh straight after, so the status row reflects the
+                    // attempt rather than leaving the user watching a stale
+                    // state and wondering whether Retry did anything.
+                    await graph?.refreshConnectionStates()
+                    await menuBar?.refreshNow()
+                }
+            }
             self.menuBar = menuBar
 
             // Refresh as soon as a batch lands, not at the next timer tick.

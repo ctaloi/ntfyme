@@ -252,9 +252,21 @@ final class AppGraph {
             closeConnection: { [weak self] serverID in
                 guard let coordinator = await MainActor.run(body: { self?.coordinator }) else { return }
                 await coordinator.close(serverID: serverID)
-            })
+            },
+            // The one definition of this path, not recomputed here — see
+            // `Self.attachmentsDirectory`'s doc comment.
+            attachmentsDirectory: Self.attachmentsDirectory)
     }
 
+
+    /// Reconnects every server immediately, bypassing any pending backoff.
+    /// Wired to the popover's Retry control — before it existed, a user who
+    /// saw a disconnected state could only quit and relaunch, since reconnects
+    /// otherwise happen only on wake-from-sleep and network-path transitions,
+    /// neither of which they can trigger deliberately.
+    func reconnectAll() async {
+        await coordinator?.reconnectAll()
+    }
 
     /// Called after a batch is stored and its notifications raised, so the
     /// menu bar reflects a new message immediately rather than at the next
