@@ -1,7 +1,22 @@
 import Foundation
 import Network
+import Synchronization
 
 /// Indirection over `NWPathMonitor` so a test can drive network changes.
+///
+/// **`onSatisfied` reports a transition, not a level.** An implementation must
+/// call it when the path *becomes* satisfied, and must not call it for the
+/// state that was already true when `start` was called. `NWPathMonitor` does
+/// report current state immediately, so `SystemPathMonitor` absorbs that first
+/// delivery; a conforming fake fires only when a test asks it to, and every
+/// such call is therefore a real transition.
+///
+/// The distinction is load-bearing. Treating the initial level as a transition
+/// made every launch call `reconnectAll()` immediately, tearing down the
+/// connections `start()` had just opened and re-requesting each replay window
+/// a second time. Putting the rule here rather than in the coordinator keeps
+/// the coordinator honest about what it is reacting to, and keeps a fake's
+/// single trigger meaning exactly one transition.
 public protocol PathMonitoring: Sendable {
     func start(onSatisfied: @Sendable @escaping () async -> Void)
     func cancel()
@@ -16,8 +31,18 @@ public struct SystemPathMonitor: PathMonitoring {
     public init() {}
 
     public func start(onSatisfied: @Sendable @escaping () async -> Void) {
+        // `NWPathMonitor` delivers the current path as soon as it starts, so
+        // the first update describes the state that already held rather than a
+        // change to it. Absorbed here to satisfy `PathMonitoring`'s contract.
+        // All handler calls arrive serially on `queue`, so this needs no
+        // further synchronisation.
+        let hasReportedInitialPath = Mutex(false)
         monitor.pathUpdateHandler = { path in
-            guard path.status == .satisfied else { return }
+            let isFirst = hasReportedInitialPath.withLock { reported -> Bool in
+                defer { reported = true }
+                return !reported
+            }
+            guard !isFirst, path.status == .satisfied else { return }
             Task { await onSatisfied() }
         }
         monitor.start(queue: queue)
@@ -60,13 +85,6 @@ public actor ConnectionCoordinator {
     /// streaming with no pump and no owner, and could make `stop()` await a
     /// pump that was never cancelled and so never returns.
     private var isStopping = false
-    /// `NWPathMonitor` reports the *current* path as soon as it starts, not
-    /// only transitions. Without this, every launch immediately called
-    /// `reconnectAll()` and tore down the connections `start()` had just
-    /// opened, re-requesting each replay window a second time. The first
-    /// delivery is the initial state and is ignored; every later one is a
-    /// real change.
-    private var hasSeenInitialPath = false
 
     public init(store: MessageStore, keychain: KeychainStore,
                 client: any StreamClient, pathMonitor: any PathMonitoring,
@@ -91,7 +109,7 @@ public actor ConnectionCoordinator {
         // started, so the process stayed deaf to network recovery for its
         // entire lifetime with only a log line to say so (spec §10).
         pathMonitor.start { [weak self] in
-            await self?.handlePathSatisfied()
+            await self?.reconnectAll()
         }
 
         let snapshots: [ServerRecordSnapshot]
@@ -106,16 +124,6 @@ public actor ConnectionCoordinator {
         for snapshot in snapshots where !snapshot.topics.isEmpty {
             await open(snapshot)
         }
-    }
-
-    /// The path monitor reports current state on start as well as changes, so
-    /// the first callback is swallowed. See `hasSeenInitialPath`.
-    private func handlePathSatisfied() async {
-        guard hasSeenInitialPath else {
-            hasSeenInitialPath = true
-            return
-        }
-        await reconnectAll()
     }
 
     /// Brings live connections into line with what the store now holds:
