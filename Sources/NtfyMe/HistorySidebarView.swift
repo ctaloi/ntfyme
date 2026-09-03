@@ -1,35 +1,42 @@
 import SwiftUI
 import NtfyKit
 
-/// The sidebar column: "All Messages", then each server with its topics.
+/// The sidebar column: "All Messages" and "Unread" as smart views, then each
+/// server as a plain, non-selectable section header grouping its topics —
+/// matching the approved redesign mockup (`RedesignMockups.swift`). A
+/// server used to be its own selectable `HistoryScope`, with a `Section`
+/// replaced by a hand-rolled `DisclosureGroup` so the header could carry a
+/// tag; the mockup drops server-level selection entirely, which means a
+/// plain `Section` is not just simpler but correct again — and it gets the
+/// native macOS sidebar disclosure chevron for free, where the
+/// `DisclosureGroup` version had to reimplement collapse state by hand.
 struct HistorySidebarView: View {
     @Bindable var viewModel: HistoryViewModel
-    /// Defaults every server open — a server row with no `Bool` recorded
-    /// here yet reads as expanded, matching the initial layout before the
-    /// user collapses anything.
-    @State private var collapsedServers: Set<UUID> = []
 
     var body: some View {
         List(selection: Binding(
             get: { viewModel.scope },
             set: { newValue in if let newValue { viewModel.scope = newValue } })
         ) {
-            Label("All Messages", systemImage: "tray.full")
-                .badge(viewModel.allUnreadCount)
-                .tag(HistoryScope.all)
-                .accessibilityLabel(Text("All Messages, \(viewModel.allUnreadCount) unread"))
+            Section {
+                Label("All Messages", systemImage: "tray.full")
+                    .badge(viewModel.allUnreadCount)
+                    .tag(HistoryScope.all)
+                    .accessibilityLabel(Text("All Messages, \(viewModel.allUnreadCount) unread"))
+
+                Label("Unread", systemImage: "circle.inset.filled")
+                    .badge(viewModel.allUnreadCount)
+                    .tag(HistoryScope.unread)
+                    .accessibilityLabel(Text("Unread, \(viewModel.allUnreadCount) messages"))
+            }
 
             ForEach(viewModel.servers) { server in
-                // The server row itself is selectable (`.server(id)`, its own
-                // status dot and unread badge) — spec §7 asks for both, which
-                // a plain `Section` header cannot carry, since a header is
-                // not a selectable row.
-                DisclosureGroup(isExpanded: isExpandedBinding(for: server.id)) {
+                Section {
                     ForEach(topicsFor(server)) { topic in
                         topicRow(topic)
                     }
-                } label: {
-                    serverRow(server)
+                } header: {
+                    serverHeader(server)
                 }
             }
         }
@@ -38,39 +45,29 @@ struct HistorySidebarView: View {
         .frame(minWidth: 200)
     }
 
-    private func isExpandedBinding(for serverID: UUID) -> Binding<Bool> {
-        Binding(
-            get: { !collapsedServers.contains(serverID) },
-            set: { expanded in
-                if expanded { collapsedServers.remove(serverID) } else { collapsedServers.insert(serverID) }
-            })
-    }
-
     private func topicsFor(_ server: ServerRecordSnapshot) -> [TopicSummary] {
         viewModel.topics.filter { $0.serverID == server.id }
     }
 
-    private func serverUnreadCount(_ server: ServerRecordSnapshot) -> Int {
-        topicsFor(server).reduce(0) { $0 + $1.unreadCount }
-    }
-
-    private func serverRow(_ server: ServerRecordSnapshot) -> some View {
+    /// A plain text header per the mockup, plus a small status dot the
+    /// mockup's static content has no way to depict (it hardcodes no
+    /// connection state at all) but that `AppDelegate` already wires
+    /// (`setStatusProvider`) — dropping it here would make that wiring
+    /// silently pointless rather than merely unused.
+    private func serverHeader(_ server: ServerRecordSnapshot) -> some View {
         let status = viewModel.statusProvider(server.id)
-        return Label {
-            Text(server.name)
-        } icon: {
+        return HStack(spacing: 5) {
             Image(systemName: status.symbolName)
-                .font(.system(size: 8))
+                .font(.system(size: 7))
                 .foregroundStyle(statusColor(status))
+                .accessibilityLabel(Text(status.accessibilityLabel))
+            Text(server.name)
         }
-        .badge(serverUnreadCount(server))
-        .tag(HistoryScope.server(server.id))
         .contextMenu {
             Button("Mark All Read") {
-                Task { await viewModel.markAllRead(in: .server(server.id)) }
+                Task { await viewModel.markAllRead(serverID: server.id, topic: nil) }
             }
         }
-        .accessibilityLabel(Text("\(server.name), \(status.accessibilityLabel), \(serverUnreadCount(server)) unread"))
     }
 
     private func statusColor(_ status: HistoryConnectionStatus) -> Color {
@@ -84,11 +81,12 @@ struct HistorySidebarView: View {
     private func topicRow(_ topic: TopicSummary) -> some View {
         let scope = HistoryScope.topic(serverID: topic.serverID, topic: topic.topic)
         return Label {
-            HStack {
-                Text(topic.displayName ?? topic.topic)
+            HStack(spacing: 6) {
+                Text(topic.displayName ?? topic.topic).lineLimit(1)
                 if topic.muted {
-                    Image(systemName: "bell.slash")
-                        .foregroundStyle(.secondary)
+                    Image(systemName: "bell.slash.fill")
+                        .font(.system(size: 9))
+                        .foregroundStyle(.tertiary)
                         .accessibilityLabel(Text("Muted"))
                 }
             }
@@ -99,7 +97,7 @@ struct HistorySidebarView: View {
         .tag(scope)
         .contextMenu {
             Button("Mark All Read") {
-                Task { await viewModel.markAllRead(in: scope) }
+                Task { await viewModel.markAllRead(serverID: topic.serverID, topic: topic.topic) }
             }
         }
         .accessibilityLabel(Text("\(topic.displayName ?? topic.topic), \(topic.unreadCount) unread"))

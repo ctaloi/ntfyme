@@ -71,6 +71,16 @@ final class HistoryViewModel {
             Task { await refreshMessages() }
         }
     }
+    /// Independent of `scope == .unread` (the sidebar's "Unread" smart
+    /// view) — this is the Filter menu's own toggle, usable within any
+    /// scope (e.g. "unread messages in #alerts"). `currentQuery` ORs the
+    /// two rather than picking one, so either one alone is enough to filter.
+    var unreadOnly: Bool = false {
+        didSet {
+            guard oldValue != unreadOnly else { return }
+            Task { await refreshMessages() }
+        }
+    }
 
     private(set) var messages: [MessageSnapshot] = []
     var selection: Set<String> = []
@@ -105,7 +115,7 @@ final class HistoryViewModel {
     /// Filters" action to when there is actually something to clear.
     var hasActiveFilters: Bool {
         scope != .all || !searchText.isEmpty || !tagFilter.isEmpty
-            || priorityFilter != .any || dateRangeFilter != .any
+            || priorityFilter != .any || dateRangeFilter != .any || unreadOnly
     }
 
     /// Clears every filter `reveal(messageKey:)` already clears for the
@@ -119,6 +129,7 @@ final class HistoryViewModel {
         tagFilter = ""
         priorityFilter = .any
         dateRangeFilter = .any
+        unreadOnly = false
     }
 
     init(store: MessageStore, attachmentsDirectory: URL? = nil) {
@@ -229,7 +240,7 @@ final class HistoryViewModel {
     private func currentQuery(offset: Int) -> MessageQuery {
         HistoryQueryBuilder.makeQuery(
             scope: scope, searchText: searchText, priority: priorityFilter,
-            tag: tagFilter, dateRange: dateRangeFilter, now: Date(),
+            tag: tagFilter, dateRange: dateRangeFilter, unreadOnly: unreadOnly, now: Date(),
             limit: Self.pageSize, offset: offset)
     }
 
@@ -273,14 +284,33 @@ final class HistoryViewModel {
         }
     }
 
-    func markAllRead(in scope: HistoryScope) async {
+    /// `serverID`/`topic` taken directly rather than a `HistoryScope`: the
+    /// sidebar's per-server "Mark All Read" needs a server-wide scope that
+    /// is no longer a selectable `HistoryScope` case (servers are a plain
+    /// section header now, not their own destination), and `store
+    /// .markAllRead` already takes exactly these two optionals.
+    func markAllRead(serverID: UUID?, topic: String?) async {
         do {
-            try await store.markAllRead(serverID: scope.serverID, topic: scope.topic)
+            try await store.markAllRead(serverID: serverID, topic: topic)
             await reloadLoadedWindow()
             await loadSidebar()
         } catch {
             recordActionFailure("mark all messages read", error)
         }
+    }
+
+    /// Mail-style "viewing marks read": called from the list's selection
+    /// change (`HistoryListView`'s `.onChange(of: viewModel.selection)`),
+    /// not from `selection`'s own setter — a plain, directly awaitable
+    /// method is unit-testable on its own, where a fire-and-forget `Task`
+    /// spawned inside a property observer is not. Selecting a message the
+    /// user is not actually viewing (a multi-selection) must not mark
+    /// anything; only a single, genuinely-displayed selection does.
+    func markSelectedRead() async {
+        guard selection.count == 1, let id = selection.first,
+              let snapshot = messages.first(where: { $0.id == id }), !snapshot.isRead
+        else { return }
+        await markRead([snapshot], read: true)
     }
 
     func delete(_ snapshots: [MessageSnapshot]) async {

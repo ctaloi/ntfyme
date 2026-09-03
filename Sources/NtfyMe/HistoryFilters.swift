@@ -1,24 +1,30 @@
 import Foundation
 import NtfyKit
 
-/// Which slice of the archive the sidebar has selected.
+/// Which slice of the archive the sidebar has selected. Servers are no
+/// longer a selectable scope of their own (the redesigned sidebar groups
+/// topics under a plain, non-selectable section header per server, matching
+/// the approved mockup) — only "all messages", the "unread" smart view, and
+/// one topic are real destinations.
 enum HistoryScope: Hashable, Sendable {
     case all
-    case server(UUID)
+    case unread
     case topic(serverID: UUID, topic: String)
 
     var serverID: UUID? {
-        switch self {
-        case .all: return nil
-        case .server(let id): return id
-        case .topic(let serverID, _): return serverID
-        }
+        if case .topic(let serverID, _) = self { return serverID }
+        return nil
     }
 
     var topic: String? {
         if case .topic(_, let topic) = self { return topic }
         return nil
     }
+
+    /// `.unread` folds into the query's `unreadOnly` flag rather than being
+    /// its own `MessageQuery` field — it is still "no server/topic
+    /// constraint", just with one more filter applied.
+    var impliesUnreadOnly: Bool { self == .unread }
 }
 
 /// The list's priority filter. `MessageQuery.minPriority` is a lower bound,
@@ -101,7 +107,7 @@ enum DateRangeFilter: Hashable, Sendable {
 /// hand.
 enum HistoryQueryBuilder {
     static func makeQuery(scope: HistoryScope, searchText: String, priority: PriorityFilter,
-                           tag: String, dateRange: DateRangeFilter, now: Date,
+                           tag: String, dateRange: DateRangeFilter, unreadOnly: Bool, now: Date,
                            limit: Int, offset: Int) -> MessageQuery {
         let trimmedSearch = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedTag = tag.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -112,7 +118,7 @@ enum HistoryQueryBuilder {
             searchText: trimmedSearch.isEmpty ? nil : trimmedSearch,
             minPriority: priority.minPriority,
             tag: trimmedTag.isEmpty ? nil : trimmedTag,
-            unreadOnly: false,
+            unreadOnly: scope.impliesUnreadOnly || unreadOnly,
             since: since,
             until: until,
             limit: limit,

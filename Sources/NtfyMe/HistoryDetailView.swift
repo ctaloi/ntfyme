@@ -51,9 +51,11 @@ private struct MessageDetailContent: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 14) {
                 header
+                Divider()
                 bodyText
+                    .font(.system(size: 13))
                     .textSelection(.enabled)
                 if !snapshot.tags.isEmpty {
                     tagRow
@@ -90,30 +92,45 @@ private struct MessageDetailContent: View {
         })
     }
 
+    /// 22pt title, one metadata line (topic · server · time, with the
+    /// priority marker trailing it), matching the redesign mockup —
+    /// replacing the old two-line header where the title's own row also
+    /// carried a `PriorityPill` at the trailing edge.
     private var header: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(alignment: .firstTextBaseline) {
-                Text(snapshot.title?.isEmpty == false ? snapshot.title! : snapshot.topic)
-                    .font(.title2.bold())
-                Spacer()
-                PriorityPill(priority: snapshot.resolvedPriority)
-            }
+        VStack(alignment: .leading, spacing: 6) {
+            Text(snapshot.title?.isEmpty == false ? snapshot.title! : snapshot.topic)
+                .font(.system(size: 22, weight: .semibold))
+                .fixedSize(horizontal: false, vertical: true)
+
             HStack(spacing: 6) {
                 // A long topic name must stay one line and truncate — the
                 // same rule the sidebar already applies to long topic names
-                // — rather than wrap: a wrapped topic pushes the "· time"
-                // that follows it down to sit stranded beside the wrapped
-                // block instead of reading as one metadata line.
+                // — rather than wrap: a wrapped topic pushes the rest of
+                // this metadata line down to sit stranded beside the
+                // wrapped block instead of reading as one line.
                 Text(snapshot.topic)
                     .lineLimit(1)
                     .truncationMode(.tail)
-                Text("·")
+                Text("·").foregroundStyle(.tertiary)
+                Text(serverName)
+                Text("·").foregroundStyle(.tertiary)
                 Text(snapshot.time, format: .dateTime.year().month().day().hour().minute())
                     .fixedSize(horizontal: true, vertical: false)
+                Spacer(minLength: 8)
+                if snapshot.priority >= NtfyPriority.high.rawValue {
+                    Image(systemName: "exclamationmark.2")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundStyle(snapshot.priority >= NtfyPriority.max.rawValue ? .red : .orange)
+                        .accessibilityLabel(Text("Priority: \(snapshot.resolvedPriority.label)"))
+                }
             }
-            .font(.caption)
+            .font(.system(size: 11))
             .foregroundStyle(.secondary)
         }
+    }
+
+    private var serverName: String {
+        viewModel.servers.first(where: { $0.id == snapshot.serverID })?.name ?? "Unknown Server"
     }
 
     /// `AttributedString(markdown:)` throws on malformed input. An ntfy

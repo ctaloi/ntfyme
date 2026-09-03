@@ -1,8 +1,17 @@
 import SwiftUI
 import NtfyKit
 
-/// The list column: search, priority/tag/date filters, and the page of
-/// messages the current scope and filters resolve to.
+/// The list column: one grouped Filter menu, Mark All Read, `.searchable`,
+/// and the page of messages the current scope and filters resolve to.
+///
+/// The toolbar used to be three loose `ToolbarItemGroup` capsules
+/// (priority, date range) plus a raw `TextField` for tags sitting directly
+/// in the toolbar — two competing text-entry affordances next to
+/// `.searchable`'s own field, which the approved redesign
+/// (`Tests/NtfyMeTests/RedesignMockups.swift`) identified as the single
+/// biggest cause of the window not reading as a Mac app. Replaced with one
+/// Filter menu holding all four filter dimensions (unread, priority, tag,
+/// date range), matching the mockup.
 struct HistoryListView: View {
     @Bindable var viewModel: HistoryViewModel
     @State private var dateRangePopoverShown = false
@@ -14,9 +23,8 @@ struct HistoryListView: View {
             .searchable(text: $viewModel.searchText, placement: .toolbar, prompt: "Search title or body")
             .toolbar {
                 ToolbarItemGroup {
-                    priorityMenu
-                    dateRangeMenu
-                    tagField
+                    filterMenu
+                    markAllReadButton
                 }
             }
             .navigationTitle(scopeTitle)
@@ -102,7 +110,12 @@ struct HistoryListView: View {
         // `ScrollViewReader` + the `onChange` below is what makes
         // `HistoryViewModel.reveal(messageKey:)` actually visible rather
         // than merely selected: setting `selection` alone does not scroll
-        // `List` to the newly-selected row.
+        // `List` to the newly-selected row. The same `onChange` is also
+        // where "viewing marks read" lives (`markSelectedRead()`) — tied to
+        // the list's own selection change rather than to `selection`'s
+        // setter, so the view model method stays a plain, directly
+        // testable `async func` instead of a fire-and-forget side effect
+        // hidden inside a property observer.
         ScrollViewReader { proxy in
             List(selection: $viewModel.selection) {
                 ForEach(viewModel.messages) { snapshot in
@@ -127,6 +140,7 @@ struct HistoryListView: View {
                 withAnimation {
                     proxy.scrollTo(target, anchor: .center)
                 }
+                Task { await viewModel.markSelectedRead() }
             }
         }
     }
@@ -148,40 +162,54 @@ struct HistoryListView: View {
         }
     }
 
-    private var priorityMenu: some View {
+    /// One grouped menu replacing the three loose toolbar capsules — unread,
+    /// priority, and date range as submenus/toggle, tag as a free-text field
+    /// at the bottom. The icon fills when any of the four is active, the
+    /// same "something is filtering this view" affordance `hasActiveFilters`
+    /// already drives for the empty state's wording.
+    private var filterMenu: some View {
         Menu {
-            Picker("Priority", selection: $viewModel.priorityFilter) {
-                ForEach(PriorityFilter.allCases) { filter in
-                    Text(filter.label).tag(filter)
-                }
+            Toggle(isOn: $viewModel.unreadOnly) {
+                Label("Unread Only", systemImage: "circle.inset.filled")
             }
-        } label: {
-            Label("Priority", systemImage: "flag")
-        }
-        .help("Filter by priority")
-        .accessibilityLabel(Text("Priority filter: \(viewModel.priorityFilter.label)"))
-    }
 
-    private var tagField: some View {
-        TextField("Tag", text: $viewModel.tagFilter)
-            .textFieldStyle(.roundedBorder)
-            .frame(width: 100)
-            .accessibilityLabel(Text("Filter by tag"))
-    }
+            Menu {
+                Picker("Priority", selection: $viewModel.priorityFilter) {
+                    ForEach(PriorityFilter.allCases) { filter in
+                        Text(filter.label).tag(filter)
+                    }
+                }
+                .pickerStyle(.inline)
+            } label: {
+                Label("Priority: \(viewModel.priorityFilter.label)", systemImage: "flag")
+            }
 
-    private var dateRangeMenu: some View {
-        Menu {
-            Button("Any Time") { viewModel.dateRangeFilter = .any }
-            Button("Today") { viewModel.dateRangeFilter = .today }
-            Button("Last 7 Days") { viewModel.dateRangeFilter = .last7Days }
-            Button("Last 30 Days") { viewModel.dateRangeFilter = .last30Days }
+            Menu {
+                Button("Any Time") { viewModel.dateRangeFilter = .any }
+                Button("Today") { viewModel.dateRangeFilter = .today }
+                Button("Last 7 Days") { viewModel.dateRangeFilter = .last7Days }
+                Button("Last 30 Days") { viewModel.dateRangeFilter = .last30Days }
+                Divider()
+                Button("Custom Range…") { dateRangePopoverShown = true }
+            } label: {
+                Label("Date: \(viewModel.dateRangeFilter.label)", systemImage: "calendar")
+            }
+
             Divider()
-            Button("Custom Range…") { dateRangePopoverShown = true }
+
+            TextField("Tag", text: $viewModel.tagFilter)
+                .accessibilityLabel(Text("Filter by tag"))
         } label: {
-            Label(viewModel.dateRangeFilter.label, systemImage: "calendar")
+            Label("Filter", systemImage: viewModel.hasActiveFilters
+                  ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease")
         }
-        .help("Filter by date range")
-        .accessibilityLabel(Text("Date range filter: \(viewModel.dateRangeFilter.label)"))
+        .help("Filter messages")
+        .accessibilityLabel(Text(viewModel.hasActiveFilters ? "Filter (active)" : "Filter"))
+        // Attached to the menu rather than nested inside it: a `Menu`
+        // presenting a `.popover` from one of its own items works, but
+        // anchoring the popover at the toolbar control itself (not the
+        // transient menu item) is what keeps it from disappearing the
+        // instant the menu that spawned it closes.
         .popover(isPresented: $dateRangePopoverShown) {
             VStack(alignment: .leading, spacing: 12) {
                 DatePicker("From", selection: $customSince, displayedComponents: .date)
@@ -197,16 +225,29 @@ struct HistoryListView: View {
         }
     }
 
+    private var markAllReadButton: some View {
+        Button {
+            Task { await viewModel.markAllRead(serverID: viewModel.scope.serverID, topic: viewModel.scope.topic) }
+        } label: {
+            Label("Mark All Read", systemImage: "envelope.open")
+        }
+        .help("Mark All Read")
+    }
+
     private var scopeTitle: String {
         switch viewModel.scope {
         case .all: return "All Messages"
-        case .server(let id): return viewModel.servers.first(where: { $0.id == id })?.name ?? "Server"
+        case .unread: return "Unread"
         case .topic(_, let topic): return topic
         }
     }
 }
 
-/// One row: read/unread indicator, priority, title/body preview, timestamp.
+/// One row: an accent dot for unread in the gutter, title/time on one
+/// line, a two-line body preview, and topic plus a quiet priority marker
+/// (only for priority 4-5, matching how quietly priority is meant to read)
+/// on their own line beneath — the mockup's design, replacing the previous
+/// cramped single-line-title-plus-pill layout.
 private struct HistoryRow: View {
     let snapshot: MessageSnapshot
 
@@ -218,40 +259,52 @@ private struct HistoryRow: View {
                 .padding(.top, 5)
                 .accessibilityHidden(true)
 
-            VStack(alignment: .leading, spacing: 2) {
-                HStack {
-                    Text(snapshot.title?.isEmpty == false ? snapshot.title! : snapshot.topic)
-                        .font(.headline)
-                        .fontWeight(snapshot.isRead ? .regular : .semibold)
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text(titleText)
+                        .font(.system(size: 13, weight: snapshot.isRead ? .regular : .semibold))
                         .lineLimit(1)
-                    Spacer()
-                    PriorityPill(priority: snapshot.resolvedPriority)
+                    Spacer(minLength: 8)
                     Text(snapshot.time, style: .time)
-                        .font(.caption)
+                        .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                 }
                 Text(snapshot.body)
-                    .font(.subheadline)
+                    .font(.system(size: 12))
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
-                if !snapshot.tags.isEmpty {
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 4) {
-                            ForEach(snapshot.tags, id: \.self) { TagChip(tag: $0) }
-                        }
+                    .fixedSize(horizontal: false, vertical: true)
+                HStack(spacing: 5) {
+                    // A long topic name must truncate on one line, not wrap
+                    // — found in `history-long-content.png`: without this,
+                    // a long topic pushed the priority marker down onto its
+                    // own line and made one row taller than its neighbors.
+                    // Same rule the sidebar and detail pane already apply.
+                    Text(snapshot.topic)
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    if snapshot.priority >= NtfyPriority.high.rawValue {
+                        Image(systemName: "exclamationmark.2")
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundStyle(snapshot.priority >= NtfyPriority.max.rawValue ? .red : .orange)
+                            .fixedSize()
                     }
-                    .fadedTrailingEdge()
                 }
             }
         }
-        .padding(.vertical, 2)
+        .padding(.vertical, 4)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(Text(accessibilitySummary))
     }
 
+    private var titleText: String {
+        snapshot.title?.isEmpty == false ? snapshot.title! : snapshot.topic
+    }
+
     private var accessibilitySummary: String {
-        let title = snapshot.title?.isEmpty == false ? snapshot.title! : snapshot.topic
         let readState = snapshot.isRead ? "read" : "unread"
-        return "\(title), \(readState), priority \(snapshot.resolvedPriority.label)"
+        return "\(titleText), \(readState), priority \(snapshot.resolvedPriority.label)"
     }
 }

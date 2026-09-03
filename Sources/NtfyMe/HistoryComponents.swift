@@ -1,42 +1,6 @@
 import SwiftUI
 import NtfyKit
 
-/// A quiet priority indicator: a small SF Symbol tinted by urgency. Priority
-/// is meant to be noticed at a glance, not shout — spec's design guidance —
-/// so this never uses a hard-coded color, only semantic ones that adapt to
-/// Dark Mode and Increase Contrast.
-struct PriorityPill: View {
-    let priority: NtfyPriority
-
-    var body: some View {
-        Label(priority.label, systemImage: symbolName)
-            .labelStyle(.iconOnly)
-            .font(.caption)
-            .foregroundStyle(tint)
-            .help(priority.label)
-            .accessibilityLabel(Text("Priority: \(priority.label)"))
-    }
-
-    private var symbolName: String {
-        switch priority {
-        case .min: return "chevron.down"
-        case .low: return "chevron.down"
-        case .default: return "circle"
-        case .high: return "exclamationmark"
-        case .max: return "exclamationmark.2"
-        }
-    }
-
-    private var tint: Color {
-        switch priority {
-        case .min, .low: return .secondary
-        case .default: return .secondary
-        case .high: return .orange
-        case .max: return .red
-        }
-    }
-}
-
 extension NtfyPriority {
     var label: String {
         switch self {
