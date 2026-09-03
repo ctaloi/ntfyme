@@ -140,6 +140,14 @@ private func popoverView(_ viewModel: MenuBarViewModel) -> MenuBarPopoverView {
 /// still failing outright on a render that drew nothing.
 private let minimumDistinctColors = 8
 
+/// A view that paints its own ground measures ~1.0; a root with no
+/// background measures ~0.05 (`SnapshotSupport.meanAlpha`'s own
+/// calibration). 0.85 clears every real render here with room and is the
+/// one instrument that catches this regression directly — byte counts,
+/// light/dark divergence, and colour counts all fail on it in one way or
+/// another (see the doc comments above and on `meanAlpha` itself).
+private let minimumOpacity = 0.85
+
 @MainActor @Test func renderPopulated() async throws {
     let viewModel = makeViewModel(messages: MenuBarFixtures.messages(), unread: 3,
                                   statuses: [MenuBarFixtures.homeLab, MenuBarFixtures.ntfySh])
@@ -149,6 +157,7 @@ private let minimumDistinctColors = 8
                            to: "menubar-populated.png")
     let colors = try distinctColorCount(ofPNGAt: "/tmp/ntfyshots/menubar-populated.png")
     #expect(colors > minimumDistinctColors)
+    #expect(try meanAlpha(ofPNGAt: "/tmp/ntfyshots/menubar-populated.png") > minimumOpacity)
 }
 
 @MainActor @Test func renderEmpty() async throws {
@@ -162,6 +171,7 @@ private let minimumDistinctColors = 8
                            to: "menubar-empty.png")
     let colors = try distinctColorCount(ofPNGAt: "/tmp/ntfyshots/menubar-empty.png")
     #expect(colors > minimumDistinctColors)
+    #expect(try meanAlpha(ofPNGAt: "/tmp/ntfyshots/menubar-empty.png") > minimumOpacity)
 }
 
 @MainActor @Test func renderDisconnected() async throws {
@@ -178,6 +188,7 @@ private let minimumDistinctColors = 8
                            to: "menubar-disconnected.png")
     let colors = try distinctColorCount(ofPNGAt: "/tmp/ntfyshots/menubar-disconnected.png")
     #expect(colors > minimumDistinctColors)
+    #expect(try meanAlpha(ofPNGAt: "/tmp/ntfyshots/menubar-disconnected.png") > minimumOpacity)
 }
 
 @MainActor @Test func renderLoadError() async throws {
@@ -196,6 +207,7 @@ private let minimumDistinctColors = 8
                            to: "menubar-load-error.png")
     let colors = try distinctColorCount(ofPNGAt: "/tmp/ntfyshots/menubar-load-error.png")
     #expect(colors > minimumDistinctColors)
+    #expect(try meanAlpha(ofPNGAt: "/tmp/ntfyshots/menubar-load-error.png") > minimumOpacity)
 }
 
 /// Behavioral, not visual: `connectionStatuses` returning `nil` (the store
@@ -242,6 +254,7 @@ private let minimumDistinctColors = 8
                            to: "menubar-search-active.png")
     let colors = try distinctColorCount(ofPNGAt: "/tmp/ntfyshots/menubar-search-active.png")
     #expect(colors > minimumDistinctColors)
+    #expect(try meanAlpha(ofPNGAt: "/tmp/ntfyshots/menubar-search-active.png") > minimumOpacity)
 }
 
 /// Dark-mode-only: `renderPopulated()` above already covers the light
@@ -263,6 +276,7 @@ private let minimumDistinctColors = 8
                            colorScheme: .dark, to: "menubar-populated-dark.png")
     let colors = try distinctColorCount(ofPNGAt: "/tmp/ntfyshots/menubar-populated-dark.png")
     #expect(colors > minimumDistinctColors)
+    #expect(try meanAlpha(ofPNGAt: "/tmp/ntfyshots/menubar-populated-dark.png") > minimumOpacity)
 }
 
 /// Mutation check for the assertions above: reproduce the bug's shape and
@@ -310,4 +324,11 @@ private let minimumDistinctColors = 8
     // this specific regression's shape actually fails `distinctColorCount`,
     // not just that some blank image somewhere would.
     #expect(colors < minimumDistinctColors)
+
+    // The direct instrument for this exact bug shape: a root with no
+    // background measures ~0.05 alpha (`meanAlpha`'s own calibration),
+    // comfortably below the 0.85 floor every real render above must clear.
+    let alpha = try meanAlpha(
+        ofPNGAt: "/tmp/ntfyshots/menubar-mutation-no-background-dark.png")
+    #expect(alpha < minimumOpacity)
 }
