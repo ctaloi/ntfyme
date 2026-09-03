@@ -19,6 +19,10 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/$PRODUCT_NAME"
 
+# The app icon. Generated from Scripts/icon/AppIcon-1024.png — see
+# Tests/NtfyMeTests/IconRender.swift for how that master is drawn.
+cp "$HERE/icon/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
+
 sed -e "s|__PRODUCT_NAME__|$PRODUCT_NAME|g" \
     -e "s|__BUNDLE_ID__|$PRODUCT_BUNDLE_ID|g" \
     -e "s|__MARKETING_VERSION__|$MARKETING_VERSION|g" \

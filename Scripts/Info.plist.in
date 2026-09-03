@@ -9,6 +9,7 @@
     <key>CFBundleShortVersionString</key><string>__MARKETING_VERSION__</string>
     <key>CFBundleVersion</key><string>__BUILD_VERSION__</string>
     <key>CFBundlePackageType</key><string>APPL</string>
+    <key>CFBundleIconFile</key><string>AppIcon</string>
     <key>LSMinimumSystemVersion</key><string>__MINIMUM_MACOS__</string>
     <key>NSHumanReadableCopyright</key><string>MIT licensed</string>
 </dict>
