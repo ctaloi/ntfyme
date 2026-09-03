@@ -23,6 +23,11 @@ final class MenuBarController: NSObject {
     /// than two.
     var onOpenHistory: () -> Void = {}
     var onOpenSettings: () -> Void = {}
+    /// Takes the tapped message's unique key (`MessageSnapshot.id`) — the
+    /// wiring pass opens History and reveals that message by key. Wrapped in
+    /// `configurePopover()` to close the popover first: leaving it floating
+    /// over the window it just summoned would be wrong.
+    var onOpenMessage: (String) -> Void = { _ in }
     /// Defaults to the standard terminate call — unlike History and
     /// Settings, quitting needs nothing from another agent's types.
     var onQuit: () -> Void = { NSApplication.shared.terminate(nil) }
@@ -123,7 +128,11 @@ final class MenuBarController: NSObject {
                 viewModel: viewModel,
                 onOpenHistory: { [weak self] in self?.onOpenHistory() },
                 onOpenSettings: { [weak self] in self?.onOpenSettings() },
-                onQuit: { [weak self] in self?.onQuit() }
+                onQuit: { [weak self] in self?.onQuit() },
+                onOpenMessage: { [weak self] uniqueKey in
+                    self?.closePopover()
+                    self?.onOpenMessage(uniqueKey)
+                }
             )
         )
     }

@@ -10,8 +10,13 @@ struct MenuBarPopoverView: View {
     let onOpenHistory: () -> Void
     let onOpenSettings: () -> Void
     let onQuit: () -> Void
-
-    @Environment(\.openURL) private var openURL
+    /// A row tap opens the app (History, scrolled to that message), not the
+    /// message's `click` URL — keyed on `MessageSnapshot.id`, the unique key
+    /// the wiring pass's reveal-by-key API takes, so this view hands out
+    /// exactly what that API needs rather than the whole snapshot. See
+    /// `messageRow`'s doc comment for why `click` no longer has a row-tap
+    /// path at all.
+    let onOpenMessage: (String) -> Void
 
     static let size = CGSize(width: 360, height: 440)
 
@@ -212,19 +217,21 @@ struct MenuBarPopoverView: View {
         }
     }
 
+    /// A tap marks the row read and opens the app to that message — never
+    /// the message's `click` URL, even when one is set. That URL used to be
+    /// opened here (through `NtfyURLPolicy`, since `click` is
+    /// attacker-controlled — spec §9 — and a bare `URL(string:)` would let a
+    /// `file://` or custom-scheme value read a local file or launch another
+    /// app), but a row that sometimes opens a browser and sometimes opens a
+    /// window is exactly the kind of inconsistent control that erodes trust
+    /// in what a tap will do. The History detail pane's own "open click URL"
+    /// action button is the deliberate, visible place for that now — still
+    /// routed through `NtfyURLPolicy` there, since the message is the same
+    /// attacker-controlled content wherever it is opened from.
     private func messageRow(_ message: MessageSnapshot) -> some View {
         Button {
             viewModel.markRead(message)
-            // `message.click` is attacker-controlled (spec §9 — a topic name
-            // is effectively a password on public ntfy.sh), so it goes
-            // through the shared `NtfyURLPolicy` rather than `URL(string:)`
-            // directly: a `file://` or custom-scheme click would otherwise
-            // read a local file or launch another app. `nil` means the row
-            // still marks read but opens nothing — never logged, since
-            // `Log.swift` bars action/click URLs as message content.
-            if let url = NtfyURLPolicy.sanitized(message.click) {
-                openURL(url)
-            }
+            onOpenMessage(message.id)
         } label: {
             HStack(alignment: .top, spacing: 6) {
                 priorityDot(message.resolvedPriority)
