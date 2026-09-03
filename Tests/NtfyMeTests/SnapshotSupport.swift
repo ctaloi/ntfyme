@@ -58,7 +58,14 @@ func renderSnapshot(
 
     try FileManager.default.createDirectory(
         atPath: directory, withIntermediateDirectories: true)
-    try png.write(to: URL(filePath: directory).appending(path: filename))
+    // `.atomic` is load-bearing now that assertions read the file back off
+    // disk instead of using the in-memory byte count. Two tests rendering the
+    // same filename in parallel previously risked only a torn artifact a human
+    // might notice; with `distinctColorCount` reading through
+    // `NSImage(contentsOfFile:)`, a torn write becomes a real flake or a false
+    // pass. Filenames must still be unique per test — this only makes a
+    // collision fail honestly rather than silently.
+    try png.write(to: URL(filePath: directory).appending(path: filename), options: .atomic)
     return png.count
 }
 
@@ -112,8 +119,17 @@ func meanLuminance(ofPNGAt path: String) throws -> Double {
 /// assertion has different sensitivity on a dev machine and a CI runner.
 ///
 /// A distinct-colour count does not have either problem. A blank surface has
-/// one or two colours whatever its size or scale; a real one has hundreds,
-/// from text antialiasing alone.
+/// one or two colours whatever its size or scale; a real one has dozens, from
+/// text antialiasing alone.
+///
+/// **Do not fold alpha into the key.** Quantising only R/G/B is what makes
+/// this catch the invisible-text bug as well as the blank one: a view that
+/// paints no opaque ground renders with almost no colour variation and
+/// collapses to one or two entries, even though at byte level it differs from
+/// its light counterpart in almost every pixel. Measured against the real
+/// popover regression at its real size — broken 1-2 colours, fixed 25-29,
+/// blank 1. Folding alpha in would look like an improvement in precision and
+/// would silently delete that protection.
 @MainActor
 func distinctColorCount(ofPNGAt path: String, sampleEvery stride: Int = 3) throws -> Int {
     guard let image = NSImage(contentsOfFile: path),
