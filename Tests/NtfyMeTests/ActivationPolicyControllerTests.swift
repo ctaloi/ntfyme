@@ -49,3 +49,24 @@ import Testing
         (isVisible: true, canBecomeMain: true),    // History, open
     ]) == true)
 }
+
+/// The launch ordering rule, stated as a test because the bug it prevents is
+/// invisible in the decision function itself.
+///
+/// `applicationDidFinishLaunching` sets `.regular` and *then* starts this
+/// controller, before any window has been opened. If `start()` recomputed at
+/// that moment it would see no windows — the case pinned above — and demote
+/// straight back to `.accessory`, only to promote again a few statements
+/// later when the main window opens. That policy churn during launch is what
+/// left the app running with its window ordered front but never actually
+/// active: several clicks or ⌥⇥ to get into it.
+///
+/// So `start()` observes without applying, and this documents the invariant
+/// that makes that necessary rather than merely tidy.
+@Test func recomputingBeforeTheFirstWindowCanOnlyEverDemote() {
+    // The exact state at `start()` time: whatever non-visible windows a
+    // SwiftUI `Settings` scene has registered, and nothing else.
+    #expect(ActivationPolicyController.wantsRegular(windows: []) == false)
+    #expect(ActivationPolicyController.wantsRegular(
+        windows: [(isVisible: false, canBecomeMain: true)]) == false)
+}

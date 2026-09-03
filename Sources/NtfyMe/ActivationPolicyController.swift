@@ -2,7 +2,14 @@ import AppKit
 
 /// Flips the app between `.accessory` (menu-bar only, no Dock icon) and
 /// `.regular` (Dock icon, normal app menu) as user-facing windows open and
-/// close — spec §7's menubar-first behaviour.
+/// close.
+///
+/// `.regular` is the launch state and the resting state while any window is
+/// open — the app delegate sets it, and this only ever *demotes* once the
+/// last window closes, so the app keeps running in the menu bar. That is the
+/// reverse of the original spec §7 shape (menu-bar-first, `.accessory` at
+/// rest), changed when the app became native-first in d4b82ac; `start()`'s
+/// doc comment covers why the difference matters at launch.
 ///
 /// This lives in one place on purpose. `HistoryWindowController`, the
 /// Settings scene and the onboarding pane each own their own window and each
@@ -24,6 +31,27 @@ import AppKit
 final class ActivationPolicyController {
     private var observers: [NSObjectProtocol] = []
 
+    /// Begins observing. **Deliberately does not apply a policy**: it adopts
+    /// whatever the app delegate has already set, and only reacts from here.
+    ///
+    /// This used to end with an `update()`, which was a launch bug. At
+    /// `applicationDidFinishLaunching` time no window has been opened yet, so
+    /// that recomputation could only ever conclude `.accessory` — demoting
+    /// the app microseconds after the delegate deliberately set `.regular`,
+    /// and promoting it back a few statements later when `openHistory()` ran.
+    ///
+    /// Reported as: the app launches, but its window is not selected and it
+    /// takes several clicks or ⌥⇥ to make it active. Changing activation
+    /// policy during launch is what does that — the window is ordered front
+    /// while the app never wins activation, so it looks open and behaves as
+    /// though it is in the background. `NSApp.activate()` from the window
+    /// controller cannot rescue it, because the churn happens around the
+    /// activation rather than instead of it.
+    ///
+    /// The invariant that made this inevitable is pinned by
+    /// `noWindowsMeansNoDockIcon`: with no windows the answer is always
+    /// `.accessory`, so calling `update()` before the first window exists is
+    /// never anything but a demotion.
     func start() {
         let center = NotificationCenter.default
         for name in [NSWindow.willCloseNotification, NSWindow.didBecomeKeyNotification] {
@@ -35,7 +63,6 @@ final class ActivationPolicyController {
                 Task { @MainActor in self?.update() }
             })
         }
-        update()
     }
 
     func stop() {
