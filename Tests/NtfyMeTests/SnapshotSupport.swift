@@ -104,48 +104,135 @@ func meanLuminance(ofPNGAt path: String) throws -> Double {
     return total / Double(samples)
 }
 
-/// How many distinct colours a rendered PNG contains.
+/// How many distinct colours a rendered PNG contains, **composited onto an
+/// opaque white ground first**.
 ///
 /// **Use this, not a byte-count floor.** A PNG of a completely blank surface
 /// is not small — it is 38,199 bytes at the History window's size and 18,960
 /// at the Settings tabs', because the encoder still writes a full-resolution
-/// image. Measured on this machine, not estimated. Every byte floor written
-/// against these surfaces was calibrated by eye and sat *below* its own blank
-/// render, so thirteen snapshot tests could not have failed on a surface that
-/// drew nothing at all — the exact regression they existed to catch.
+/// image. Every byte floor originally written against these surfaces was
+/// calibrated by eye and sat *below* its own blank render, so thirteen
+/// snapshot tests could not have failed on a surface that drew nothing.
 ///
 /// Byte counts are also resolution-dependent: `bitmapImageRepForCachingDisplay`
 /// returns a 2x rep on a Retina display and 1x elsewhere, so the same
 /// assertion has different sensitivity on a dev machine and a CI runner.
 ///
-/// A distinct-colour count does not have either problem. A blank surface has
-/// one or two colours whatever its size or scale; a real one has dozens, from
-/// text antialiasing alone.
+/// **Why the white composite is essential, and not a detail.** These renders
+/// have an alpha channel, and a view that paints no ground of its own draws
+/// its content as colour-with-alpha over transparency. An earlier version of
+/// this function quantised R/G/B and ignored alpha, which produced *two*
+/// opposite errors:
 ///
-/// **Do not fold alpha into the key.** Quantising only R/G/B is what makes
-/// this catch the invisible-text bug as well as the blank one: a view that
-/// paints no opaque ground renders with almost no colour variation and
-/// collapses to one or two entries, even though at byte level it differs from
-/// its light counterpart in almost every pixel. Measured against the real
-/// popover regression at its real size — broken 1-2 colours, fixed 25-29,
-/// blank 1. Folding alpha in would look like an improvement in precision and
-/// would silently delete that protection.
+/// - `ContentUnavailableView` drew black text at varying alpha over a
+///   transparent ground. Every pixel had RGB `(0,0,0)`, so it counted **1
+///   colour** for a view that looks perfectly correct — a false failure, which
+///   is the kind that gets a guard disabled rather than fixed.
+/// - It happened to catch the invisible-text bug for the opposite reason, by
+///   accident rather than by design.
+///
+/// Compositing onto opaque white models what a viewer actually sees, since an
+/// unpainted view in a real window shows the window's light backing.
+///
+/// **This function answers one question only: did the surface draw anything?**
+/// It does *not* detect the invisible-text bug. An earlier alpha-ignoring
+/// version appeared to, and that was luck rather than design — measured after
+/// the composite, a render with its background deliberately removed still
+/// counts 33, because the elements that remain visible against white are
+/// plenty. Use `meanAlpha` for that; the two are complementary and a hosted
+/// root wants both.
+///
+/// Measured on this suite: blank 1; `ContentUnavailableView` with no ground
+/// 16; Settings servers-empty 27; onboarding dark 52; History populated 52;
+/// menu bar populated 70.
 @MainActor
 func distinctColorCount(ofPNGAt path: String, sampleEvery stride: Int = 3) throws -> Int {
     guard let image = NSImage(contentsOfFile: path),
           let tiff = image.tiffRepresentation,
-          let rep = NSBitmapImageRep(data: tiff) else {
+          let rep = NSBitmapImageRep(data: tiff),
+          let cgImage = rep.cgImage else {
         throw SnapshotError.couldNotAllocateBitmap
     }
+
+    let width = rep.pixelsWide, height = rep.pixelsHigh
+    var pixels = [UInt8](repeating: 0, count: width * height * 4)
+    guard let colorSpace = CGColorSpace(name: CGColorSpace.sRGB),
+          let context = CGContext(
+            data: &pixels, width: width, height: height, bitsPerComponent: 8,
+            bytesPerRow: width * 4, space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else {
+        throw SnapshotError.couldNotAllocateBitmap
+    }
+    // The opaque ground, drawn before the image: this is the composite.
+    context.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
+    context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+    context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
+
     var seen = Set<Int>()
-    for y in Swift.stride(from: 0, to: rep.pixelsHigh, by: stride) {
-        for x in Swift.stride(from: 0, to: rep.pixelsWide, by: stride) {
-            guard let c = rep.colorAt(x: x, y: y) else { continue }
-            // Quantised to 5 bits per channel: ignores imperceptible
-            // antialiasing noise while still separating real content.
-            let r = Int(c.redComponent * 31), g = Int(c.greenComponent * 31), b = Int(c.blueComponent * 31)
+    for y in Swift.stride(from: 0, to: height, by: stride) {
+        for x in Swift.stride(from: 0, to: width, by: stride) {
+            let offset = (y * width + x) * 4
+            // Quantised to 5 bits per channel so imperceptible antialiasing
+            // noise does not inflate the count.
+            let r = Int(pixels[offset]) >> 3
+            let g = Int(pixels[offset + 1]) >> 3
+            let b = Int(pixels[offset + 2]) >> 3
             seen.insert(r << 10 | g << 5 | b)
         }
     }
     return seen.count
+}
+
+
+/// Mean alpha of a rendered PNG, 0 (fully transparent) to 1 (fully opaque).
+///
+/// **This is the direct test for the bug that shipped three times here.** A
+/// SwiftUI root hosted in an `NSHostingView` has nothing behind it painting a
+/// surface; if it does not paint its own, it renders transparent and the user
+/// sees its text against the window's light backing — near-white on white in
+/// dark mode, invisible.
+///
+/// Every other instrument detects that only indirectly and unreliably. Byte
+/// counts do not (a broken render is *larger* than a correct one). A
+/// light-vs-dark divergence does not (the broken pair diverges more than the
+/// correct pair, so the comparison is inverted). A distinct-colour count does
+/// not once the render is composited. Alpha is the property that actually
+/// differs, so measuring it is both simpler and honest.
+///
+/// A view that paints its own ground returns ~1.0. Measured on this suite:
+/// onboarding with its background 1.0, the same pane with it removed 0.053.
+@MainActor
+func meanAlpha(ofPNGAt path: String, sampleEvery stride: Int = 3) throws -> Double {
+    guard let image = NSImage(contentsOfFile: path),
+          let tiff = image.tiffRepresentation,
+          let rep = NSBitmapImageRep(data: tiff),
+          let cgImage = rep.cgImage else {
+        throw SnapshotError.couldNotAllocateBitmap
+    }
+    let width = rep.pixelsWide, height = rep.pixelsHigh
+    var pixels = [UInt8](repeating: 0, count: width * height * 4)
+    guard let colorSpace = CGColorSpace(name: CGColorSpace.sRGB),
+          let context = CGContext(
+            data: &pixels, width: width, height: height, bitsPerComponent: 8,
+            bytesPerRow: width * 4, space: colorSpace,
+            // `premultipliedLast` rather than `last`: a non-premultiplied
+            // 8-bit context is not a supported CGBitmapContext format on
+            // macOS, and premultiplication scales only R/G/B — the alpha
+            // byte itself is stored unmodified, which is the only channel
+            // this function reads.
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else {
+        throw SnapshotError.couldNotAllocateBitmap
+    }
+    context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
+
+    var total = 0.0
+    var samples = 0
+    for y in Swift.stride(from: 0, to: height, by: stride) {
+        for x in Swift.stride(from: 0, to: width, by: stride) {
+            total += Double(pixels[(y * width + x) * 4 + 3]) / 255.0
+            samples += 1
+        }
+    }
+    guard samples > 0 else { throw SnapshotError.couldNotAllocateBitmap }
+    return total / Double(samples)
 }
