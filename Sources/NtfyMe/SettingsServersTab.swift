@@ -118,6 +118,9 @@ struct SettingsServersTab: View {
 /// mute toggle, a minimum-alert-priority stepper, and a remove button — plus
 /// an inline field to add another topic.
 ///
+/// **Do not "simplify" this back to `DisclosureGroup`.** It looks like an
+/// obvious refactor and it silently reintroduces a real bug: see below.
+///
 /// **A plain disclosure, not `DisclosureGroup`.** Two problems traced to it:
 /// its automatic indicator was clipped at the row's leading edge (visible as
 /// a stray sliver next to the server name), and — going back to this wave's
@@ -233,36 +236,63 @@ private struct ServerRow: View {
 
     private func topicRow(_ topic: TopicSummary) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            HStack {
+            HStack(spacing: 12) {
                 Text(topic.topic)
                     .font(.system(size: 13))
                 Spacer()
-                Toggle("Muted", isOn: Binding(
-                    get: { topic.muted },
-                    set: { onSetAlertSettings(topic.topic, TopicAlertSettings(muted: $0, minAlertPriority: topic.minAlertPriority)) }
-                ))
-                .toggleStyle(.switch)
-                .labelsHidden()
-                .accessibilityLabel("Mute topic \(topic.topic)")
 
+                // A bare `Toggle("Muted", …)` with `.labelsHidden()` reads
+                // as an on/off switch with no word attached to say which
+                // way is which — reviewed on this exact row, and the
+                // reviewer had to read the source to find out "on" meant
+                // muted. An icon that states its own meaning (a slashed
+                // bell reads as silenced without a caption) replaces
+                // ambiguity with something legible at a glance — this is
+                // the one place in Settings that repeats per row often
+                // enough for a labelled switch to get noisy.
+                Button {
+                    onSetAlertSettings(topic.topic, TopicAlertSettings(muted: !topic.muted, minAlertPriority: topic.minAlertPriority))
+                } label: {
+                    Image(systemName: topic.muted ? "bell.slash.fill" : "bell.fill")
+                        .foregroundStyle(topic.muted ? Color.secondary : Color.accentColor)
+                }
+                .buttonStyle(.borderless)
+                .help(topic.muted ? "Muted \u{2014} click to enable alerts" : "Alerts enabled \u{2014} click to mute")
+                .accessibilityLabel(topic.muted ? "Unmute \(topic.topic)" : "Mute \(topic.topic)")
+
+                // Explicit gap, not just the HStack's own spacing: this is
+                // a destructive control sitting right next to a routine
+                // one, and the mute button above is exactly the kind of
+                // frequently-pressed toggle a stray click should not land
+                // next to "delete".
                 Button(role: .destructive) {
                     onRemoveTopic(topic.topic)
                 } label: {
                     Image(systemName: "trash")
                 }
                 .buttonStyle(.borderless)
+                .padding(.leading, 6)
                 .accessibilityLabel("Remove topic \(topic.topic)")
             }
-            Stepper(
-                value: Binding(
-                    get: { topic.minAlertPriority },
-                    set: { onSetAlertSettings(topic.topic, TopicAlertSettings(muted: topic.muted, minAlertPriority: $0)) }
-                ),
-                in: 1...5
-            ) {
+            HStack(spacing: 6) {
                 Text("Minimum alert priority: \(topic.minAlertPriority)")
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
+                // Immediately next to the number it changes, not stranded
+                // at the opposite edge of the row the way the label used
+                // to be — the same disconnect the trailing server controls
+                // had, one level down.
+                Stepper(
+                    "",
+                    value: Binding(
+                        get: { topic.minAlertPriority },
+                        set: { onSetAlertSettings(topic.topic, TopicAlertSettings(muted: topic.muted, minAlertPriority: $0)) }
+                    ),
+                    in: 1...5
+                )
+                .labelsHidden()
+                .accessibilityLabel("Minimum alert priority for \(topic.topic)")
+                .accessibilityValue("\(topic.minAlertPriority)")
             }
         }
     }
