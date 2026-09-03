@@ -92,6 +92,7 @@ final class HistoryWindowController {
     private func openWindow() {
         if let window {
             window.makeKeyAndOrderFront(nil)
+            activate()
             return
         }
 
@@ -109,5 +110,26 @@ final class HistoryWindowController {
         self.window = window
 
         window.makeKeyAndOrderFront(nil)
+        activate()
+    }
+
+    /// Brings the *application* forward, not just the window.
+    ///
+    /// Reported as "when I click on the application it shows it's in the
+    /// foreground, but it isn't acting like it is" — the window came forward
+    /// and the app was never activated, so it looked frontmost while having
+    /// no keyboard focus.
+    ///
+    /// `makeKeyAndOrderFront` orders a window within this app; it does not
+    /// make this app the active one. `SettingsWindowController` and
+    /// `ComposeWindowController` have always called this, and the History
+    /// window — the main one — never did. It got away with it while
+    /// `ActivationPolicyController.update()` happened to activate as a side
+    /// effect of flipping `.accessory` → `.regular`; that flip stopped
+    /// happening when the app started launching `.regular` (commit d4b82ac),
+    /// and `update()` returns early when the policy is already what it
+    /// wants, so nothing activated at all.
+    private func activate() {
+        NSApp.activate()
     }
 }
