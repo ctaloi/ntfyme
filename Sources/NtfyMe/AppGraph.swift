@@ -29,6 +29,7 @@ final class AppGraph {
     private let router: NotificationRouter
     private var coordinator: ConnectionCoordinator?
     private var scheduler: RetentionScheduler?
+    private var attachments: AttachmentFetcher?
     private var wakeObserver: NSObjectProtocol?
 
     /// Where the real database lives, under a directory this app owns —
@@ -88,6 +89,9 @@ final class AppGraph {
                 // for up to 30 seconds before the menu bar admitted it existed.
                 // `weak`: the coordinator owns the ingest that owns this
                 // closure, and the graph owns the coordinator.
+                // Fire-and-return: the fetcher owns the task, so a slow
+                // remote host cannot stall this flush or the pump behind it.
+                await self?.attachments?.fetchAttachments(for: events, serverID: serverID)
                 await self?.notifyStoredBatch()
             })
         self.coordinator = coordinator
@@ -98,6 +102,10 @@ final class AppGraph {
         // is on disk *at that time*, not the value that happened to be
         // current at launch — see `RetentionScheduler`'s `policyProvider`
         // doc comment.
+        if let directory = Self.attachmentsDirectory() {
+            attachments = AttachmentFetcher(store: store, directory: directory)
+        }
+
         let scheduler = RetentionScheduler(store: store, policyProvider: { [preferences] in
             preferences.load().retention
         })
@@ -121,6 +129,7 @@ final class AppGraph {
             NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver)
             self.wakeObserver = nil
         }
+        await attachments?.stop()
         await scheduler?.stop()
         await coordinator?.stop()
     }
