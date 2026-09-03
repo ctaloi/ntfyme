@@ -59,13 +59,31 @@ import Testing
     #expect(servers.map(\.name) == ["Fine"])
 }
 
+/// `lastMessageTime` is seeded non-nil — deliberately, not incidentally.
+/// `ConnectionCoordinator.open` backfills any topic whose watermark is
+/// `nil` (spec §5), firing its own request through the same `fake` client
+/// every test below also uses for the connection it is actually testing.
+/// None of these tests are about backfill; a nil watermark here would
+/// contend an extra, untested requester for `FakeStreamClient`'s finite,
+/// FIFO script queue against the request the test's own assertion is
+/// counting on — which server or reconnect attempt gets which script
+/// becomes a race, not the ordering guarantee several of these tests'
+/// doc comments claim. Seeding a real watermark keeps every topic here
+/// exactly as "already synced" as it always implicitly was before
+/// backfill existed. A test that wants backfill's own behavior belongs in
+/// `ConnectionCoordinatorSyncTests.swift`, seeded through its own
+/// `emptyStore()`/`addTopic` instead, precisely so it opts in rather than
+/// every other test here opting out.
 private func seededStore(topics: [String] = ["alerts"]) throws -> (ModelContainer, UUID) {
     let container = try StoreFixtures.inMemoryContainer()
     let id = UUID()
     let context = ModelContext(container)
     let server = Server(id: id, name: "Alpha", baseURLString: "https://a.example.com")
     context.insert(server)
-    for t in topics { context.insert(Subscription(topic: t, server: server)) }
+    for t in topics {
+        context.insert(Subscription(topic: t, server: server,
+                                    lastMessageTime: Date(timeIntervalSince1970: 1_700_000_000)))
+    }
     try context.save()
     return (container, id)
 }
@@ -199,6 +217,16 @@ private func seededStore(topics: [String] = ["alerts"]) throws -> (ModelContaine
     #expect(try await store.messageCount() == 1)
 }
 
+/// Same non-nil-watermark reasoning as `seededStore` above, and more
+/// pointedly here: `stoppingDrainsBothServersEvenWhenTheirTrailingFlushes
+/// Overlap` treats `requestCount >= 4` as proof both servers' entire
+/// `bigBatch` has already been drained. With a nil watermark, `open`
+/// fires one backfill request per server against the exact same two-item
+/// `FakeStreamClient` queue those `bigBatch`es are enqueued on — up to
+/// four requesters racing for two real scripts, so a backfill task can
+/// win a `bigBatch` meant for its own server's connection, silently
+/// leaving that connection with an empty response instead. This was the
+/// actual, confirmed cause of that test's intermittent failure on CI.
 private func seededTwoServerStore() throws -> (ModelContainer, UUID, UUID) {
     let container = try StoreFixtures.inMemoryContainer()
     let idA = UUID()
@@ -207,8 +235,9 @@ private func seededTwoServerStore() throws -> (ModelContainer, UUID, UUID) {
     let serverA = Server(id: idA, name: "Alpha", baseURLString: "https://a.example.com", sortOrder: 0)
     let serverB = Server(id: idB, name: "Beta", baseURLString: "https://b.example.com", sortOrder: 1)
     context.insert(serverA); context.insert(serverB)
-    context.insert(Subscription(topic: "alerts-a", server: serverA))
-    context.insert(Subscription(topic: "alerts-b", server: serverB))
+    let synced = Date(timeIntervalSince1970: 1_700_000_000)
+    context.insert(Subscription(topic: "alerts-a", server: serverA, lastMessageTime: synced))
+    context.insert(Subscription(topic: "alerts-b", server: serverB, lastMessageTime: synced))
     try context.save()
     return (container, idA, idB)
 }
