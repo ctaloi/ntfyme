@@ -3,3 +3,5 @@ build/
 Scripts/local.sh
 .DS_Store
 *.xcuserstate
+# Local agent scaffolding (scheduled-task locks), never part of the project.
+.claude/
