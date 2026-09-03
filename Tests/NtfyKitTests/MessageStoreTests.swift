@@ -235,7 +235,7 @@ private func makeStore() throws -> (MessageStore, UUID) {
 /// nothing else touches — no process-wide state, so no blast radius on a
 /// concurrently running test. `hdiutil` is a system tool; if it is ever
 /// unavailable, `run(_:_:)` throws rather than this test silently skipping.
-@Test func aFailedSaveRollsBackSoARetriedBatchIsNotMistakenForADuplicate() async throws {
+@Test(requiresDiskImageFixture) func aFailedSaveRollsBackSoARetriedBatchIsNotMistakenForADuplicate() async throws {
     let serverID = UUID()
     let fixture = try makeFullDiskFixture(serverID: serverID)
     defer { fixture.cleanup() }
@@ -289,7 +289,7 @@ private func makeStore() throws -> (MessageStore, UUID) {
 /// `modelContext.save()` (the ordering this replaced) makes the first
 /// assertion FAIL as expected — the file is gone even though `save()`
 /// threw.
-@Test func deleteMessagesLeavesTheFileInPlaceWhenSaveFails() async throws {
+@Test(requiresDiskImageFixture) func deleteMessagesLeavesTheFileInPlaceWhenSaveFails() async throws {
     let serverID = UUID()
     let fixture = try makeFullDiskFixture(serverID: serverID)
     defer { fixture.cleanup() }
@@ -343,7 +343,7 @@ private func makeStore() throws -> (MessageStore, UUID) {
 /// `addTopic`'s `save()` makes the final assertion FAIL as expected —
 /// `caughtUpTo` comes back `nil` after the unrelated `insert()`, even
 /// though `addTopic` itself threw.
-@Test func addTopicDoesNotLeakCaughtUpToResetWhenSaveFails() async throws {
+@Test(requiresDiskImageFixture) func addTopicDoesNotLeakCaughtUpToResetWhenSaveFails() async throws {
     let serverID = UUID()
     let fixture = try makeFullDiskFixture(serverID: serverID)
     defer { fixture.cleanup() }
