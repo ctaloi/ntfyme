@@ -148,7 +148,7 @@ private let minimumDistinctColors = 8
 /// another (see the doc comments above and on `meanAlpha` itself).
 private let minimumOpacity = 0.85
 
-@MainActor @Test func renderPopulated() async throws {
+@MainActor @Test(requiresSnapshotRendering) func renderPopulated() async throws {
     let viewModel = makeViewModel(messages: MenuBarFixtures.messages(), unread: 3,
                                   statuses: [MenuBarFixtures.homeLab, MenuBarFixtures.ntfySh])
     await viewModel.refresh()
@@ -160,7 +160,7 @@ private let minimumOpacity = 0.85
     #expect(try meanAlpha(ofPNGAt: "/tmp/ntfyshots/menubar-populated.png") > minimumOpacity)
 }
 
-@MainActor @Test func renderEmpty() async throws {
+@MainActor @Test(requiresSnapshotRendering) func renderEmpty() async throws {
     // Fresh install: no servers configured yet, nothing recorded. Still has
     // real chrome (header, empty-state icon and copy, footer), so this is
     // not expected to be anywhere near a blank render's colour count.
@@ -174,7 +174,7 @@ private let minimumOpacity = 0.85
     #expect(try meanAlpha(ofPNGAt: "/tmp/ntfyshots/menubar-empty.png") > minimumOpacity)
 }
 
-@MainActor @Test func renderDisconnected() async throws {
+@MainActor @Test(requiresSnapshotRendering) func renderDisconnected() async throws {
     let statuses = [
         MenuBarServerStatus(serverID: MenuBarFixtures.homeLabID, name: "Home Lab",
                             state: .backoff(attempt: 3)),
@@ -191,7 +191,7 @@ private let minimumOpacity = 0.85
     #expect(try meanAlpha(ofPNGAt: "/tmp/ntfyshots/menubar-disconnected.png") > minimumOpacity)
 }
 
-@MainActor @Test func renderLoadError() async throws {
+@MainActor @Test(requiresSnapshotRendering) func renderLoadError() async throws {
     // Call 1 succeeds (establishes stale-but-valid data), call 2 fails.
     // `refresh()` on a failure must keep the stale data and only add the
     // error banner — never fall back to an empty list, which would read as
@@ -242,7 +242,7 @@ private let minimumOpacity = 0.85
     #expect(viewModel.loadErrorMessage != nil)
 }
 
-@MainActor @Test func renderSearchActive() async throws {
+@MainActor @Test(requiresSnapshotRendering) func renderSearchActive() async throws {
     let viewModel = makeViewModel(messages: MenuBarFixtures.messages(), unread: 3,
                                   statuses: [MenuBarFixtures.homeLab, MenuBarFixtures.ntfySh])
     await viewModel.refresh()
@@ -268,7 +268,7 @@ private let minimumOpacity = 0.85
 /// atomic-write half of this; a unique filename per test is the other
 /// half). Dropped the redundant light render entirely rather than giving it
 /// a second unique filename — nothing here needed it.
-@MainActor @Test func renderPopulatedDarkMode() async throws {
+@MainActor @Test(requiresSnapshotRendering) func renderPopulatedDarkMode() async throws {
     let viewModel = makeViewModel(messages: MenuBarFixtures.messages(), unread: 3,
                                   statuses: [MenuBarFixtures.homeLab, MenuBarFixtures.ntfySh])
     await viewModel.refresh()
@@ -297,7 +297,7 @@ private let minimumOpacity = 0.85
 /// This version reproduces the bug's actual shape — dynamic-color text with
 /// no background behind it — as a standalone view that never had the fix,
 /// the only way to actually exercise the broken code path.
-@MainActor @Test func backgroundRegressionIsCaught() throws {
+@MainActor @Test(requiresSnapshotRendering) func backgroundRegressionIsCaught() throws {
     struct BrokenReproduction: View {
         var body: some View {
             VStack(alignment: .leading, spacing: 8) {
