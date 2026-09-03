@@ -102,6 +102,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             history.setStatusProvider { [weak graph] id in
                 graph?.historyStatus(forServer: id) ?? .unknown
             }
+            // The toolbar's + and ⌘N reach the same window through the same
+            // method — there is deliberately one path to a Compose window,
+            // as there is to a Settings one.
+            history.onNewMessage = { [weak self] in self?.openCompose() }
             self.history = history
 
             let menuBar = MenuBarController(dependencies: graph.menuBarDependencies())

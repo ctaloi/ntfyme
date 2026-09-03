@@ -13,6 +13,10 @@ import NtfyKit
 final class HistoryWindowController {
     private let viewModel: HistoryViewModel
     private var window: NSWindow?
+    /// Wired by `AppDelegate` to `openCompose()`, and read when the window's
+    /// content view is built on first `show()`. Set it before then — which
+    /// the delegate does, right where it creates this controller.
+    var onNewMessage: () -> Void = {}
 
     /// - Parameter attachmentsDirectory: must be the exact same directory
     ///   `RetentionScheduler.attachmentsDirectory()` uses
@@ -106,7 +110,9 @@ final class HistoryWindowController {
         window.center()
         window.setFrameAutosaveName("HistoryWindow")
         window.isReleasedWhenClosed = false
-        window.contentView = NSHostingView(rootView: HistoryView(viewModel: viewModel))
+        window.contentView = NSHostingView(rootView: HistoryView(
+            viewModel: viewModel,
+            onNewMessage: { [weak self] in self?.onNewMessage() }))
         self.window = window
 
         window.makeKeyAndOrderFront(nil)

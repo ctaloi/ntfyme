@@ -27,13 +27,20 @@ import NtfyKit
 /// to a toolbar item, and the item is here.
 struct HistoryView: View {
     @Bindable var viewModel: HistoryViewModel
+    /// Opens the Compose window. Injected rather than reached for: this view
+    /// knows nothing about `AppDelegate`, and the snapshot tests render it
+    /// with no app around it at all.
+    var onNewMessage: () -> Void = {}
 
+    /// Driven by this view's own sidebar toggle rather than left to the
+    /// automatic one — see `sidebarToggleButton`.
+    @State private var columnVisibility: NavigationSplitViewVisibility = .all
     @State private var dateRangePopoverShown = false
     @State private var customSince: Date = Calendar.current.date(byAdding: .day, value: -7, to: Date()) ?? Date()
     @State private var customUntil: Date = Date()
 
     var body: some View {
-        NavigationSplitView {
+        NavigationSplitView(columnVisibility: $columnVisibility) {
             HistorySidebarView(viewModel: viewModel)
         } content: {
             HistoryListView(viewModel: viewModel)
@@ -43,7 +50,19 @@ struct HistoryView: View {
         .navigationSplitViewStyle(.balanced)
         .searchable(text: $viewModel.searchText, placement: .toolbar,
                     prompt: "Search title or body")
+        // The automatic one sits *after* the window title, which is not
+        // where a Mac user looks for it — see `sidebarToggleButton`.
+        .toolbar(removing: .sidebarToggle)
         .toolbar(id: "history") {
+            // `.navigation` is the leading group, before the title: the
+            // sidebar toggle then the compose button, which is the order
+            // Mail and Notes use.
+            ToolbarItem(id: "sidebar", placement: .navigation) {
+                sidebarToggleButton
+            }
+            ToolbarItem(id: "newMessage", placement: .navigation) {
+                newMessageButton
+            }
             // `.primaryAction` rather than `.automatic`: window-relative, so
             // these do not move when a column does. Stable `id`s are what
             // let AppKit remember a customized toolbar across launches —
@@ -55,6 +74,46 @@ struct HistoryView: View {
                 markAllReadButton
             }
         }
+    }
+
+    /// This app's own sidebar toggle, replacing the one `NavigationSplitView`
+    /// installs for itself.
+    ///
+    /// The automatic item is placed after the window title — "All Messages",
+    /// then the toggle — where every Mac app with a sidebar puts it between
+    /// the traffic lights and the title. Reported as exactly that. There is
+    /// no way to reposition the automatic item, so it is removed
+    /// (`.toolbar(removing: .sidebarToggle)`) and replaced with one placed
+    /// explicitly.
+    ///
+    /// Driving `columnVisibility` directly is also what makes the state
+    /// legible: the automatic toggle mutates visibility privately, so
+    /// nothing else in this view could know or influence which columns are
+    /// showing.
+    private var sidebarToggleButton: some View {
+        Button {
+            withAnimation {
+                // `.doubleColumn` is "content and detail" — the sidebar
+                // hidden — in a three-column split view. `.detailOnly` would
+                // hide the message list too, which is not what this control
+                // means.
+                columnVisibility = columnVisibility == .all ? .doubleColumn : .all
+            }
+        } label: {
+            Label("Hide Sidebar", systemImage: "sidebar.leading")
+        }
+        .help("Hide or show the sidebar")
+    }
+
+    /// New Message. A `plus` rather than Mail's `square.and.pencil` because
+    /// that is what was asked for, and because this app publishes to a topic
+    /// rather than composing correspondence — the pencil implies a reply
+    /// surface that does not exist here.
+    private var newMessageButton: some View {
+        Button(action: onNewMessage) {
+            Label("New Message", systemImage: "plus")
+        }
+        .help("New Message (⌘N)")
     }
 
     /// One menu holding all four filter dimensions (unread, priority, tag,
