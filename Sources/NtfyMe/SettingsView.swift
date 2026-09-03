@@ -1,10 +1,15 @@
 import SwiftUI
 
-/// Root of the standard SwiftUI `Settings` scene (spec §7), tabbed exactly as
-/// specified: General, Servers, Notifications, Advanced. All four tabs share
-/// one `SettingsModel` — see its doc comment for why that is load-bearing,
-/// not just convenient — so the wiring pass constructs a single instance and
+/// The Settings window's root content, tabbed exactly as spec §7 specifies:
+/// General, Servers, Notifications, Advanced. All four tabs share one
+/// `SettingsModel` — see its doc comment for why that is load-bearing, not
+/// just convenient — so the wiring pass constructs a single instance and
 /// hands it here.
+///
+/// Hosted by `SettingsWindowController`, not the SwiftUI `Settings` scene —
+/// see that controller's doc comment for why: as a menu-bar accessory this
+/// app is frequently not the active application, and the scene's
+/// `showSettingsWindow:` had nothing on the responder chain to answer it.
 struct SettingsView: View {
     let model: SettingsModel
 

@@ -225,10 +225,10 @@ final class AppGraph {
     /// change made in Settings actually connects instead of waiting for a
     /// relaunch (spec-adjacent fix; see `ConnectionCoordinator.sync`'s doc
     /// comment). `[weak self]`, matching the `Ingest` stored-batch hook in
-    /// `start()`: this closure must not be what keeps the graph alive.
+    /// `start()`: these closures must not be what keeps the graph alive.
     /// `coordinator` may still be `nil` here — `SettingsModel` is constructed
-    /// before `start()` runs — so both closures no-op rather than crash when
-    /// there is nothing live to sync or restart yet.
+    /// before `start()` runs — so all three no-op rather than crash when
+    /// there is nothing live to sync, restart, or close yet.
     func makeSettingsModel() -> SettingsModel {
         SettingsModel(
             store: store, preferences: preferences, keychain: keychain,
@@ -239,6 +239,10 @@ final class AppGraph {
             restartConnection: { [weak self] serverID in
                 guard let coordinator = await MainActor.run(body: { self?.coordinator }) else { return }
                 await coordinator.restart(serverID: serverID)
+            },
+            closeConnection: { [weak self] serverID in
+                guard let coordinator = await MainActor.run(body: { self?.coordinator }) else { return }
+                await coordinator.close(serverID: serverID)
             })
     }
 

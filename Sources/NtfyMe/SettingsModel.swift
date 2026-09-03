@@ -31,6 +31,11 @@ final class SettingsModel {
     /// which `syncConnections` cannot detect because credentials live in the
     /// Keychain, not the stored record `sync()` diffs against.
     private let restartConnection: @Sendable (UUID) async -> Void
+    /// Stops one server's connection and awaits its pump before returning —
+    /// used by `removeServer` to guarantee nothing is still streaming for a
+    /// server before its row (and every message row keyed to it) is purged.
+    /// See `removeServer`'s doc comment for why the ordering matters.
+    private let closeConnection: @Sendable (UUID) async -> Void
 
     private(set) var prefs: Preferences = .default
     /// Read fresh from `SMAppService` rather than derived from
@@ -58,12 +63,14 @@ final class SettingsModel {
 
     init(store: MessageStore, preferences: PreferencesStore, keychain: KeychainStore,
          syncConnections: @escaping @Sendable () async -> Void = {},
-         restartConnection: @escaping @Sendable (UUID) async -> Void = { _ in }) {
+         restartConnection: @escaping @Sendable (UUID) async -> Void = { _ in },
+         closeConnection: @escaping @Sendable (UUID) async -> Void = { _ in }) {
         self.store = store
         self.preferences = preferences
         self.keychain = keychain
         self.syncConnections = syncConnections
         self.restartConnection = restartConnection
+        self.closeConnection = closeConnection
     }
 
     func refresh() async {
@@ -210,35 +217,39 @@ final class SettingsModel {
         }
     }
 
+    /// Close, then purge, then sync — in that order, deliberately.
+    /// `store.removeServer` purges the `Server` row and every `Message` for
+    /// it in one call, and `Message.serverID` is a bare UUID rather than a
+    /// relationship the purge could block on — so a message the connection
+    /// received *after* the purge but before it was told to stop would still
+    /// insert successfully, as an orphan row nothing could ever clean up
+    /// again (this method can no longer look the server up once its row is
+    /// gone). `closeConnection` awaits the connection's pump before
+    /// returning, which is what actually closes that window: nothing can be
+    /// mid-flight for this server once the purge below runs.
+    /// `syncConnections()` afterwards is not redundant with `closeConnection`
+    /// — it reconciles anything else that changed while this call was in
+    /// flight, the same as every other mutator in this file.
+    ///
     /// `MessageStore.removeServer` does not touch the Keychain — its doc
     /// comment is explicit that credentials are the caller's responsibility
     /// — so the explicit `keychain.delete` below is required, not optional:
     /// skipping it would leave a stale credential in the Keychain forever,
     /// keyed by a server UUID nothing can look up again.
-    ///
-    /// **Known gap, not yet fixed here:** `store.removeServer` purges the
-    /// `Server` row and every `Message` for it in one call, but the
-    /// connection is only asked to stop *after* that purge, via
-    /// `syncConnections()` below. Whatever the connection receives in that
-    /// window still inserts successfully — `Message.serverID` is a bare
-    /// UUID, not a relationship the purge would block — creating orphan
-    /// rows that keep showing up in "All Messages" and can raise
-    /// notifications, and that can never be cleaned up through this method
-    /// again because it looks the server up by an id that no longer exists.
-    /// The correct fix stops the connection *before* the purge, which needs
-    /// `ConnectionCoordinator`'s private `close(_:)` made public — requested
-    /// from its owner; not done here because that file is out of this
-    /// surface's ownership. `syncConnections()` still belongs here in the
-    /// meantime: it is what stops the leak being permanent (the previous
-    /// state — this method never called `sync()` at all) even though it
-    /// does not close the window race.
     func removeServer(_ serverID: UUID) async {
+        await closeConnection(serverID)
+
         do {
             try await store.removeServer(serverID)
         } catch {
             let ns = error as NSError
             Log.app.error("removeServer failed: \(ns.domain, privacy: .public) \(ns.code, privacy: .public)")
             errorMessage = "Couldn't remove the server: \(ns.localizedDescription)"
+            // The connection was already closed above even though the purge
+            // failed. Reopening it is `syncConnections()`'s job — the store
+            // still lists this server, so a sync resumes it rather than
+            // leaving it dark until the next relaunch.
+            await syncConnections()
             return
         }
         do {
