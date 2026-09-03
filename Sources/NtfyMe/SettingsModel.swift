@@ -170,17 +170,42 @@ final class SettingsModel {
     /// `syncConnections()` is deliberately not called here for the same
     /// reason: there is nothing for it to do.
     ///
-    /// Gated on `SettingsDefaultsKey.hasSeededDefaultServer` (see its doc
-    /// comment for why that flag, not an empty server list) rather than
-    /// firing unconditionally — called from `SettingsView`'s `.task`, so it
-    /// runs once per Settings-window open, and the flag is what keeps that
-    /// from re-adding a server the user deliberately removed.
+    /// **Two guards, not one, because they protect against two different
+    /// histories.** `SettingsDefaultsKey.hasSeededDefaultServer` (see its
+    /// doc comment) stops a re-seed after a user deliberately removes the
+    /// seeded row. The base-URL check below stops something else: an
+    /// install that already had `https://ntfy.sh` configured — added by
+    /// hand, before this method existed — where the flag has never been
+    /// set. Without it, every such install seeds a *second*
+    /// `https://ntfy.sh` row the first time this runs. That is not
+    /// cosmetic: two `Server` rows at the same base URL are two
+    /// `ServerConnection`s once a topic is added to either, so two streams,
+    /// two inserts racing on the same `uniqueKey`, and — dedup being
+    /// per-row — plausibly two notifications for every message. Compared
+    /// with a normalized form (scheme and host lowercased, no trailing
+    /// slash) so `https://ntfy.sh/` or `https://NTFY.SH` still count as
+    /// already present.
+    ///
+    /// Called from `SettingsView`'s `.task`, so this runs once per
+    /// Settings-window open — cheap enough (one `store.servers()` call) to
+    /// not bother caching that it already ran within a session.
     func seedDefaultServerIfNeeded() async {
         guard !defaults.bool(forKey: SettingsDefaultsKey.hasSeededDefaultServer) else { return }
 
+        let seedURL = URL(string: "https://ntfy.sh")!
+        let seedKey = Self.normalizedBaseURLKey(seedURL)
+
         do {
+            let existing = try await store.servers()
+            if existing.contains(where: { Self.normalizedBaseURLKey($0.baseURL) == seedKey }) {
+                // Already configured, just not by this method — most likely
+                // added by hand before this flag existed. Recorded as done
+                // without adding a duplicate.
+                defaults.set(true, forKey: SettingsDefaultsKey.hasSeededDefaultServer)
+                return
+            }
             _ = try await store.addServer(
-                name: "ntfy.sh", baseURL: URL(string: "https://ntfy.sh")!,
+                name: "ntfy.sh", baseURL: seedURL,
                 authKindRaw: SettingsCredentialKind.unauthenticated.rawValue)
         } catch {
             // Not marked seeded: a transient failure here (e.g. the store
@@ -193,6 +218,19 @@ final class SettingsModel {
 
         defaults.set(true, forKey: SettingsDefaultsKey.hasSeededDefaultServer)
         await loadServers()
+    }
+
+    /// A same-server comparison key: scheme and host lowercased, no trailing
+    /// slash. Exists solely so `seedDefaultServerIfNeeded` can recognize
+    /// `https://ntfy.sh`, `https://ntfy.sh/`, and `https://NTFY.SH` as the
+    /// same server rather than three different ones.
+    private static func normalizedBaseURLKey(_ url: URL) -> String {
+        let scheme = (url.scheme ?? "").lowercased()
+        let host = (url.host ?? "").lowercased()
+        let port = url.port.map { ":\($0)" } ?? ""
+        var path = url.path
+        while path.hasSuffix("/") { path.removeLast() }
+        return "\(scheme)://\(host)\(port)\(path)"
     }
 
     /// Adds a server and its credential together. If the credential fails to
