@@ -80,3 +80,52 @@ private func decode(_ json: String) throws -> NtfyEvent {
     #expect(e.actions?.first?.kind == nil)
     #expect(e.actions?.last?.kind == .view)
 }
+
+// MARK: - Preview text
+
+/// The History rows and the menu bar popover show a line or two of the body,
+/// and showed it verbatim — so a markdown message previewed as its own
+/// source while the detail pane beside it rendered the same message
+/// properly. See `MessageSnapshot.previewText`.
+
+private func markdownMessage(_ body: String, contentType: String? = "text/markdown") -> MessageSnapshot {
+    Message(serverID: UUID(), topic: "alerts", messageID: "m1", time: Date(),
+            title: "T", body: body, contentType: contentType).snapshot
+}
+
+@Test func previewTextStripsInlineMarkdownMarkers() {
+    // The exact body from the render that surfaced this.
+    #expect(markdownMessage("`/var` is at 96% on **db-01**.").previewText
+            == "/var is at 96% on db-01.")
+}
+
+@Test func previewTextKeepsLinkTextAndDropsTheURL() {
+    // A preview is not a place to click, so the label is what matters.
+    #expect(markdownMessage("See the [dashboard](https://example.com) for logs.").previewText
+            == "See the dashboard for logs.")
+}
+
+/// A plain-text message is returned untouched — no parse, and nothing that
+/// looks like markup in a non-markdown body gets eaten.
+@Test func previewTextLeavesANonMarkdownBodyAlone() {
+    #expect(markdownMessage("**not** markdown", contentType: nil).previewText
+            == "**not** markdown")
+    #expect(markdownMessage("cost: 100*2*3", contentType: "text/plain").previewText
+            == "cost: 100*2*3")
+}
+
+/// Block structure is deliberately left as the plain text it already reads
+/// as: putting paragraph breaks back is `HistoryDetailView.bodyText`'s job
+/// and needs run walking a two-line preview would never show.
+@Test func previewTextLeavesBlockStructureAsPlainText() {
+    let preview = markdownMessage("Build failed.\n- Exit code: 137\n- Duration: 4m12s").previewText
+    #expect(preview.contains("Exit code: 137"))
+    #expect(!preview.contains("**"))
+}
+
+/// An ntfy body is arbitrary remote input, so unparseable markdown must fall
+/// back to the raw text rather than to nothing.
+@Test func previewTextFallsBackToTheRawBody() {
+    let ragged = "unclosed [link](and **bold"
+    #expect(!markdownMessage(ragged).previewText.isEmpty)
+}

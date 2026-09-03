@@ -301,7 +301,7 @@ struct MenuBarPopoverView: View {
                 VStack(alignment: .leading, spacing: 3) {
                     if let title = message.title, !title.isEmpty {
                         titleText(title, message: message)
-                        Text(message.body)
+                        Text(message.previewText)
                             .font(.system(size: TextSize.body))
                             .foregroundStyle(.secondary)
                             .lineLimit(2)
@@ -312,7 +312,7 @@ struct MenuBarPopoverView: View {
                         // "alerts" row under the "alerts — Home Lab"
                         // header). The body becomes the one primary line
                         // instead, at the weight a title would have used.
-                        titleText(message.body, message: message)
+                        titleText(message.previewText, message: message)
                     }
                 }
                 Spacer(minLength: 4)

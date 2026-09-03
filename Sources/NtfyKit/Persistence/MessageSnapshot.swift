@@ -64,6 +64,37 @@ public struct MessageSnapshot: Sendable, Equatable, Identifiable {
     public let attachment: AttachmentSnapshot?
 
     public var isMarkdown: Bool { contentType == "text/markdown" }
+
+    /// The body as a plain-text preview, for a surface that shows a line or
+    /// two of it rather than the whole message: the History list rows and
+    /// the menu bar popover.
+    ///
+    /// Those showed `body` verbatim, so a markdown message previewed as its
+    /// own source — "`/var` is at 96% on **db-01**." backticks, asterisks
+    /// and all — while the detail pane beside it rendered the same message
+    /// properly. Found by looking at a render, not reported.
+    ///
+    /// `.inlineOnlyPreservingWhitespace` is the right interpretation for a
+    /// preview specifically: inline markup (emphasis, code spans, links) is
+    /// consumed and its markers removed, while block structure is left as
+    /// the plain text it already looks like. The full block-aware treatment
+    /// is `HistoryDetailView.bodyText`'s job, and it needs 40 lines of run
+    /// walking to put the paragraph breaks back — none of which a
+    /// two-line preview would show.
+    ///
+    /// Falls back to the raw body if the markdown will not parse, matching
+    /// `HistoryDetailView`: an ntfy message body is arbitrary remote input
+    /// (spec §9), so a publisher sending broken markdown must get plain
+    /// text rather than nothing.
+    public var previewText: String {
+        guard isMarkdown else { return body }
+        guard let attributed = try? AttributedString(
+            markdown: body,
+            options: AttributedString.MarkdownParsingOptions(
+                interpretedSyntax: .inlineOnlyPreservingWhitespace))
+        else { return body }
+        return String(attributed.characters)
+    }
     public var resolvedPriority: NtfyPriority { NtfyPriority(rawValue: priority) ?? .default }
 }
 

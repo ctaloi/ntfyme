@@ -188,7 +188,9 @@ private struct HistoryRow: View {
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                 }
-                Text(snapshot.body)
+                // `previewText`, not `body`: a markdown message previewed
+                // as its own source is the raw-markup bug this row had.
+                Text(snapshot.previewText)
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
