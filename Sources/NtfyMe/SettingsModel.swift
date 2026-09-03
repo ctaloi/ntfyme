@@ -36,6 +36,16 @@ final class SettingsModel {
     /// server before its row (and every message row keyed to it) is purged.
     /// See `removeServer`'s doc comment for why the ordering matters.
     private let closeConnection: @Sendable (UUID) async -> Void
+    /// Called after a *successful* `setAlertSettings` write (mute or
+    /// minimum-priority, both go through the same store call), so another
+    /// surface reading the same topic — the History window's sidebar dots
+    /// today — learns the write happened instead of continuing to show what
+    /// it read before. The third instance of this exact shape in this app
+    /// (the menu bar badge and the connection state both needed the same
+    /// kind of push after a write nothing downstream was told about); worth
+    /// a single change-broadcast instead of a fourth point-to-point closure
+    /// if a fifth one shows up, but not a refactor this fix is doing.
+    private let onTopicSettingsChanged: @Sendable () async -> Void
     /// Backs `SettingsDefaultsKey`-keyed reads/writes that aren't part of
     /// `Preferences` (that struct and its store are `NtfyKit`, out of this
     /// surface's ownership). Injectable rather than always `.standard` so a
@@ -104,7 +114,8 @@ final class SettingsModel {
          defaults: UserDefaults = .standard,
          attachmentsDirectory: @escaping @Sendable () -> URL? = { nil },
          notificationAuthorizationStatus: @escaping @Sendable () async -> SettingsNotificationAuthorization = { .notDetermined },
-         requestNotificationAuthorization: @escaping @Sendable () async -> Bool = { false }) {
+         requestNotificationAuthorization: @escaping @Sendable () async -> Bool = { false },
+         onTopicSettingsChanged: @escaping @Sendable () async -> Void = {}) {
         self.store = store
         self.preferences = preferences
         self.keychain = keychain
@@ -115,6 +126,7 @@ final class SettingsModel {
         self.attachmentsDirectory = attachmentsDirectory
         self.notificationAuthorizationStatus = notificationAuthorizationStatus
         self.requestNotificationAuthorization = requestNotificationAuthorization
+        self.onTopicSettingsChanged = onTopicSettingsChanged
     }
 
     func refresh() async {
@@ -481,6 +493,10 @@ final class SettingsModel {
             errorMessage = "Couldn't update the topic's alert settings."
             return
         }
+        // Only on success: a failed write has nothing for another surface
+        // to learn about. Covers both the mute path and the minimum-priority
+        // path — both go through this one store call.
+        await onTopicSettingsChanged()
         await loadServers()
     }
 

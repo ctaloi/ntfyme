@@ -180,3 +180,49 @@ private func makeModel() throws -> (store: MessageStore, model: SettingsModel) {
     #expect(didRequest)
     #expect(model.notificationAuthorization == .authorized)
 }
+
+// MARK: - Topic settings change notification
+
+/// The bug this closure exists to fix: a user muted/unmuted a topic in
+/// Settings and the History window kept showing the old state, because
+/// nothing told it the write had happened. Covers both paths that go
+/// through `setAlertSettings` — mute and minimum priority both call it.
+@MainActor @Test func setAlertSettingsNotifiesOnSuccessForBothMuteAndPriority() async throws {
+    let container = try ModelContainer(
+        for: Server.self, Subscription.self, Message.self, Attachment.self,
+        configurations: ModelConfiguration(isStoredInMemoryOnly: true))
+    let store = MessageStore(modelContainer: container)
+    let defaults = UserDefaults(suiteName: "dev.aloi.NtfyMe.modelTests.\(UUID().uuidString)")!
+    // See `enableNotificationsRequestsAndThenRefreshes` for why
+    // `nonisolated(unsafe)` is safe here: this model's calls are awaited
+    // one at a time on this same `@MainActor` test, never concurrently.
+    nonisolated(unsafe) var notifiedCount = 0
+    let model = SettingsModel(
+        store: store, preferences: PreferencesStore(defaults: defaults),
+        keychain: KeychainStore(service: "dev.aloi.NtfyMe.modelTests.\(UUID().uuidString)"),
+        defaults: defaults,
+        onTopicSettingsChanged: { notifiedCount += 1 })
+
+    let serverID = try await store.addServer(
+        name: "ntfy.sh", baseURL: URL(string: "https://ntfy.sh")!, authKindRaw: "unauthenticated")
+    try await store.addTopic("alerts", toServer: serverID)
+
+    // Success: mute.
+    await model.setAlertSettings(TopicAlertSettings(muted: true, minAlertPriority: 1),
+                                 serverID: serverID, topic: "alerts")
+    #expect(notifiedCount == 1)
+
+    // Success: minimum priority, a different field through the same call.
+    await model.setAlertSettings(TopicAlertSettings(muted: true, minAlertPriority: 4),
+                                 serverID: serverID, topic: "alerts")
+    #expect(notifiedCount == 2)
+
+    // Not tested here: the genuine-failure path (a throwing modelContext
+    // .save()). MessageStore.setAlertSettings only throws on a save
+    // failure — an unknown server or topic logs and returns instead (see
+    // its doc comment), which is not an error `SettingsModel` can
+    // distinguish from success, so it is not a useful case to assert on
+    // here. Forcing a real save failure needs the on-disk,
+    // permissions-revoked setup `MessageStoreTests.swift` already uses for
+    // exactly this reason — not worth repeating for one more call site.
+}
