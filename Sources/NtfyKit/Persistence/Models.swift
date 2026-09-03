@@ -108,7 +108,20 @@ public final class Message {
     /// successfully — instead of fetching every row into memory to filter
     /// in Swift. Not meant to be read directly by anything other than that
     /// predicate; `tags` is still the source of truth for display.
-    public var tagsJoined: String
+    ///
+    /// **The default is load-bearing and must not be removed.** This app ships
+    /// no `VersionedSchema` or `SchemaMigrationPlan`, so it relies on
+    /// lightweight migration. Adding a non-optional attribute with no default
+    /// is the canonical case lightweight migration cannot infer: Core Data
+    /// fails the store open outright with "Validation error missing attribute
+    /// values on mandatory destination attribute", `AppGraph.init()` throws,
+    /// and the user's entire archive becomes unreachable. Measured against a
+    /// store written by the previous schema with rows in it, not assumed.
+    ///
+    /// With the default, an upgraded row arrives as `""` — searchable for
+    /// nothing — and `prune`'s repair pass rewrites it from `tags` on its next
+    /// run. That repair is only reachable because the store opens at all.
+    public var tagsJoined: String = ""
     public var click: String?
     public var iconURL: String?
     public var contentType: String?
