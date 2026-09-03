@@ -43,6 +43,17 @@ final class SettingsModel {
     /// `PreferencesStore(defaults:)` and `KeychainStore(service:)` already
     /// get in every fixture in this file's test target.
     private let defaults: UserDefaults
+    /// Where downloaded attachments live — required by `MessageStore
+    /// .deleteMessages`/`.removeServer` so a deleted message's or removed
+    /// server's downloaded files are actually deleted, not merely
+    /// unreferenced. `AppGraph.attachmentsDirectory()` is the single
+    /// definition of this path, shared with `RetentionScheduler` and the
+    /// History window's Quick Look; this is threaded in rather than
+    /// recomputed locally, which is exactly the duplication a review
+    /// already collapsed once. `nil` is a legitimate result (Application
+    /// Support couldn't be resolved), not an error — see that function's
+    /// doc comment.
+    private let attachmentsDirectory: @Sendable () -> URL?
 
     private(set) var prefs: Preferences = .default
     /// Read fresh from `SMAppService` rather than derived from
@@ -72,7 +83,8 @@ final class SettingsModel {
          syncConnections: @escaping @Sendable () async -> Void = {},
          restartConnection: @escaping @Sendable (UUID) async -> Void = { _ in },
          closeConnection: @escaping @Sendable (UUID) async -> Void = { _ in },
-         defaults: UserDefaults = .standard) {
+         defaults: UserDefaults = .standard,
+         attachmentsDirectory: @escaping @Sendable () -> URL? = { nil }) {
         self.store = store
         self.preferences = preferences
         self.keychain = keychain
@@ -80,6 +92,7 @@ final class SettingsModel {
         self.restartConnection = restartConnection
         self.closeConnection = closeConnection
         self.defaults = defaults
+        self.attachmentsDirectory = attachmentsDirectory
     }
 
     func refresh() async {
@@ -257,7 +270,13 @@ final class SettingsModel {
             let ns = error as NSError
             Log.app.error("keychain save failed for server \(id.uuidString, privacy: .public): \(ns.domain, privacy: .public) \(ns.code, privacy: .public)")
             do {
-                try await store.removeServer(id)
+                // `attachmentsDirectory: nil` is correct here, not just
+                // convenient: `syncConnections()` is never called before
+                // this rollback runs, so `ConnectionCoordinator` never knew
+                // this server existed and never opened a connection for it —
+                // there is provably no message, and so no attachment file,
+                // for `id` to delete.
+                try await store.removeServer(id, attachmentsDirectory: nil)
             } catch {
                 let rollbackNS = error as NSError
                 Log.app.error("rollback removeServer failed for server \(id.uuidString, privacy: .public): \(rollbackNS.domain, privacy: .public) \(rollbackNS.code, privacy: .public)")
@@ -320,12 +339,15 @@ final class SettingsModel {
     /// comment is explicit that credentials are the caller's responsibility
     /// — so the explicit `keychain.delete` below is required, not optional:
     /// skipping it would leave a stale credential in the Keychain forever,
-    /// keyed by a server UUID nothing can look up again.
+    /// keyed by a server UUID nothing can look up again. The real
+    /// `attachmentsDirectory()` is passed for the same reason, not `nil`:
+    /// this server's messages are gone after this call, so nothing could
+    /// ever look up their downloaded attachment files again either.
     func removeServer(_ serverID: UUID) async {
         await closeConnection(serverID)
 
         do {
-            try await store.removeServer(serverID)
+            try await store.removeServer(serverID, attachmentsDirectory: attachmentsDirectory())
         } catch {
             let ns = error as NSError
             Log.app.error("removeServer failed: \(ns.domain, privacy: .public) \(ns.code, privacy: .public)")
@@ -496,12 +518,16 @@ final class SettingsModel {
     /// `removeServer` above). Always re-fetches at offset 0: each delete
     /// shrinks the table, so the next page is whatever slid into the rows
     /// just cleared, not whatever used to sit past them.
+    ///
+    /// Passes the real `attachmentsDirectory()`, not `nil`: a "clear data"
+    /// button that deletes every message row but leaves every downloaded
+    /// attachment file behind is not actually clearing the data.
     func clearAllMessages() async {
         do {
             while true {
                 let page = try await store.search(MessageQuery(limit: 500, offset: 0))
                 guard !page.isEmpty else { break }
-                try await store.deleteMessages(page.map(\.id))
+                try await store.deleteMessages(page.map(\.id), attachmentsDirectory: attachmentsDirectory())
             }
         } catch {
             let ns = error as NSError

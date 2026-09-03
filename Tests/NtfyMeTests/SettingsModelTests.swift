@@ -63,7 +63,9 @@ private func makeModel() throws -> (store: MessageStore, model: SettingsModel) {
     await model.seedDefaultServerIfNeeded()
     let servers = try await store.servers()
     let seeded = try #require(servers.first)
-    try await store.removeServer(seeded.id)
+    // nil: this fixture's ModelContainer is in-memory and never downloads
+    // an attachment, so there is provably no file for any directory to name.
+    try await store.removeServer(seeded.id, attachmentsDirectory: nil)
     #expect(try await store.servers().isEmpty)
 
     await model.seedDefaultServerIfNeeded()
