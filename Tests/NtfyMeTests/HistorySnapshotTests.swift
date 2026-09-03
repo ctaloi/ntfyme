@@ -237,17 +237,20 @@ private let minimumDistinctColors = 25
 /// back with invisible text under `.dark` before `HistoryDetailView` grew an
 /// explicit `.background(Color(nsColor: .windowBackgroundColor))`.
 ///
-/// A byte-count divergence from the light render used to be the guard here.
-/// It is not one: verified directly (`renderSnapshot(Color.clear, ...)` in
-/// light and dark) that a blank render is 38,199 bytes in *both* appearances
-/// — a completely broken render would have passed this exact assertion.
-/// Replaced with the two checks that actually distinguish "broken" from
-/// "correct": `distinctColorCount` (a broken/backgroundless dark render
-/// collapses to 1-2 colours, same as a blank one — the alpha-excluding
-/// quantisation in `SnapshotSupport.swift` is what makes that hold even
-/// though the raw bytes differ from the light render almost everywhere) and
-/// `meanLuminance` (a dark render of a *correct* view is actually dark;
-/// light-text-on-nothing is not).
+/// A light-vs-dark byte-count divergence used to be the guard here — deleted
+/// rather than tuned. The tests reviewer measured the real regression at real
+/// size and found the ordering inverted: the *buggy* render diverges from its
+/// light counterpart by more than the fixed one does (13,707 bytes vs.
+/// 2,084), so no threshold on the difference separates them; both a bare
+/// inequality and a tuned minimum pass on the bug. A luminance comparison
+/// against the light render has the same shape of risk — it is still
+/// reasoning from one render relative to another — so this only asserts
+/// things about the dark render on its own: `distinctColorCount` (a broken,
+/// backgroundless render collapses to 1-2 colours, same as a blank one — the
+/// alpha-excluding quantisation in `SnapshotSupport.swift` is what makes
+/// that hold even though the raw bytes differ from the light render almost
+/// everywhere) and `meanLuminance` being low enough that the render is
+/// actually dark, not merely different from something else.
 @MainActor
 @Test func historyDetailRichContentDarkMode() async throws {
     let fixture = try HistorySnapshotFixtures.makePopulated()
@@ -259,22 +262,12 @@ private let minimumDistinctColors = 25
 
     _ = try renderSnapshot(HistoryDetailView(viewModel: viewModel),
                            size: CGSize(width: 420, height: 900),
-                           to: "history-detail-rich-light-reference.png")
-    _ = try renderSnapshot(HistoryDetailView(viewModel: viewModel),
-                           size: CGSize(width: 420, height: 900),
                            colorScheme: .dark, to: "history-detail-rich-dark.png")
 
     let darkColors = try distinctColorCount(ofPNGAt: "/tmp/ntfyshots/history-detail-rich-dark.png")
     #expect(darkColors > minimumDistinctColors)
 
-    let lightLuminance = try meanLuminance(ofPNGAt: "/tmp/ntfyshots/history-detail-rich-light-reference.png")
     let darkLuminance = try meanLuminance(ofPNGAt: "/tmp/ntfyshots/history-detail-rich-dark.png")
-    #expect(darkLuminance < lightLuminance)
-    // Not just darker than light — actually dark. A backgroundless render
-    // (light text on the window's default light backing) can still measure
-    // darker than its light counterpart if enough of the frame is covered by
-    // dark UI chrome elsewhere, so this is the assertion that closes that
-    // gap rather than the comparison alone.
     #expect(darkLuminance < 0.5)
 }
 
