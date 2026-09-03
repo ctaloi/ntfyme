@@ -60,12 +60,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                 switch activation {
                 case .openURL(let url):
                     NSWorkspace.shared.open(url)
-                case .openHistory:
-                    // Opens the window. Scrolling to the specific message
-                    // needs a selection API `HistoryViewModel` does not expose
-                    // yet, so the message key is deliberately unused rather
-                    // than half-implemented.
-                    self?.openHistory()
+                case .openHistory(let messageKey):
+                    // Spec §6: a notification without a `click` URL opens
+                    // History *at that message*. The banner may be clicked
+                    // long after the launch that created it, so the message
+                    // may well have been pruned by then — `reveal` falls back
+                    // to the containing topic with an explanation rather than
+                    // doing nothing, which is the normal outcome here rather
+                    // than an edge case.
+                    self?.openHistory(revealing: messageKey)
                 case .perform(let action):
                     Task { await NotificationActionHandler.perform(action) }
                 }
@@ -82,6 +85,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             let menuBar = MenuBarController(dependencies: graph.menuBarDependencies())
             menuBar.onOpenHistory = { [weak self] in self?.openHistory() }
             menuBar.onOpenSettings = { [weak self] in self?.openSettings() }
+            menuBar.onOpenMessage = { [weak self] key in self?.openHistory(revealing: key) }
             self.menuBar = menuBar
 
             // Refresh as soon as a batch lands, not at the next timer tick.
@@ -112,6 +116,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     }
 
     // MARK: - Windows
+
+    /// Opens History and reveals one message — the popover's row tap and a
+    /// notification's activation both land here.
+    private func openHistory(revealing messageKey: String) {
+        guard let history else { return }
+        Task { await history.show(revealing: messageKey) }
+        activationPolicy.update()
+    }
 
     private func openHistory() {
         history?.show()
