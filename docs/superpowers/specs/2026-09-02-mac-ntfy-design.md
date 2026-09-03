@@ -372,12 +372,37 @@ An `NSWindow` hosting a three-column `NavigationSplitView`:
 - **Detail** — title, markdown body via `AttributedString(markdown:)`, priority
   pill, tag chips, timestamp, Quick Look attachment preview, and action buttons.
 
-The app runs with `.accessory` activation policy (no Dock icon) and flips to
-`.regular` while a window is open.
+**Revised 2026-09-03 — the app is native-first, the menu bar is second.**
+This section originally specified a menu-bar-first app: `LSUIElement`,
+`.accessory` activation policy, no Dock icon, with windows summoned from the
+popover. That shipped, and the user's verdict on seeing it was that it did not
+feel like a Mac app. They were right, and for a structural reason rather than a
+cosmetic one — the components were always native SwiftUI, but an accessory app
+with a popover as its primary surface is not shaped like an application, so it
+cannot feel like one.
+
+The app now launches `.regular`: Dock icon, app menu, and the History window
+opening with the app rather than waiting to be found. Closing the last window
+does **not** quit — it drops to `.accessory` and keeps receiving in the menu
+bar, because for a notification client, quitting on window-close would silently
+stop the only thing it does. Reopening from the Dock or the menu bar restores
+the window in the same process.
+
+`ActivationPolicyController` needed no change for this and only now reads
+correctly: it always computed the policy from the windows actually on screen,
+and that computation merely described an accessory app because the resting
+state was accessory. Losing the Dock icon is now the demotion rather than the
+default.
 
 ### Settings
 
-The standard SwiftUI `Settings` scene, tabbed:
+Settings is hosted by `SettingsWindowController` rather than the SwiftUI
+`Settings` scene — that scene cannot be opened from a menu-bar accessory at
+all, since `showSettingsWindow:` goes unhandled with no key window, which
+meant the app could not be configured. `NtfyMeApp` still declares the scene so
+`CommandGroup(replacing: .appSettings)` can route ⌘, to the same controller.
+
+Tabbed:
 
 - **General** — launch at login (`SMAppService.mainApp`), retention window,
   badge behavior.
