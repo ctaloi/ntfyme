@@ -13,6 +13,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     private var graph: AppGraph?
     private var menuBar: MenuBarController?
     private var history: HistoryWindowController?
+    private var settings: SettingsWindowController?
     private var onboardingWindow: NSWindow?
     private let activationPolicy = ActivationPolicyController()
     private var refreshTimer: Timer?
@@ -48,7 +49,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             let graph = try AppGraph()
             self.graph = graph
             UNUserNotificationCenter.current().delegate = graph.presenter
-            settingsModel = graph.makeSettingsModel()
+            let settingsModel = graph.makeSettingsModel()
+            self.settingsModel = settingsModel
+            settings = SettingsWindowController(model: settingsModel)
 
             // Spec §6 activation. The presenter resolves what the tap meant
             // from the notification's own payload; this decides what to do
@@ -117,17 +120,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         activationPolicy.update()
     }
 
-    /// Opens the standard SwiftUI `Settings` scene. There is no AppKit-facing
-    /// API for this, so it goes through the action the Settings scene installs
-    /// on the responder chain. The selector was renamed in macOS 14, so both
-    /// are attempted rather than assuming the newer one is present.
+    /// Opens Settings in a window this app owns — see
+    /// `SettingsWindowController` for why the standard `Settings` scene could
+    /// not be used from a menu-bar accessory.
     private func openSettings() {
-        let selectors = [Selector(("showSettingsWindow:")), Selector(("showPreferencesWindow:"))]
-        for selector in selectors where NSApp.sendAction(selector, to: nil, from: nil) {
-            activationPolicy.update()
-            return
-        }
-        Log.app.error("could not open the Settings scene: no responder handled either selector")
+        settings?.show()
+        activationPolicy.update()
     }
 
     /// The notification-permission pane (spec §6): a short explanation before
