@@ -35,15 +35,25 @@ so nothing connects until the user adds one — removes that step without
 subscribing them to anything. Requested during the first live walkthrough.
 
 
-**History window shows stale data on re-open, and never updates while open.**
-`HistoryWindowController.show()` only calls `makeKeyAndOrderFront` for an
-existing window; `loadSidebar`/`refreshMessages` run only on first creation.
-Nothing else feeds that view model — `AppDelegate`'s refresh timer updates the
-graph states and the menu bar, and `graph.onStoredBatch` updates only the menu
-bar. Close History, receive ten messages, reopen: the ten are absent until the
-user touches a filter. Fix: call both loads on every `show()`, and fan
-`onStoredBatch` out to the History controller as well.
-*Carried because the workaround — change a filter — is visible to the user.*
+**An open History message list does not show messages that arrive while it
+is open.** Mostly fixed: `HistoryWindowController.show()` now reloads on every
+call rather than only on window creation, and `StoreChangeBroadcast` fans every
+store write — configuration changes from Settings and stored message batches
+alike — out to the sidebar and the status item. What remains is the message
+list itself. It is deliberately *not* on the broadcast: `refreshMessages()`
+re-fetches from offset 0, so refreshing it on every batch would reset
+pagination to the first page under a user who had loaded more, which is a worse
+trade on every write than the staleness it fixes. A real fix merges a stored
+batch into the current page rather than re-fetching it, which is more than a
+wiring change. Workaround: any scope, filter, or window reopen reloads it.
+
+Two bugs came out of the pattern this replaced — a mute written in Settings not
+reaching the sidebar, then a topic *added* in Settings not appearing there at
+all — and the second one shipped days after the first was fixed, because the
+first fix was wired to one store method rather than to the idea of a write. If
+a surface goes stale again, the fix is one `storeChanges.observe` in
+`AppDelegate` or one `await onStoreChanged()` in the writer, not a new closure
+between the two.
 
 **Concurrent History searches can land out of order.** `HistoryViewModel`'s
 `scope.didSet`, `refreshMessages`, and the debounced text path each spawn an

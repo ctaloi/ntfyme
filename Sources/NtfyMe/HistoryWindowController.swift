@@ -29,11 +29,16 @@ final class HistoryWindowController {
         viewModel.statusProvider = provider
     }
 
+    /// Loads on every call, not only when it creates the window: the app
+    /// keeps running with no windows open (see `AppDelegate
+    /// .applicationShouldTerminateAfterLastWindowClosed`), so "close History,
+    /// receive ten messages, reopen it" was showing the ten-messages-ago
+    /// state until the user touched a filter. Reopening a window is the
+    /// clearest possible request for current data.
     func show() {
-        if openWindow() {
-            Task { await viewModel.loadSidebar() }
-            Task { await viewModel.refreshMessages() }
-        }
+        openWindow()
+        Task { await viewModel.loadSidebar() }
+        Task { await viewModel.refreshMessages() }
     }
 
     /// Shows the window (creating it if needed, bringing an existing one
@@ -49,15 +54,14 @@ final class HistoryWindowController {
     /// activating the app) can await it; a caller that only wants to fire
     /// it and move on can just wrap the call in an unawaited `Task`.
     func show(revealing messageKey: String) async {
-        if openWindow() {
-            // `reveal` does not touch the sidebar — it only widens
-            // scope/filters and loads the target message — so a fresh
-            // window still needs this once, the same as plain `show()`.
-            // Not awaited here for the same reason `show()` does not await
-            // it: the sidebar filling in a moment after the window opens is
-            // fine, and blocking the reveal on it would not be.
-            Task { await viewModel.loadSidebar() }
-        }
+        openWindow()
+        // `reveal` does not touch the sidebar — it only widens scope/filters
+        // and loads the target message — so the sidebar is loaded here, on
+        // every call for the same reason `show()` does. Not awaited, for the
+        // same reason `show()` does not: the sidebar filling in a moment
+        // after the window opens is fine, and blocking the reveal on it
+        // would not be.
+        Task { await viewModel.loadSidebar() }
         await viewModel.reveal(messageKey: messageKey)
     }
 
@@ -65,12 +69,12 @@ final class HistoryWindowController {
         window?.close()
     }
 
-    /// Reloads the sidebar's servers/topics/unread counts from the store —
-    /// the entry point for another surface (Settings, so far, via a topic
-    /// mute/priority change) to tell an already-open window "something
-    /// changed, catch up" rather than it silently going stale until its
-    /// next full `show()`. `HistoryViewModel.loadSidebar()` already does
-    /// the work; this only exposes it past `viewModel`'s own privacy.
+    /// Reloads the sidebar's servers/topics/unread counts from the store.
+    /// Registered with `StoreChangeBroadcast` by `AppDelegate`, so any write
+    /// anywhere in the app tells an already-open window "something changed,
+    /// catch up" rather than it silently going stale until its next `show()`.
+    /// `HistoryViewModel.loadSidebar()` already does the work; this only
+    /// exposes it past `viewModel`'s own privacy.
     ///
     /// Safe with no window open at all — it only refreshes `viewModel`'s
     /// own state, not `window`, so there is nothing to be a no-op *about*:
@@ -82,14 +86,13 @@ final class HistoryWindowController {
     }
 
     /// Creates the window on first call, brings an existing one forward
-    /// otherwise. Returns whether this call created it, so a caller can
-    /// decide what else a *fresh* window still needs (the sidebar's initial
-    /// load) without duplicating the window-creation code itself.
-    @discardableResult
-    private func openWindow() -> Bool {
+    /// otherwise. Used to return whether it had created one, so a caller
+    /// could load only for a fresh window; both callers now load either way,
+    /// which is the point — see `show()`.
+    private func openWindow() {
         if let window {
             window.makeKeyAndOrderFront(nil)
-            return false
+            return
         }
 
         let window = NSWindow(
@@ -106,6 +109,5 @@ final class HistoryWindowController {
         self.window = window
 
         window.makeKeyAndOrderFront(nil)
-        return true
     }
 }

@@ -16,6 +16,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     private var settings: SettingsWindowController?
     private var onboardingWindow: NSWindow?
     private let activationPolicy = ActivationPolicyController()
+    /// The one fan-out from "the store changed" to every surface displaying
+    /// it. Owned here because this is where those surfaces are created; see
+    /// `StoreChangeBroadcast` for why the point-to-point closures it replaces
+    /// kept producing the same bug.
+    private let storeChanges = StoreChangeBroadcast()
     private var refreshTimer: Timer?
 
     /// Published so the SwiftUI `Settings` scene can build its tabs once the
@@ -58,31 +63,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             self.graph = graph
             UNUserNotificationCenter.current().delegate = graph.presenter
 
-            // Built before Settings, not after, so the Settings model can be
-            // handed the History window it has to notify. Settings and
-            // History read the same topics out of the same store, and a mute
-            // or priority change made in one has to reach the other: without
-            // this the sidebar keeps drawing whatever it last read, which is
-            // the bug `SettingsModel.onTopicSettingsChanged` exists to fix.
-            // Nothing in this block needs the Settings model, so the swap
-            // costs nothing.
-            let history = HistoryWindowController(
-                store: graph.store,
-                attachmentsDirectory: AppGraph.attachmentsDirectory())
-            history.setStatusProvider { [weak graph] id in
-                graph?.historyStatus(forServer: id) ?? .unknown
-            }
-            self.history = history
-
+            // Every write Settings makes reaches the broadcast, which the
+            // observers registered below fan out to. Ordering no longer
+            // matters here — this used to have to be built after the History
+            // window so it could be handed one — because a surface registers
+            // itself whenever it happens to exist.
             let settingsModel = graph.makeSettingsModel(
-                // `weak`: this closure lives on the Settings model, which the
-                // delegate owns alongside the window controller it points at,
-                // and `refreshSidebar()` is safe with no window open — it
-                // refreshes the view model, so a later `show()` starts from
-                // current data instead of a stale flash.
-                onTopicSettingsChanged: { [weak history] in
-                    await history?.refreshSidebar()
-                })
+                onStoreChanged: { [storeChanges] in await storeChanges.post() })
             self.settingsModel = settingsModel
             settings = SettingsWindowController(model: settingsModel)
 
@@ -107,6 +94,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                 }
             }
 
+            let history = HistoryWindowController(
+                store: graph.store,
+                attachmentsDirectory: AppGraph.attachmentsDirectory())
+            history.setStatusProvider { [weak graph] id in
+                graph?.historyStatus(forServer: id) ?? .unknown
+            }
+            self.history = history
+
             let menuBar = MenuBarController(dependencies: graph.menuBarDependencies())
             menuBar.onOpenHistory = { [weak self] in self?.openHistory() }
             menuBar.onOpenSettings = { [weak self] in self?.openSettings() }
@@ -123,9 +118,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             }
             self.menuBar = menuBar
 
-            // Refresh as soon as a batch lands, not at the next timer tick.
-            graph.onStoredBatch = { [weak menuBar] in
-                Task { await menuBar?.refreshNow() }
+            // The two surfaces that display the store. Both capture weakly:
+            // the broadcast never unregisters an observer (see `observe`), so
+            // this is what makes one whose surface is gone a no-op instead of
+            // something that keeps it alive.
+            //
+            // Only the sidebar, not the message list: the sidebar is what
+            // servers, topics and unread counts live in, and it is what goes
+            // stale on a configuration change. A message list that reloads
+            // under the user resets pagination to the first page, which is a
+            // worse trade on every write than the staleness it fixes — the
+            // list already reloads on a scope or filter change, and its
+            // remaining gap (new messages not appearing in an open, untouched
+            // list) is tracked in `docs/superpowers/followups.md`.
+            storeChanges.observe { [weak history] in await history?.refreshSidebar() }
+            storeChanges.observe { [weak menuBar] in await menuBar?.refreshNow() }
+
+            // A stored batch is a store change like any other, so it goes
+            // through the same fan-out rather than its own closure to the
+            // menu bar — which is what it was before, and why a new message
+            // updated the status item but not the sidebar's unread badges.
+            graph.onStoredBatch = { [storeChanges] in
+                Task { await storeChanges.post() }
             }
 
             // The main window *is* the app now, so it opens at launch rather

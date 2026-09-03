@@ -147,7 +147,7 @@ private func makeStore(messageIsRead: Bool) throws -> (store: MessageStore, mess
     let settings = SettingsModel(
         store: store, preferences: PreferencesStore(defaults: defaults),
         keychain: KeychainStore(service: suite), defaults: defaults,
-        onTopicSettingsChanged: { await viewModel.loadSidebar() })
+        onStoreChanged: { await viewModel.loadSidebar() })
 
     let serverID = try #require(viewModel.servers.first?.id)
     await settings.setAlertSettings(TopicAlertSettings(muted: true, minAlertPriority: 1),
@@ -155,4 +155,29 @@ private func makeStore(messageIsRead: Bool) throws -> (store: MessageStore, mess
 
     // Nothing in this test reloaded the sidebar — the hook did.
     #expect(viewModel.topics.first?.muted == true)
+}
+
+/// The reported bug, from a screenshot of the running app: the sidebar listed
+/// two topics while the message list and window title showed a third the user
+/// had just added in Settings. The subscription wrote, the connection synced,
+/// the messages arrived — only the sidebar was still showing what it loaded
+/// when the window opened.
+@MainActor
+@Test func aTopicAddedInSettingsReachesAnAlreadyLoadedSidebar() async throws {
+    let (store, _) = try makeStore(messageIsRead: false)
+    let viewModel = HistoryViewModel(store: store)
+    await viewModel.loadSidebar()
+    #expect(viewModel.topics.map(\.topic) == ["alerts"])
+
+    let suite = "dev.aloi.NtfyMe.historyViewModelTests.\(UUID().uuidString)"
+    let defaults = try #require(UserDefaults(suiteName: suite))
+    let settings = SettingsModel(
+        store: store, preferences: PreferencesStore(defaults: defaults),
+        keychain: KeychainStore(service: suite), defaults: defaults,
+        onStoreChanged: { await viewModel.loadSidebar() })
+
+    let serverID = try #require(viewModel.servers.first?.id)
+    await settings.addTopic("telescope", toServer: serverID)
+
+    #expect(viewModel.topics.map(\.topic) == ["alerts", "telescope"])
 }

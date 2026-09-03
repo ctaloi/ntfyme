@@ -36,16 +36,17 @@ final class SettingsModel {
     /// server before its row (and every message row keyed to it) is purged.
     /// See `removeServer`'s doc comment for why the ordering matters.
     private let closeConnection: @Sendable (UUID) async -> Void
-    /// Called after a *successful* `setAlertSettings` write (mute or
-    /// minimum-priority, both go through the same store call), so another
-    /// surface reading the same topic — the History window's sidebar dots
-    /// today — learns the write happened instead of continuing to show what
-    /// it read before. The third instance of this exact shape in this app
-    /// (the menu bar badge and the connection state both needed the same
-    /// kind of push after a write nothing downstream was told about); worth
-    /// a single change-broadcast instead of a fourth point-to-point closure
-    /// if a fifth one shows up, but not a refactor this fix is doing.
-    private let onTopicSettingsChanged: @Sendable () async -> Void
+    /// Called after **every** successful store write this model makes, so
+    /// other surfaces displaying the same rows — the History window's
+    /// sidebar today — re-read instead of continuing to show what they read
+    /// before. Wired to `StoreChangeBroadcast.post`; see that type for why
+    /// this is one hook for all writes rather than one hook per write.
+    ///
+    /// The rule for anything added below: if it changed the store and did
+    /// not throw, it calls this. A write that failed has nothing for another
+    /// surface to learn about, and a write that succeeds silently is the bug
+    /// this exists to prevent.
+    private let onStoreChanged: @Sendable () async -> Void
     /// Backs `SettingsDefaultsKey`-keyed reads/writes that aren't part of
     /// `Preferences` (that struct and its store are `NtfyKit`, out of this
     /// surface's ownership). Injectable rather than always `.standard` so a
@@ -115,7 +116,7 @@ final class SettingsModel {
          attachmentsDirectory: @escaping @Sendable () -> URL? = { nil },
          notificationAuthorizationStatus: @escaping @Sendable () async -> SettingsNotificationAuthorization = { .notDetermined },
          requestNotificationAuthorization: @escaping @Sendable () async -> Bool = { false },
-         onTopicSettingsChanged: @escaping @Sendable () async -> Void = {}) {
+         onStoreChanged: @escaping @Sendable () async -> Void = {}) {
         self.store = store
         self.preferences = preferences
         self.keychain = keychain
@@ -126,7 +127,7 @@ final class SettingsModel {
         self.attachmentsDirectory = attachmentsDirectory
         self.notificationAuthorizationStatus = notificationAuthorizationStatus
         self.requestNotificationAuthorization = requestNotificationAuthorization
-        self.onTopicSettingsChanged = onTopicSettingsChanged
+        self.onStoreChanged = onStoreChanged
     }
 
     func refresh() async {
@@ -284,6 +285,7 @@ final class SettingsModel {
         }
 
         defaults.set(true, forKey: SettingsDefaultsKey.hasSeededDefaultServer)
+        await onStoreChanged()
         await loadServers()
     }
 
@@ -345,6 +347,7 @@ final class SettingsModel {
         // the entire fresh-install path would produce no messages, no
         // error, and no hint that a relaunch was needed.
         await syncConnections()
+        await onStoreChanged()
         await loadServers()
         return true
     }
@@ -421,6 +424,7 @@ final class SettingsModel {
             errorMessage = "The server was removed, but its saved credential could not be deleted from the Keychain."
         }
         await syncConnections()
+        await onStoreChanged()
         await loadServers()
     }
 
@@ -456,6 +460,10 @@ final class SettingsModel {
         // adding a topic to an already-connected server needs a reconnect
         // to actually start receiving it — `sync()` is what does that.
         await syncConnections()
+        // The reported bug: without this the topic is in the store, its
+        // messages arrive and are listed, and the History sidebar never
+        // shows it at all.
+        await onStoreChanged()
         await loadServers()
     }
 
@@ -481,6 +489,7 @@ final class SettingsModel {
             return
         }
         await syncConnections()
+        await onStoreChanged()
         await loadServers()
     }
 
@@ -493,10 +502,7 @@ final class SettingsModel {
             errorMessage = "Couldn't update the topic's alert settings."
             return
         }
-        // Only on success: a failed write has nothing for another surface
-        // to learn about. Covers both the mute path and the minimum-priority
-        // path — both go through this one store call.
-        await onTopicSettingsChanged()
+        await onStoreChanged()
         await loadServers()
     }
 
@@ -592,6 +598,11 @@ final class SettingsModel {
             Log.app.error("clearAllMessages failed: \(ns.domain, privacy: .public) \(ns.code, privacy: .public)")
             errorMessage = "Couldn't clear history: \(ns.localizedDescription)"
         }
+        // Outside the `do`, unlike every other write here: this loop deletes
+        // a page at a time, so a throw on the third page leaves the first two
+        // genuinely deleted. Posting only on total success would leave every
+        // other surface showing messages that are gone.
+        await onStoreChanged()
         await refreshMessageCount()
     }
 }

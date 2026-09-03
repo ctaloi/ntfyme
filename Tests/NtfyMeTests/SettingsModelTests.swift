@@ -181,12 +181,12 @@ private func makeModel() throws -> (store: MessageStore, model: SettingsModel) {
     #expect(model.notificationAuthorization == .authorized)
 }
 
-// MARK: - Topic settings change notification
+// MARK: - Store change notification
 
-/// The bug this closure exists to fix: a user muted/unmuted a topic in
-/// Settings and the History window kept showing the old state, because
-/// nothing told it the write had happened. Covers both paths that go
-/// through `setAlertSettings` — mute and minimum priority both call it.
+/// The first bug this hook fixed: a user muted/unmuted a topic in Settings
+/// and the History window kept showing the old state, because nothing told it
+/// the write had happened. Covers both paths through `setAlertSettings` —
+/// mute and minimum priority both call it.
 @MainActor @Test func setAlertSettingsNotifiesOnSuccessForBothMuteAndPriority() async throws {
     let container = try ModelContainer(
         for: Server.self, Subscription.self, Message.self, Attachment.self,
@@ -201,7 +201,7 @@ private func makeModel() throws -> (store: MessageStore, model: SettingsModel) {
         store: store, preferences: PreferencesStore(defaults: defaults),
         keychain: KeychainStore(service: "dev.aloi.NtfyMe.modelTests.\(UUID().uuidString)"),
         defaults: defaults,
-        onTopicSettingsChanged: { notifiedCount += 1 })
+        onStoreChanged: { notifiedCount += 1 })
 
     let serverID = try await store.addServer(
         name: "ntfy.sh", baseURL: URL(string: "https://ntfy.sh")!, authKindRaw: "unauthenticated")
@@ -225,4 +225,46 @@ private func makeModel() throws -> (store: MessageStore, model: SettingsModel) {
     // here. Forcing a real save failure needs the on-disk,
     // permissions-revoked setup `MessageStoreTests.swift` already uses for
     // exactly this reason — not worth repeating for one more call site.
+}
+
+/// The second bug, and the reason the hook covers *every* write rather than
+/// the one store method it started on: a topic added in Settings never
+/// appeared in the History sidebar, because `setAlertSettings` was the only
+/// path that posted. Pins each remaining write that changes what another
+/// surface displays.
+///
+/// `addServer` is deliberately absent: its success path saves a credential to
+/// the real Keychain, which no other test in this file does, and it posts
+/// from the same `await onStoreChanged()` line the others do.
+@MainActor @Test func everyTopicWriteNotifiesNotJustAlertSettings() async throws {
+    let container = try ModelContainer(
+        for: Server.self, Subscription.self, Message.self, Attachment.self,
+        configurations: ModelConfiguration(isStoredInMemoryOnly: true))
+    let store = MessageStore(modelContainer: container)
+    let defaults = UserDefaults(suiteName: "dev.aloi.NtfyMe.modelTests.\(UUID().uuidString)")!
+    // `nonisolated(unsafe)`: see the sibling test above.
+    nonisolated(unsafe) var notifiedCount = 0
+    let model = SettingsModel(
+        store: store, preferences: PreferencesStore(defaults: defaults),
+        keychain: KeychainStore(service: "dev.aloi.NtfyMe.modelTests.\(UUID().uuidString)"),
+        defaults: defaults,
+        onStoreChanged: { notifiedCount += 1 })
+
+    let serverID = try await store.addServer(
+        name: "ntfy.sh", baseURL: URL(string: "https://ntfy.sh")!, authKindRaw: "unauthenticated")
+
+    await model.addTopic("telescope", toServer: serverID)
+    #expect(notifiedCount == 1)
+    #expect(model.errorMessage == nil)
+
+    await model.removeTopic("telescope", fromServer: serverID)
+    #expect(notifiedCount == 2)
+
+    // A "clear data" that leaves other surfaces listing the messages it just
+    // deleted is the same bug pointed the other way.
+    await model.clearAllMessages()
+    #expect(notifiedCount == 3)
+
+    await model.removeServer(serverID)
+    #expect(notifiedCount == 4)
 }
