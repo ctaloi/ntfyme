@@ -165,13 +165,22 @@ private struct MessageDetailContent: View {
                 Text("·").foregroundStyle(.tertiary)
                 Text(snapshot.time, format: .dateTime.year().month().day().hour().minute())
                     .fixedSize(horizontal: true, vertical: false)
-                Spacer(minLength: 8)
+                // Inline, and named, rather than pushed to the far right by
+                // the `Spacer`. On a wide detail pane that left a lone red
+                // "!!" stranded a few hundred points from the metadata it
+                // qualifies, reading as an unrelated warning about the
+                // window rather than as this message's priority. The list
+                // row keeps the bare symbol — there is no room for a word
+                // there, and the row is scanned rather than read.
                 if snapshot.priority >= NtfyPriority.high.rawValue {
-                    Image(systemName: "exclamationmark.2")
-                        .font(.system(size: 10, weight: .bold))
+                    Text("·").foregroundStyle(.tertiary)
+                    Label(snapshot.resolvedPriority.label, systemImage: "exclamationmark.2")
+                        .font(.system(size: 11, weight: .medium))
                         .foregroundStyle(snapshot.priority >= NtfyPriority.max.rawValue ? .red : .orange)
+                        .fixedSize(horizontal: true, vertical: false)
                         .accessibilityLabel(Text("Priority: \(snapshot.resolvedPriority.label)"))
                 }
+                Spacer(minLength: 8)
             }
             .font(.system(size: 11))
             .foregroundStyle(.secondary)

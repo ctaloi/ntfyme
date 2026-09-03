@@ -300,7 +300,10 @@ struct MenuBarPopoverView: View {
                     .padding(.top, 6)
                 VStack(alignment: .leading, spacing: 3) {
                     if let title = message.title, !title.isEmpty {
-                        titleText(title, message: message)
+                        // Same `NtfyEmoji.prefixed` the History row and the
+                        // notification banner use, so one message does not
+                        // read three different ways across three surfaces.
+                        titleText(NtfyEmoji.prefixed(title, tags: message.tags), message: message)
                         Text(message.previewText)
                             .font(.system(size: TextSize.body))
                             .foregroundStyle(.secondary)
@@ -312,7 +315,8 @@ struct MenuBarPopoverView: View {
                         // "alerts" row under the "alerts — Home Lab"
                         // header). The body becomes the one primary line
                         // instead, at the weight a title would have used.
-                        titleText(message.previewText, message: message)
+                        titleText(NtfyEmoji.prefixed(message.previewText, tags: message.tags),
+                                  message: message)
                     }
                 }
                 Spacer(minLength: 4)

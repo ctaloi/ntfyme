@@ -24,8 +24,14 @@ struct HistorySidebarView: View {
                     .tag(HistoryScope.all)
                     .accessibilityLabel(Text("All Messages, \(viewModel.allUnreadCount) unread"))
 
+                // No badge, deliberately, where "All Messages" above has
+                // one: both were showing `allUnreadCount`, so the sidebar
+                // displayed the same number twice in adjacent rows. On the
+                // Unread view the badge is also the length of the list the
+                // user is looking at, which is the least useful place to
+                // put a count. The accessibility label still says it, since
+                // a screen reader cannot see the list.
                 Label("Unread", systemImage: "circle.inset.filled")
-                    .badge(viewModel.allUnreadCount)
                     .tag(HistoryScope.unread)
                     .accessibilityLabel(Text("Unread, \(viewModel.allUnreadCount) messages"))
             }

@@ -184,9 +184,13 @@ private struct HistoryRow: View {
                         .font(.system(size: 13, weight: snapshot.isRead ? .regular : .semibold))
                         .lineLimit(1)
                     Spacer(minLength: 8)
-                    Text(snapshot.time, style: .time)
+                    // `MessageTimestamp`, not `style: .time`: a bare clock
+                    // time made a message from last Tuesday and one from
+                    // four minutes ago look identical.
+                    Text(MessageTimestamp.text(for: snapshot.time))
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
+                        .monospacedDigit()
                 }
                 // `previewText`, not `body`: a markdown message previewed
                 // as its own source is the raw-markup bug this row had.

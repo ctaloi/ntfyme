@@ -10,6 +10,25 @@ import NtfyKit
 /// different name, and two layout vocabularies in one app is how surfaces
 /// start looking like they came from different applications.
 struct ComposeView: View {
+    /// One width for every labelled control, so their trailing edges line
+    /// up in a column instead of each ending wherever its own intrinsic
+    /// width happens to fall. `SettingsRow` pushes its content right with a
+    /// `Spacer`, so equal widths are all it takes — the first render of this
+    /// window had the server picker ending 115pt short of the tag field,
+    /// which reads as carelessness even when nothing is functionally wrong.
+    ///
+    /// A fixed width rather than `maxWidth`: a `Picker` given `maxWidth`
+    /// takes its own smaller ideal width and leaves the rest of the frame
+    /// empty, which is exactly how the edges came to disagree.
+    ///
+    /// The pickers additionally need `alignment: .trailing`, because a
+    /// `Picker` does not stretch to fill a fixed frame either — it centres
+    /// its intrinsic width inside it, which left both popup buttons ending
+    /// ~150pt short of the text fields in the second render. A popup button
+    /// narrower than a text field is normal on macOS; one that stops in a
+    /// different place from every other control is not.
+    private static let controlWidth: CGFloat = 260
+
     @Bindable var model: ComposeModel
     /// Called when a send succeeds and the window should get out of the way.
     /// Injected rather than reaching for the window: this view has no
@@ -44,14 +63,13 @@ struct ComposeView: View {
                     }
                 }
                 .labelsHidden()
-                .frame(maxWidth: 220)
+                .frame(width: Self.controlWidth, alignment: .trailing)
             }
 
             SettingsRow(label: "Topic") {
                 HStack(spacing: 6) {
                     TextField("topic-name", text: $model.draft.topic)
                         .textFieldStyle(.roundedBorder)
-                        .frame(maxWidth: 180)
                     // Subscribed topics as suggestions. Absent entirely
                     // when there are none, rather than an empty menu the
                     // user can open and learn nothing from.
@@ -63,14 +81,20 @@ struct ComposeView: View {
                         } label: {
                             Image(systemName: "chevron.down")
                         }
+                        // `.borderlessButton` draws its own disclosure
+                        // chevron, so the `Image` above made two of them
+                        // side by side — visible in the first render of
+                        // this window.
+                        .menuIndicator(.hidden)
                         .menuStyle(.borderlessButton)
                         .fixedSize()
                         .accessibilityLabel(Text("Choose a subscribed topic"))
                     }
                 }
+                .frame(width: Self.controlWidth)
             }
 
-            SettingsFootnote("You can publish to any topic, not just the ones you subscribe to. On ntfy.sh a topic name is effectively a password — anyone who knows it can read and publish to it.")
+            SettingsFootnote("Any topic, not only the ones you subscribe to. On ntfy.sh a topic name is effectively a password.")
         }
     }
 
@@ -98,19 +122,19 @@ struct ComposeView: View {
                     }
                 }
                 .labelsHidden()
-                .frame(maxWidth: 160)
+                .frame(width: Self.controlWidth, alignment: .trailing)
             }
 
             SettingsRow(label: "Tags") {
                 TextField("warning, skull", text: $model.tagText)
                     .textFieldStyle(.roundedBorder)
-                    .frame(maxWidth: 220)
+                    .frame(width: Self.controlWidth)
             }
 
             // Emoji tags are the same convention the receive side renders
             // (see `NtfyEmoji`), so say so here rather than leaving the user
             // to discover that some tags become pictures.
-            SettingsFootnote("Comma-separated. A tag that names an emoji — warning, rocket, skull — is shown as that emoji.")
+            SettingsFootnote("Comma-separated. A tag naming an emoji — warning, rocket, skull — is shown as that emoji.")
         }
     }
 
