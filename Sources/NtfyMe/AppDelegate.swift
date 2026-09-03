@@ -57,7 +57,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             let graph = try AppGraph()
             self.graph = graph
             UNUserNotificationCenter.current().delegate = graph.presenter
-            let settingsModel = graph.makeSettingsModel()
+
+            // Built before Settings, not after, so the Settings model can be
+            // handed the History window it has to notify. Settings and
+            // History read the same topics out of the same store, and a mute
+            // or priority change made in one has to reach the other: without
+            // this the sidebar keeps drawing whatever it last read, which is
+            // the bug `SettingsModel.onTopicSettingsChanged` exists to fix.
+            // Nothing in this block needs the Settings model, so the swap
+            // costs nothing.
+            let history = HistoryWindowController(
+                store: graph.store,
+                attachmentsDirectory: AppGraph.attachmentsDirectory())
+            history.setStatusProvider { [weak graph] id in
+                graph?.historyStatus(forServer: id) ?? .unknown
+            }
+            self.history = history
+
+            let settingsModel = graph.makeSettingsModel(
+                // `weak`: this closure lives on the Settings model, which the
+                // delegate owns alongside the window controller it points at,
+                // and `refreshSidebar()` is safe with no window open — it
+                // refreshes the view model, so a later `show()` starts from
+                // current data instead of a stale flash.
+                onTopicSettingsChanged: { [weak history] in
+                    await history?.refreshSidebar()
+                })
             self.settingsModel = settingsModel
             settings = SettingsWindowController(model: settingsModel)
 
@@ -81,14 +106,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                     Task { await NotificationActionHandler.perform(action) }
                 }
             }
-
-            let history = HistoryWindowController(
-                store: graph.store,
-                attachmentsDirectory: AppGraph.attachmentsDirectory())
-            history.setStatusProvider { [weak graph] id in
-                graph?.historyStatus(forServer: id) ?? .unknown
-            }
-            self.history = history
 
             let menuBar = MenuBarController(dependencies: graph.menuBarDependencies())
             menuBar.onOpenHistory = { [weak self] in self?.openHistory() }

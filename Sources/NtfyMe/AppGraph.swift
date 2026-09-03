@@ -257,7 +257,18 @@ final class AppGraph {
     /// `coordinator` may still be `nil` here — `SettingsModel` is constructed
     /// before `start()` runs — so all three no-op rather than crash when
     /// there is nothing live to sync, restart, or close yet.
-    func makeSettingsModel() -> SettingsModel {
+    ///
+    /// - Parameter onTopicSettingsChanged: forwarded to `SettingsModel`'s
+    ///   hook of the same name, which fires after a successful topic
+    ///   mute/priority write so another surface showing that topic can catch
+    ///   up. Required rather than defaulted: the graph cannot supply it —
+    ///   the surface that needs telling is the History window, which the app
+    ///   delegate owns, not this graph — and the bug it fixes was precisely
+    ///   this hook existing with nothing on the other end of it, which a
+    ///   default `{}` here would let happen again silently.
+    func makeSettingsModel(
+        onTopicSettingsChanged: @escaping @Sendable () async -> Void
+    ) -> SettingsModel {
         SettingsModel(
             store: store, preferences: preferences, keychain: keychain,
             syncConnections: { [weak self] in
@@ -283,7 +294,8 @@ final class AppGraph {
             },
             requestNotificationAuthorization: { [presenter] in
                 await presenter.requestAuthorization()
-            })
+            },
+            onTopicSettingsChanged: onTopicSettingsChanged)
     }
 
 

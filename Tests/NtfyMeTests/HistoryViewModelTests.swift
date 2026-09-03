@@ -118,3 +118,41 @@ private func makeStore(messageIsRead: Bool) throws -> (store: MessageStore, mess
         unreadOnly: false, now: Date(), limit: 10, offset: 0)
     #expect(!query.unreadOnly)
 }
+
+// MARK: - Cross-surface refresh
+
+/// The receiving end of the mute bug. `SettingsModelTests` pins that
+/// `onTopicSettingsChanged` fires after a successful write; this pins what
+/// the hook is *for* — a sidebar that has already loaded shows the new state
+/// afterwards instead of the state it read before the write, which is the
+/// stale bell-slash the user reported.
+///
+/// The closure is the same one line `AppDelegate` hands to
+/// `AppGraph.makeSettingsModel(onTopicSettingsChanged:)`, standing in for
+/// its `HistoryWindowController.refreshSidebar()`: that controller keeps its
+/// view model private, so asserting through it would mean opening an
+/// `NSWindow` this test has no use for.
+@MainActor
+@Test func aMuteWrittenInSettingsReachesAnAlreadyLoadedSidebar() async throws {
+    let (store, _) = try makeStore(messageIsRead: false)
+    let viewModel = HistoryViewModel(store: store)
+    await viewModel.loadSidebar()
+    #expect(viewModel.topics.count == 1)
+    #expect(viewModel.topics.first?.muted == false)
+
+    // Unique per run for both, so a leftover suite or Keychain item from an
+    // earlier run cannot decide this test — matching `SettingsModelTests`.
+    let suite = "dev.aloi.NtfyMe.historyViewModelTests.\(UUID().uuidString)"
+    let defaults = try #require(UserDefaults(suiteName: suite))
+    let settings = SettingsModel(
+        store: store, preferences: PreferencesStore(defaults: defaults),
+        keychain: KeychainStore(service: suite), defaults: defaults,
+        onTopicSettingsChanged: { await viewModel.loadSidebar() })
+
+    let serverID = try #require(viewModel.servers.first?.id)
+    await settings.setAlertSettings(TopicAlertSettings(muted: true, minAlertPriority: 1),
+                                    serverID: serverID, topic: "alerts")
+
+    // Nothing in this test reloaded the sidebar — the hook did.
+    #expect(viewModel.topics.first?.muted == true)
+}
