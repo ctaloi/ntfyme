@@ -44,10 +44,29 @@ private let opaqueThreshold = 0.9
 /// The appearance check, kept alongside the opacity one because they fail for
 /// different reasons: a pane could paint an opaque ground of entirely the
 /// wrong colour and satisfy the alpha assertion.
+///
+/// **Renders its own images rather than reading the other test's.** An
+/// earlier version read the two PNGs written by
+/// `theOnboardingPanePaintsItsOwnBackground`, which passed locally only
+/// because previous runs had left those files on disk. On a clean machine
+/// the two tests run in parallel and this one raced the writer: CI failed
+/// with `couldNotAllocateBitmap` because the file did not exist yet. A test
+/// that depends on another test's side effects is not a test of anything in
+/// particular.
 @MainActor @Test(requiresSnapshotRendering) func theOnboardingPaneHonoursTheAppearance() throws {
-    let light = try meanLuminance(ofPNGAt: "/tmp/ntfyshots/onboarding-light.png")
-    let dark = try meanLuminance(ofPNGAt: "/tmp/ntfyshots/onboarding-dark.png")
-    #expect(light > 0.5, "onboarding-light.png mean luminance \(light) — expected a light surface.")
-    #expect(dark < 0.5, "onboarding-dark.png mean luminance \(dark) — expected a dark surface.")
+    let pane = OnboardingView(onRequestAuthorization: { true }, onFinish: {}, onSkip: {})
+    let size = CGSize(width: 420, height: 340)
+
+    // Distinct filenames from the other test's, so neither can overwrite the
+    // other's artifact mid-read now that assertions read back off disk.
+    _ = try renderSnapshot(pane, size: size, colorScheme: .light,
+                           to: "onboarding-appearance-light.png")
+    _ = try renderSnapshot(pane, size: size, colorScheme: .dark,
+                           to: "onboarding-appearance-dark.png")
+
+    let light = try meanLuminance(ofPNGAt: "/tmp/ntfyshots/onboarding-appearance-light.png")
+    let dark = try meanLuminance(ofPNGAt: "/tmp/ntfyshots/onboarding-appearance-dark.png")
+    #expect(light > 0.5, "onboarding-appearance-light.png mean luminance \(light) — expected a light surface.")
+    #expect(dark < 0.5, "onboarding-appearance-dark.png mean luminance \(dark) — expected a dark surface.")
     #expect(light > dark)
 }
