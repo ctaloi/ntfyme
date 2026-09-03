@@ -40,6 +40,11 @@ public actor ConnectionCoordinator {
     private struct Live {
         let connection: ServerConnection
         let pump: Task<Void, Never>
+        /// The topic set this connection was opened with. `sync` compares
+        /// against the stored set to decide whether a restart is needed —
+        /// a subscription is fixed at connect time, so adding a topic means
+        /// reconnecting, not mutating a live stream.
+        let topics: [String]
     }
 
     private let store: MessageStore
@@ -49,6 +54,19 @@ public actor ConnectionCoordinator {
     private let ingest: Ingest
 
     private var live: [UUID: Live] = [:]
+    /// Set for the whole of `stop()`. `open` and `sync` check it so a
+    /// reconnect that lands mid-teardown cannot resurrect a connection that
+    /// `stop()` has already walked past — which previously left a socket
+    /// streaming with no pump and no owner, and could make `stop()` await a
+    /// pump that was never cancelled and so never returns.
+    private var isStopping = false
+    /// `NWPathMonitor` reports the *current* path as soon as it starts, not
+    /// only transitions. Without this, every launch immediately called
+    /// `reconnectAll()` and tore down the connections `start()` had just
+    /// opened, re-requesting each replay window a second time. The first
+    /// delivery is the initial state and is ignored; every later one is a
+    /// real change.
+    private var hasSeenInitialPath = false
 
     public init(store: MessageStore, keychain: KeychainStore,
                 client: any StreamClient, pathMonitor: any PathMonitoring,
@@ -68,6 +86,14 @@ public actor ConnectionCoordinator {
     }
 
     public func start() async {
+        // Started before the store is read, not after. A transient failure
+        // loading servers used to return early and leave the monitor never
+        // started, so the process stayed deaf to network recovery for its
+        // entire lifetime with only a log line to say so (spec §10).
+        pathMonitor.start { [weak self] in
+            await self?.handlePathSatisfied()
+        }
+
         let snapshots: [ServerRecordSnapshot]
         do {
             snapshots = try await store.servers()
@@ -80,14 +106,83 @@ public actor ConnectionCoordinator {
         for snapshot in snapshots where !snapshot.topics.isEmpty {
             await open(snapshot)
         }
+    }
 
-        pathMonitor.start { [weak self] in
-            await self?.reconnectAll()
+    /// The path monitor reports current state on start as well as changes, so
+    /// the first callback is swallowed. See `hasSeenInitialPath`.
+    private func handlePathSatisfied() async {
+        guard hasSeenInitialPath else {
+            hasSeenInitialPath = true
+            return
+        }
+        await reconnectAll()
+    }
+
+    /// Brings live connections into line with what the store now holds:
+    /// opens servers that appeared, stops ones that were removed or had their
+    /// last topic removed, and restarts any whose topic set changed.
+    ///
+    /// This exists because a subscription is fixed when the stream is opened.
+    /// Without it, a server or topic added through the app's own Settings
+    /// never connected until the next launch — the entire first-run path
+    /// produced no messages, no error, and no hint that a relaunch was
+    /// needed. Call it after any change to the stored server list.
+    public func sync() async {
+        guard !isStopping else { return }
+
+        let snapshots: [ServerRecordSnapshot]
+        do {
+            snapshots = try await store.servers()
+        } catch {
+            let ns = error as NSError
+            Log.connection.error("sync could not load servers: \(ns.domain, privacy: .public) \(ns.code, privacy: .public)")
+            return
+        }
+
+        let wanted = Dictionary(uniqueKeysWithValues:
+            snapshots.filter { !$0.topics.isEmpty }.map { ($0.id, $0) })
+
+        // Gone, or down to no topics: stop and forget.
+        for id in live.keys where wanted[id] == nil {
+            await close(id)
+        }
+
+        for (id, snapshot) in wanted {
+            if let entry = live[id] {
+                // A live connection's subscription cannot be edited in place.
+                if entry.topics != snapshot.topics {
+                    await close(id)
+                    await open(snapshot)
+                }
+            } else {
+                await open(snapshot)
+            }
         }
     }
 
+    /// Drops and reopens one server's connection — for a credential change,
+    /// which `sync` cannot detect because credentials live in the Keychain
+    /// rather than in the stored record it diffs.
+    public func restart(serverID: UUID) async {
+        guard !isStopping else { return }
+        await close(serverID)
+        guard let snapshot = try? await store.servers().first(where: { $0.id == serverID }),
+              !snapshot.topics.isEmpty else { return }
+        await open(snapshot)
+    }
+
+    /// Stops one connection and awaits its pump, so anything already received
+    /// is durably written before the entry is dropped — the same contract
+    /// `stop()` gives for all of them.
+    private func close(_ id: UUID) async {
+        guard let entry = live.removeValue(forKey: id) else { return }
+        entry.pump.cancel()
+        await entry.connection.stop()
+        await entry.pump.value
+    }
+
     private func open(_ snapshot: ServerRecordSnapshot) async {
-        guard live[snapshot.id] == nil else { return }
+        guard !isStopping, live[snapshot.id] == nil else { return }
 
         let credential: AuthCredential
         do {
@@ -109,7 +204,7 @@ public actor ConnectionCoordinator {
 
         let pump = await ingest.attach(connection, serverID: snapshot.id)
         await connection.start()
-        live[snapshot.id] = Live(connection: connection, pump: pump)
+        live[snapshot.id] = Live(connection: connection, pump: pump, topics: snapshot.topics)
     }
 
     /// Called on wake from sleep and when the network path becomes satisfied.
@@ -165,12 +260,21 @@ public actor ConnectionCoordinator {
     /// pump and stopping its connection is strictly harder to get wrong
     /// than leaving it open on purpose.
     public func stop() async {
+        isStopping = true
         pathMonitor.cancel()
-        for entry in live.values {
+        // Snapshotted before the first pass. Each `await` below suspends this
+        // actor, and an entry added during one of those suspensions would be
+        // missed by the first pass but reached by the second — leaving `stop()`
+        // awaiting a pump that was never cancelled, which only returns on
+        // cancellation. That is an app that cannot quit. `isStopping` prevents
+        // the insertion; iterating the snapshot means the two passes cover
+        // exactly the same entries even if it did not.
+        let entries = Array(live.values)
+        for entry in entries {
             entry.pump.cancel()
             await entry.connection.stop()
         }
-        for entry in live.values {
+        for entry in entries {
             await entry.pump.value
         }
         live.removeAll()
