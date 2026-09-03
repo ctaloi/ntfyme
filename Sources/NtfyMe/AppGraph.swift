@@ -219,11 +219,27 @@ final class AppGraph {
 
     private var lastKnownStates: [UUID: ConnectionState] = [:]
 
-    /// Settings owns its own model; the graph supplies the three collaborators
-    /// it needs so Settings and the running connections share one store,
-    /// one preferences file and one Keychain service.
+    /// Settings owns its own model; the graph supplies the collaborators it
+    /// needs so Settings and the running connections share one store, one
+    /// preferences file and one Keychain service — and so a server/topic
+    /// change made in Settings actually connects instead of waiting for a
+    /// relaunch (spec-adjacent fix; see `ConnectionCoordinator.sync`'s doc
+    /// comment). `[weak self]`, matching the `Ingest` stored-batch hook in
+    /// `start()`: this closure must not be what keeps the graph alive.
+    /// `coordinator` may still be `nil` here — `SettingsModel` is constructed
+    /// before `start()` runs — so both closures no-op rather than crash when
+    /// there is nothing live to sync or restart yet.
     func makeSettingsModel() -> SettingsModel {
-        SettingsModel(store: store, preferences: preferences, keychain: keychain)
+        SettingsModel(
+            store: store, preferences: preferences, keychain: keychain,
+            syncConnections: { [weak self] in
+                guard let coordinator = await MainActor.run(body: { self?.coordinator }) else { return }
+                await coordinator.sync()
+            },
+            restartConnection: { [weak self] serverID in
+                guard let coordinator = await MainActor.run(body: { self?.coordinator }) else { return }
+                await coordinator.restart(serverID: serverID)
+            })
     }
 
 

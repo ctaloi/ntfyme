@@ -21,6 +21,16 @@ final class SettingsModel {
     private let store: MessageStore
     private let preferences: PreferencesStore
     private let keychain: KeychainStore
+    /// Brings live connections into line with the store after a server or
+    /// topic change — see `ConnectionCoordinator.sync`'s doc comment for why
+    /// this is required at all: a subscription is fixed when a connection
+    /// opens, so without this a server or topic added here never connects
+    /// until the next relaunch.
+    private let syncConnections: @Sendable () async -> Void
+    /// Drops and reopens one server's connection — for a credential change,
+    /// which `syncConnections` cannot detect because credentials live in the
+    /// Keychain, not the stored record `sync()` diffs against.
+    private let restartConnection: @Sendable (UUID) async -> Void
 
     private(set) var prefs: Preferences = .default
     /// Read fresh from `SMAppService` rather than derived from
@@ -46,10 +56,14 @@ final class SettingsModel {
     /// description, a hostname, or a topic.
     var errorMessage: String?
 
-    init(store: MessageStore, preferences: PreferencesStore, keychain: KeychainStore) {
+    init(store: MessageStore, preferences: PreferencesStore, keychain: KeychainStore,
+         syncConnections: @escaping @Sendable () async -> Void = {},
+         restartConnection: @escaping @Sendable (UUID) async -> Void = { _ in }) {
         self.store = store
         self.preferences = preferences
         self.keychain = keychain
+        self.syncConnections = syncConnections
+        self.restartConnection = restartConnection
     }
 
     func refresh() async {
@@ -160,6 +174,12 @@ final class SettingsModel {
             return false
         }
 
+        // A subscription is fixed when a connection opens (see
+        // `ConnectionCoordinator.sync`'s doc comment), so without this the
+        // server just added would never connect until the next relaunch —
+        // the entire fresh-install path would produce no messages, no
+        // error, and no hint that a relaunch was needed.
+        await syncConnections()
         await loadServers()
         return true
     }
@@ -175,6 +195,12 @@ final class SettingsModel {
     func updateCredential(serverID: UUID, credential: AuthCredential) async -> Bool {
         do {
             try keychain.save(credential, forServer: serverID)
+            // Not `syncConnections()`: the stored `Server` record is
+            // unchanged by a credential rotation, so `sync()` would
+            // correctly see nothing to diff and the live connection would
+            // keep using the old credential until a relaunch. `restart`
+            // exists specifically for this — it re-reads the Keychain.
+            await restartConnection(serverID)
             return true
         } catch {
             let ns = error as NSError
@@ -189,6 +215,23 @@ final class SettingsModel {
     /// — so the explicit `keychain.delete` below is required, not optional:
     /// skipping it would leave a stale credential in the Keychain forever,
     /// keyed by a server UUID nothing can look up again.
+    ///
+    /// **Known gap, not yet fixed here:** `store.removeServer` purges the
+    /// `Server` row and every `Message` for it in one call, but the
+    /// connection is only asked to stop *after* that purge, via
+    /// `syncConnections()` below. Whatever the connection receives in that
+    /// window still inserts successfully — `Message.serverID` is a bare
+    /// UUID, not a relationship the purge would block — creating orphan
+    /// rows that keep showing up in "All Messages" and can raise
+    /// notifications, and that can never be cleaned up through this method
+    /// again because it looks the server up by an id that no longer exists.
+    /// The correct fix stops the connection *before* the purge, which needs
+    /// `ConnectionCoordinator`'s private `close(_:)` made public — requested
+    /// from its owner; not done here because that file is out of this
+    /// surface's ownership. `syncConnections()` still belongs here in the
+    /// meantime: it is what stops the leak being permanent (the previous
+    /// state — this method never called `sync()` at all) even though it
+    /// does not close the window race.
     func removeServer(_ serverID: UUID) async {
         do {
             try await store.removeServer(serverID)
@@ -205,6 +248,7 @@ final class SettingsModel {
             Log.app.error("keychain delete failed for server \(serverID.uuidString, privacy: .public): \(ns.domain, privacy: .public) \(ns.code, privacy: .public)")
             errorMessage = "The server was removed, but its saved credential could not be deleted from the Keychain."
         }
+        await syncConnections()
         await loadServers()
     }
 
@@ -236,6 +280,10 @@ final class SettingsModel {
             Log.app.error("seeding default alert priority failed: \(ns.domain, privacy: .public) \(ns.code, privacy: .public)")
         }
 
+        // A live connection's subscription is fixed at connect time, so
+        // adding a topic to an already-connected server needs a reconnect
+        // to actually start receiving it — `sync()` is what does that.
+        await syncConnections()
         await loadServers()
     }
 
@@ -260,6 +308,7 @@ final class SettingsModel {
             errorMessage = "Couldn't remove the topic: \(ns.localizedDescription)"
             return
         }
+        await syncConnections()
         await loadServers()
     }
 
