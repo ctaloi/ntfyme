@@ -55,6 +55,30 @@ a surface goes stale again, the fix is one `storeChanges.observe` in
 `AppDelegate` or one `await onStoreChanged()` in the writer, not a new closure
 between the two.
 
+**A message icon's download is unbounded.** The detail pane renders
+`MessageSnapshot.iconURL` with `AsyncImage`, which puts no cap on the
+response size, so a publisher can point `icon` at an arbitrarily large file
+and this app will pull all of it. The URL is scheme-gated
+(`NtfyURLPolicy.sanitized`, http/https only) and the fetch happens only for a
+message the user actually opened, so the exposure is bounded in every
+dimension but bytes. Fixing it means a `URLSession` of our own with a size
+limit and a small image cache instead of `AsyncImage` — worth doing alongside
+the next piece of icon work, not as part of a display fix.
+
+**A message icon is not shown in the notification banner.** ntfy's clients
+put it there. `UNNotificationAttachment` needs the file on disk before the
+banner is scheduled, which means routing the icon through `AttachmentFetcher`
+and holding the notification until it lands — a real change to the ingest
+path, not a display change. The icon shows in the detail pane today.
+
+**Publishing a message notifies you about your own message.** Once
+publishing lands (`docs/superpowers/specs/2026-09-03-ntfyme-publish-design.md`),
+a message sent to a subscribed topic echoes back down the open stream and
+`NotificationDecision` has no idea it originated here. Accepted deliberately
+in that design rather than built on spec; the fix is scoped there — ntfy's
+publish response carries the created message's `id`, so the router can be
+told to skip exactly that one.
+
 **Concurrent History searches can land out of order.** `HistoryViewModel`'s
 `scope.didSet`, `refreshMessages`, and the debounced text path each spawn an
 independent `store.search` with nothing sequencing them or discarding a

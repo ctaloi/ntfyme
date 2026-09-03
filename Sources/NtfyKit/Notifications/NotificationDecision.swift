@@ -81,9 +81,7 @@ public enum NotificationDecision: Sendable, Equatable {
         return .present(NotificationRequest(
             identifier: "\(serverID.uuidString)/\(event.topic)/\(event.id)",
             threadIdentifier: "\(serverID.uuidString)/\(event.topic)",
-            // A message with no title still needs one; the topic is the most
-            // useful thing the user could see there.
-            title: event.title ?? event.topic,
+            title: emojiPrefixedTitle(for: event),
             body: event.message ?? "",
             interruption: interruption(for: priority),
             playsSound: priority.rawValue >= NtfyPriority.default.rawValue,
@@ -91,6 +89,20 @@ public enum NotificationDecision: Sendable, Equatable {
             actions: actions,
             clickURL: NtfyURLPolicy.sanitized(event.click),
             attachmentURL: event.attachment.flatMap { NtfyURLPolicy.sanitized($0.url) }))
+    }
+
+    /// The banner's title: the message's emoji tags, then its title.
+    ///
+    /// ntfy's clients render a tag that names an emoji *as* that emoji and
+    /// prepend it to the title (see `NtfyEmoji`); this app ignored `tags`
+    /// entirely when building a banner, so a message whose tags carried part
+    /// of its meaning arrived without it.
+    ///
+    /// A message with no title still needs one, and the topic is the most
+    /// useful thing the user could see there — the emoji lead that fallback
+    /// too, since it is the title as far as the banner is concerned.
+    private static func emojiPrefixedTitle(for event: NtfyEvent) -> String {
+        NtfyEmoji.prefixed(event.title ?? event.topic, tags: event.tags ?? [])
     }
 
     private static func interruption(for priority: NtfyPriority) -> NotificationInterruption {

@@ -97,6 +97,55 @@ private struct MessageDetailContent: View {
     /// replacing the old two-line header where the title's own row also
     /// carried a `PriorityPill` at the trailing edge.
     private var header: some View {
+        HStack(alignment: .top, spacing: 12) {
+            iconImage
+            titleAndMetadata
+        }
+    }
+
+    /// ntfy's `icon` field: a URL to an image the publisher wants shown with
+    /// the message. It has been decoded (`NtfyEvent.icon`), persisted
+    /// (`Models.swift`) and carried into `MessageSnapshot.iconURL` since the
+    /// first version of this app, and displayed nowhere — this is the first
+    /// place it is drawn.
+    ///
+    /// Through `NtfyURLPolicy.sanitized`, like every other URL that arrives
+    /// in a message: an icon URL is attacker-controlled (spec §9), and this
+    /// is the app's one scheme allow-list.
+    ///
+    /// Two known limits, both deliberate:
+    ///
+    /// - Loading it is a read receipt. Fetching a remote image tells whoever
+    ///   published the message that this message was opened, exactly like a
+    ///   tracking pixel in an email. It loads anyway — every ntfy client
+    ///   does, and the user chose to subscribe to the topic — but it loads
+    ///   *here*, in the detail pane, and not in the list row: a row-level
+    ///   icon would fetch for all 200 loaded messages, turning "the one I
+    ///   opened" into "every message that scrolled past".
+    /// - `AsyncImage` does not bound the download. A publisher can point
+    ///   `icon` at an arbitrarily large file. Capping it needs a
+    ///   `URLSession` of our own with a size limit rather than `AsyncImage`,
+    ///   which is more than this display fix; recorded in `followups.md`.
+    @ViewBuilder
+    private var iconImage: some View {
+        if let url = NtfyURLPolicy.sanitized(snapshot.iconURL) {
+            AsyncImage(url: url) { phase in
+                // Only the success case draws. No spinner and no broken-image
+                // placeholder: an icon is decoration, and a message whose
+                // publisher pointed `icon` at a 404 should look like a
+                // message with no icon, not like a message that failed.
+                if let image = phase.image {
+                    image.resizable().aspectRatio(contentMode: .fit)
+                }
+            }
+            .frame(width: 40, height: 40)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            // The title beside it already says everything this conveys.
+            .accessibilityHidden(true)
+        }
+    }
+
+    private var titleAndMetadata: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(snapshot.title?.isEmpty == false ? snapshot.title! : snapshot.topic)
                 .font(.system(size: 22, weight: .semibold))
@@ -205,10 +254,28 @@ private struct MessageDetailContent: View {
         return isOrdered ? "\(ordinal). " : "• "
     }
 
+    /// Emoji tags as emoji, then the rest as chips.
+    ///
+    /// The reported bug: every tag rendered as a text chip, so a message
+    /// published with ntfy's documented `--tags warning,telephone_receiver`
+    /// arrived looking like it carried two stray labels rather than ⚠️ 📞.
+    ///
+    /// Unlike the list row and the banner, the emoji are not folded into the
+    /// title here — the detail pane has the room to show them at a size
+    /// where they read as pictures, and the tag row is where a reader
+    /// already looks for a message's tags.
     private var tagRow: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
+        let tags = NtfyEmoji.split(tags: snapshot.tags)
+        return ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 4) {
-                ForEach(snapshot.tags, id: \.self) { TagChip(tag: $0) }
+                if !tags.emoji.isEmpty {
+                    // No `accessibilityLabel`: VoiceOver names an emoji
+                    // ("warning sign") better than a label built from the
+                    // short code would ("Tag: warning").
+                    Text(tags.emoji.joined(separator: " "))
+                        .font(.system(size: 20))
+                }
+                ForEach(tags.labels, id: \.self) { TagChip(tag: $0) }
             }
         }
         .fadedTrailingEdge()

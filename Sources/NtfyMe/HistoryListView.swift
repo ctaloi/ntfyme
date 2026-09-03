@@ -299,8 +299,12 @@ private struct HistoryRow: View {
         .accessibilityLabel(Text(accessibilitySummary))
     }
 
+    /// Emoji tags lead the title here exactly as they do in the banner —
+    /// same `NtfyEmoji.prefixed` call, so the row and the notification for
+    /// one message cannot read differently.
     private var titleText: String {
-        snapshot.title?.isEmpty == false ? snapshot.title! : snapshot.topic
+        let base = snapshot.title?.isEmpty == false ? snapshot.title! : snapshot.topic
+        return NtfyEmoji.prefixed(base, tags: snapshot.tags)
     }
 
     private var accessibilitySummary: String {

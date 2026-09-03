@@ -4,12 +4,13 @@ import Testing
 
 private func message(priority: Int?, topic: String = "alerts",
                      title: String? = "T", body: String = "B",
-                     actions: String = "") -> NtfyEvent {
+                     actions: String = "", tags: [String] = []) -> NtfyEvent {
     let p = priority.map { "\"priority\":\($0)," } ?? ""
     let t = title.map { "\"title\":\"\($0)\"," } ?? ""
     let a = actions.isEmpty ? "" : "\"actions\":\(actions),"
+    let g = tags.isEmpty ? "" : "\"tags\":[\(tags.map { "\"\($0)\"" }.joined(separator: ","))],"
     let json = """
-    {"id":"m1","time":1788353322,"event":"message","topic":"\(topic)",\(p)\(t)\(a)"message":"\(body)"}
+    {"id":"m1","time":1788353322,"event":"message","topic":"\(topic)",\(p)\(t)\(a)\(g)"message":"\(body)"}
     """
     return try! JSONDecoder().decode(NtfyEvent.self, from: Data(json.utf8))
 }
@@ -283,4 +284,63 @@ private let sid = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
         event: event, serverID: sid, settings: unmuted, preferences: .default)
     else { Issue.record("suppressed"); return }
     #expect(r.attachmentURL == URL(string: "https://example.com/a.txt"))
+}
+
+// MARK: - Emoji tags in the title
+
+/// ntfy's own clients prepend a message's emoji tags to the notification
+/// title. This app ignored `tags` entirely when building a banner, so a
+/// message whose tags carried part of its meaning ("⚠️ 📞") arrived without
+/// it. See `NtfyEmoji` for the convention and the reported bug.
+@Test func emojiTagsArePrefixedToTheNotificationTitle() {
+    guard case .present(let r) = NotificationDecision.decide(
+        event: message(priority: 3, title: "Test complete",
+                       tags: ["warning", "telephone_receiver"]),
+        serverID: sid, settings: unmuted, preferences: .default)
+    else { return #expect(Bool(false), "expected a presented notification") }
+
+    #expect(r.title == "⚠️ 📞 Test complete")
+}
+
+/// Non-emoji tags are not prefixed — they are labels, and putting
+/// "sil:100703648" ahead of the title would bury the title it belongs to.
+@Test func nonEmojiTagsDoNotTouchTheTitle() {
+    guard case .present(let r) = NotificationDecision.decide(
+        event: message(priority: 3, title: "Test complete", tags: ["sil:100703648", "prod"]),
+        serverID: sid, settings: unmuted, preferences: .default)
+    else { return #expect(Bool(false), "expected a presented notification") }
+
+    #expect(r.title == "Test complete")
+}
+
+/// A mixed tag list contributes only its emoji, in tag order.
+@Test func onlyTheEmojiFromAMixedTagListReachTheTitle() {
+    guard case .present(let r) = NotificationDecision.decide(
+        event: message(priority: 3, title: "Deploy", tags: ["rocket", "backend", "warning"]),
+        serverID: sid, settings: unmuted, preferences: .default)
+    else { return #expect(Bool(false), "expected a presented notification") }
+
+    #expect(r.title == "🚀 ⚠️ Deploy")
+}
+
+/// A message with no title falls back to its topic (existing behavior), and
+/// the emoji still lead it — the fallback *is* the title for this purpose.
+@Test func emojiTagsPrefixTheTopicFallbackToo() {
+    guard case .present(let r) = NotificationDecision.decide(
+        event: message(priority: 3, title: nil, tags: ["rocket"]),
+        serverID: sid, settings: unmuted, preferences: .default)
+    else { return #expect(Bool(false), "expected a presented notification") }
+
+    #expect(r.title == "🚀 alerts")
+}
+
+/// No tags at all leaves the title exactly as it was — pinned because the
+/// prefix is built by joining, and a naive join leaves a leading space.
+@Test func noTagsLeavesTheTitleUntouched() {
+    guard case .present(let r) = NotificationDecision.decide(
+        event: message(priority: 3, title: "Test complete"),
+        serverID: sid, settings: unmuted, preferences: .default)
+    else { return #expect(Bool(false), "expected a presented notification") }
+
+    #expect(r.title == "Test complete")
 }
