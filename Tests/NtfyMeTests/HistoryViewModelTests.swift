@@ -181,3 +181,27 @@ private func makeStore(messageIsRead: Bool) throws -> (store: MessageStore, mess
 
     #expect(viewModel.topics.map(\.topic) == ["alerts", "telescope"])
 }
+
+/// The reported bug: "when you are in unread, and you click on a message, it
+/// immediately is marked as read and is removed so you can't see it."
+/// Reading a message in the Unread view is *how* you read it, so the row has
+/// to survive being read — a list that drops it mid-read also blanks the
+/// detail pane, which resolves the selection against `messages`.
+@MainActor
+@Test func readingAMessageInTheUnreadViewDoesNotMakeItVanish() async throws {
+    let (store, messageID) = try makeStore(messageIsRead: false)
+    let viewModel = HistoryViewModel(store: store)
+    viewModel.scope = .unread
+    await viewModel.refreshMessages()
+    #expect(viewModel.messages.map(\.id) == [messageID])
+
+    viewModel.selection = [messageID]
+    await viewModel.markSelectedRead()
+
+    #expect(viewModel.messages.map(\.id) == [messageID])
+    #expect(viewModel.messages.first?.isRead == true)
+    // Still genuinely read in the store — the row staying visible is a
+    // display decision, not a skipped write.
+    let stored = try await store.message(uniqueKey: messageID)
+    #expect(stored?.isRead == true)
+}

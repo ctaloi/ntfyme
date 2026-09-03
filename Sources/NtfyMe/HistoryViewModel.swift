@@ -273,11 +273,32 @@ final class HistoryViewModel {
         return messages.filter { selection.contains($0.id) }
     }
 
+    /// Updates the loaded rows in place rather than re-running the query,
+    /// unlike every other mutation here.
+    ///
+    /// The reported bug: in the sidebar's "Unread" view, clicking a message
+    /// marked it read (correctly — that is Mail-style `markSelectedRead`)
+    /// and then a `reloadLoadedWindow()` re-ran a query the message no
+    /// longer matched, so the row vanished and the detail pane — which
+    /// resolves `selection` against `messages` — went blank. Reading a
+    /// message in the Unread view is how you read it; it cannot be what
+    /// takes it away from you.
+    ///
+    /// So the row stays, now drawn as read, until something that *is* a
+    /// change of contents reloads the list: a scope or filter change, or
+    /// reopening the window. That is also how Mail behaves in an unread
+    /// smart mailbox. `delete` and `markAllRead` still reload, because for
+    /// those the list's contents genuinely did change — a deleted row is
+    /// gone, and "Mark All Read" is a request to clear the view, not to
+    /// keep reading one message in it.
     func markRead(_ snapshots: [MessageSnapshot], read: Bool) async {
         guard !snapshots.isEmpty else { return }
         do {
             try await store.markRead(snapshots.map(\.id), read: read)
-            await reloadLoadedWindow()
+            let ids = Set(snapshots.map(\.id))
+            for index in messages.indices where ids.contains(messages[index].id) {
+                messages[index].isRead = read
+            }
             await loadSidebar()
         } catch {
             recordActionFailure(read ? "mark messages read" : "mark messages unread", error)

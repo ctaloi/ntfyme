@@ -49,7 +49,18 @@ public struct MessageSnapshot: Sendable, Equatable, Identifiable {
     /// decode failure is handled at construction (`Message.snapshot`), logged
     /// there, and never reaches here silently disguised as the same `[]`.
     public let actions: [NtfyAction]
-    public let isRead: Bool
+    /// The one settable field on this otherwise immutable snapshot. Every
+    /// other field is a fact about the stored message; this one is a fact
+    /// about its reader, and it is the only one a surface changes while
+    /// holding a loaded row.
+    ///
+    /// Settable so `HistoryViewModel.markRead` can update the rows it has
+    /// rather than re-running its query: a message read *inside* the
+    /// "Unread" view has to stay on screen while it is being read, and a
+    /// re-query is exactly what removed it (the query no longer matches it).
+    /// Marking a row read is not the same event as the list's contents
+    /// changing, and this is what lets them be told apart.
+    public var isRead: Bool
     public let attachment: AttachmentSnapshot?
 
     public var isMarkdown: Bool { contentType == "text/markdown" }
