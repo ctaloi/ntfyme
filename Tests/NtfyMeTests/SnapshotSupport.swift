@@ -1,4 +1,5 @@
 import AppKit
+import CoreGraphics
 import SwiftUI
 import Testing
 
@@ -236,3 +237,35 @@ func meanAlpha(ofPNGAt path: String, sampleEvery stride: Int = 3) throws -> Doub
     guard samples > 0 else { throw SnapshotError.couldNotAllocateBitmap }
     return total / Double(samples)
 }
+
+
+/// Whether this machine has a GUI session, and so can render a snapshot.
+///
+/// **Why this exists.** These tests draw through AppKit — a real
+/// `NSHostingView` in a real `NSWindow`, captured with `cacheDisplay`. That
+/// needs a window server. A headless CI runner has none, and the failure is
+/// not clean: `bitmapImageRepForCachingDisplay` returns nil, the render
+/// throws, and the surrounding work stalls the shared test process badly
+/// enough that unrelated timing-sensitive tests fail too. On the first CI run
+/// after these landed, one snapshot test reported `couldNotAllocateBitmap`
+/// and thirty-nine unrelated failures followed, including a helper asserting
+/// a 200ms bound that measured 1.674s.
+///
+/// That is the same shape as the `RLIMIT_FSIZE` harness this project already
+/// removed: a test whose failure mode is not confined to itself. So these are
+/// skipped where they cannot run rather than left to take the suite down.
+///
+/// `CGSessionCopyCurrentDictionary` returns nil with no GUI session, and is
+/// not main-actor isolated — which matters, because a trait's condition is
+/// evaluated at registration on an arbitrary thread. An earlier attempt
+/// probed the real thing behind `MainActor.assumeIsolated` and trapped
+/// immediately (signal 5), since a global's initializer runs on whichever
+/// thread touches it first.
+nonisolated let snapshotRenderingIsAvailable: Bool = CGSessionCopyCurrentDictionary() != nil
+
+/// Applied to every test that renders. Reads as a skip in the results rather
+/// than a pass, so a machine that silently stops rendering is visible instead
+/// of quietly covering nothing.
+let requiresSnapshotRendering = ConditionTrait.enabled(
+    if: snapshotRenderingIsAvailable,
+    "needs a window server: these tests draw through AppKit and cannot run headless")

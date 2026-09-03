@@ -28,7 +28,7 @@ import SwiftUI
 /// Well below a correct render (1.0) and well above a broken one (0.053).
 private let opaqueThreshold = 0.9
 
-@MainActor @Test func theOnboardingPanePaintsItsOwnBackground() throws {
+@MainActor @Test(requiresSnapshotRendering) func theOnboardingPanePaintsItsOwnBackground() throws {
     for scheme in [ColorScheme.light, .dark] {
         let name = "onboarding-\(scheme == .dark ? "dark" : "light").png"
         _ = try renderSnapshot(
@@ -44,7 +44,7 @@ private let opaqueThreshold = 0.9
 /// The appearance check, kept alongside the opacity one because they fail for
 /// different reasons: a pane could paint an opaque ground of entirely the
 /// wrong colour and satisfy the alpha assertion.
-@MainActor @Test func theOnboardingPaneHonoursTheAppearance() throws {
+@MainActor @Test(requiresSnapshotRendering) func theOnboardingPaneHonoursTheAppearance() throws {
     let light = try meanLuminance(ofPNGAt: "/tmp/ntfyshots/onboarding-light.png")
     let dark = try meanLuminance(ofPNGAt: "/tmp/ntfyshots/onboarding-dark.png")
     #expect(light > 0.5, "onboarding-light.png mean luminance \(light) — expected a light surface.")
