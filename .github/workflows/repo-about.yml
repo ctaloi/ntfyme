@@ -1,0 +1,23 @@
+name: Update repo about
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  administration: write
+
+jobs:
+  about:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Update description and homepage
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          gh repo edit "$REPO" \
+            --description "Native macOS client for ntfy — real notifications, searchable archive, compose. Download: ntfyme.aloi.dev" \
+            --homepage "https://ntfyme.aloi.dev"

@@ -215,3 +215,118 @@ enum SettingsHistoryExport {
         return try encoder.encode(exportable)
     }
 }
+
+// MARK: - Subscription import/export
+
+/// One subscription as it travels through an export/import file: everything
+/// needed to re-subscribe on another machine, and pointedly nothing else —
+/// **credentials never appear here**. A bearer token is the Keychain's
+/// business and the receiving machine's to ask for; an export file that
+/// could carry one would be a password spreadsheet waiting to be emailed.
+/// Server address, topic, and the alert settings a new subscription would
+/// otherwise lose.
+struct SubscriptionTransfer: Codable, Sendable, Equatable, Identifiable {
+    /// The server's base URL, as a string. Normalized on import (host
+    /// lowercased, trailing slash dropped) so a file written on a machine
+    /// that typed `HTTPS://ntfy.sh/` still matches the server this machine
+    /// already has.
+    var server: String
+    var topic: String
+    var displayName: String?
+    var muted: Bool
+    var minAlertPriority: Int
+
+    var id: String { "\(server)/\(topic)" }
+}
+
+/// The file format. `version` exists so a future format change can be
+/// detected by field rather than by decoder crash.
+struct SubscriptionTransferFile: Codable {
+    var version: Int
+    var subscriptions: [SubscriptionTransfer]
+}
+
+enum SubscriptionsTransferCodec {
+    static let version = 1
+
+    static func encode(_ subscriptions: [SubscriptionTransfer]) throws -> Data {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        return try encoder.encode(
+            SubscriptionTransferFile(version: version, subscriptions: subscriptions))
+    }
+
+    /// Decodes and validates. Every field the importer acts on is checked
+    /// here — a file is arbitrary input from disk (the same posture every
+    /// network message gets): an unknown version, a missing topic, a
+    /// non-numeric priority outside 1...5, or an unparseable server URL
+    /// each rejects the whole file rather than half-importing it.
+    static func decode(_ data: Data) throws -> [SubscriptionTransfer] {
+        let file = try JSONDecoder().decode(SubscriptionTransferFile.self, from: data)
+        guard file.version == version else {
+            throw DecodingError.dataCorrupted(DecodingError.Context(
+                codingPath: [],
+                debugDescription: "Unsupported subscriptions file version \(file.version)."))
+        }
+        var seen = Set<String>()
+        var result: [SubscriptionTransfer] = []
+        for var transfer in file.subscriptions {
+            let topic = transfer.topic.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard NtfyEndpoint.isTopicValid(topic) else {
+                throw DecodingError.dataCorrupted(DecodingError.Context(
+                    codingPath: [],
+                    debugDescription: "The file contains an invalid topic name."))
+            }
+            guard let url = normalizedServerURL(transfer.server) else {
+                throw DecodingError.dataCorrupted(DecodingError.Context(
+                    codingPath: [],
+                    debugDescription: "The file contains a server address that isn't usable."))
+            }
+            guard (1...5).contains(transfer.minAlertPriority) else {
+                throw DecodingError.dataCorrupted(DecodingError.Context(
+                    codingPath: [],
+                    debugDescription: "The file contains an out-of-range alert priority."))
+            }
+            transfer.topic = topic
+            transfer.server = url.absoluteString
+            // A file with the same subscription twice would import the
+            // second copy as a skip; the dedup here is for the *picker*, so
+            // the user never sees the same row twice.
+            guard seen.insert(transfer.id).inserted else { continue }
+            result.append(transfer)
+        }
+        return result
+    }
+
+    /// Host lowercased, trailing slash dropped — the same shape two
+    /// machines' independently-typed copies of one server URL normalize
+    /// to. Returns `nil` for anything without an http(s) host. The scheme
+    /// is lowercased before parsing: `URLComponents` treats an uppercase
+    /// scheme (`HTTPS://…`, which a human absolutely will type) as
+    /// host-less and the whole URL would otherwise be refused.
+    static func normalizedServerURL(_ string: String) -> URL? {
+        let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let schemeEnd = trimmed.range(of: "://") else { return nil }
+        let canonicalized = trimmed[..<schemeEnd.lowerBound].lowercased()
+            + trimmed[schemeEnd.lowerBound...]
+        guard var components = URLComponents(string: canonicalized),
+              let host = components.host, !host.isEmpty,
+              components.scheme == "http" || components.scheme == "https"
+        else { return nil }
+        components.host = host.lowercased()
+        // A bare "/" is the root path, not a meaningful trailing slash —
+        // strip it to nothing so `https://host/` and `https://host` are the
+        // same server for matching purposes.
+        components.path = components.path == "/" ? "" : (components.path as NSString).removingTrailingSlash()
+        return components.url
+    }
+}
+
+extension NSString {
+    fileprivate func removingTrailingSlash() -> String {
+        if length > 1 && character(at: length - 1) == UnicodeScalar("/").value {
+            return substring(to: length - 1)
+        }
+        return self as String
+    }
+}

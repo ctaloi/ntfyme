@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NtfyMe — ntfy notifications, done natively for macOS</title>
+<meta name="description" content="A native macOS client for ntfy: real notifications, a searchable archive of every message, and a proper compose window. Open source, signed, auto-updating.">
+<link rel="icon" type="image/png" href="assets/icon-128.png">
+<link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
+<meta property="og:title" content="NtfyMe — ntfy notifications, done natively for macOS">
+<meta property="og:description" content="Real macOS notifications for your ntfy topics, a searchable archive, and a compose window. Open source, signed, auto-updating.">
+<meta property="og:image" content="assets/main-window-top.webp">
+<!--
+  DIRECTION CONTRACT — "the page is a Mac window"
+  THESIS: The page uses the product's own material — a Mac window and a real
+  popover — rather than a generic hero. The category-default pattern this
+  refuses is a gradient masthead above a feature-card grid.
+  OWN-WORLD: Apple system grays (#fbfbfd ground, #1d1d1f text, #6e6e73
+  secondary), one accent (#0a6cff), SF Pro via -apple-system, hairline
+  separators, 12–14px window radii, soft offset shadows, light and dark like
+  the OS.
+  STORY: The visitor sees what the app does (a real notification client with a
+  real archive), reads one plain sentence, and downloads. Trust comes from the
+  honest security note and the open-source link, not claims.
+  FIRST VIEWPORT: nav / left: headline, one sentence, Download and GitHub /
+  right: main window cropped to the useful region with the real popover
+  floating above it. The site proves the app before it explains it.
+  FORM: precisely-specified narrow brief — single committed direction, no
+  concept tournament.
+  FINISH: unreviewed and undocumented is unfinished; this build ends with the
+  finish review, the verdict, DESIGN.md, and every shipping raster carrying its
+  provenance.
+-->
+<style>
+  :root {
+    --ground: #fbfbfd;
+    --surface: #ffffff;
+    --ink: #1d1d1f;
+    --ink-2: #6e6e73;
+    --ink-3: #aeaeb2;
+    --accent: #0a6cff;
+    --accent-press: #0057d8;
+    --hairline: rgba(0, 0, 0, 0.10);
+    --soft: rgba(0, 0, 0, 0.04);
+    --radius-window: 14px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --ground: #161617;
+      --surface: #232325;
+      --ink: #f5f5f7;
+      --ink-2: #a1a1a6;
+      --ink-3: #66666b;
+      --hairline: rgba(255, 255, 255, 0.14);
+      --soft: rgba(255, 255, 255, 0.04);
+      --accent-press: #3384ff;
+    }
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", Helvetica, Arial, sans-serif;
+    background:
+      radial-gradient(circle at top, color-mix(in srgb, var(--accent) 8%, transparent) 0, transparent 36%),
+      radial-gradient(circle at 80% 18%, color-mix(in srgb, var(--accent) 4%, transparent) 0, transparent 28%),
+      var(--ground);
+    color: var(--ink);
+    font-size: 17px;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  ::selection { background: var(--accent); color: #fff; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; text-underline-offset: 3px; }
+  :focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 3px;
+    border-radius: 4px;
+  }
+  img { display: block; max-width: 100%; height: auto; }
+
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 0 28px; }
+
+  nav {
+    position: sticky; top: 0; z-index: 10;
+    background: color-mix(in srgb, var(--ground) 88%, transparent);
+    -webkit-backdrop-filter: saturate(1.55) blur(18px);
+    backdrop-filter: saturate(1.55) blur(18px);
+    border-bottom: 1px solid var(--hairline);
+  }
+  .nav-inner {
+    display: flex; align-items: center; gap: 12px;
+    height: 56px;
+  }
+  .brand {
+    display: inline-flex; align-items: center;
+    font-weight: 700; font-size: 18px; color: var(--ink);
+    text-decoration: none; letter-spacing: -0.024em;
+  }
+  .spacer { flex: 1; }
+  .nav-link {
+    color: var(--ink); opacity: 0.78; text-decoration: none; font-size: 14.5px;
+    padding: 7px 12px; border-radius: 8px;
+  }
+  .nav-link:hover { opacity: 1; background: color-mix(in srgb, var(--ink) 7%, transparent); }
+
+  .btn {
+    display: inline-flex; align-items: center; gap: 8px;
+    font-size: 16px; font-weight: 600; letter-spacing: -0.01em;
+    color: #fff;
+    background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 88%, white 12%) 0%, var(--accent) 100%);
+    padding: 13px 24px; border-radius: 999px;
+    text-decoration: none;
+    box-shadow: 0 8px 18px color-mix(in srgb, var(--accent) 24%, transparent), inset 0 1px 0 rgba(255,255,255,0.24);
+    transition: background 0.18s ease, transform 0.18s ease, box-shadow 0.18s ease;
+  }
+  .btn:hover { background: linear-gradient(180deg, color-mix(in srgb, var(--accent-press) 84%, white 16%) 0%, var(--accent-press) 100%); text-decoration: none; transform: translateY(-1px); box-shadow: 0 10px 22px color-mix(in srgb, var(--accent) 28%, transparent), inset 0 1px 0 rgba(255,255,255,0.24); }
+  .btn:active { transform: translateY(0); }
+  .btn-ghost {
+    display: inline-flex; align-items: center; gap: 7px;
+    font-size: 15px; font-weight: 500;
+    color: var(--accent); text-decoration: none;
+    padding: 12px 20px; border-radius: 999px;
+    border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+    background: color-mix(in srgb, var(--surface) 84%, transparent);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.22);
+    transition: background 0.18s ease, border-color 0.18s ease;
+  }
+  .btn-ghost:hover { background: color-mix(in srgb, var(--accent) 9%, transparent); text-decoration: none; }
+  .btn svg, .btn-ghost svg { width: 17px; height: 17px; }
+
+  .hero { padding: 64px 0 42px; }
+  .hero-grid {
+    display: grid; grid-template-columns: 0.94fr 1.06fr;
+    gap: 42px; align-items: center;
+  }
+  h1 {
+    font-size: clamp(40px, 5vw, 62px);
+    line-height: 1.03; letter-spacing: -0.038em;
+    font-weight: 700;
+    margin-bottom: 16px;
+    text-wrap: balance;
+    max-width: 11ch;
+  }
+  .hero .lede {
+    font-size: 20px;
+    color: var(--ink-2);
+    max-width: 31ch;
+  }
+  .hero-actions { display: flex; align-items: center; gap: 14px; margin-top: 26px; flex-wrap: wrap; }
+  .meta {
+    margin-top: 16px;
+    font-size: 13px;
+    color: var(--ink-2);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .hero-visual { position: relative; min-height: 500px; }
+  .hero-window {
+    position: relative;
+    z-index: 1;
+    width: 100%;
+    border-radius: var(--radius-window);
+    box-shadow: 0 24px 64px rgba(0, 0, 0, 0.15), 0 6px 18px rgba(0, 0, 0, 0.08);
+    border: 1px solid var(--hairline);
+    overflow: hidden;
+    background: var(--surface);
+  }
+  .hero-popover {
+    position: absolute;
+    z-index: 2;
+    width: min(448px, 68%);
+    top: -34px;
+    right: -18px;
+    border-radius: 16px;
+    box-shadow: 0 22px 52px rgba(0, 0, 0, 0.20), 0 8px 18px rgba(0, 0, 0, 0.10);
+    border: 1px solid var(--hairline);
+    overflow: hidden;
+    transform: rotate(1.3deg);
+    animation: settle 0.9s cubic-bezier(0.16, 1, 0.3, 1) both 0.25s;
+  }
+  @keyframes settle {
+    from { transform: translateY(-18px) rotate(2.6deg); opacity: 0; }
+    to { transform: translateY(0) rotate(1.3deg); opacity: 1; }
+  }
+  @media (prefers-reduced-motion: reduce) { .hero-popover { animation: none; } }
+
+  .facts {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 22px;
+    padding-top: 6px;
+  }
+  .fact {
+    padding-top: 16px;
+    border-top: 1px solid color-mix(in srgb, var(--ink) 10%, transparent);
+  }
+  .fact h2 {
+    font-size: 21px;
+    line-height: 1.15;
+    letter-spacing: -0.02em;
+    margin-bottom: 8px;
+  }
+  .fact p { color: var(--ink-2); font-size: 15.5px; }
+  .k { color: var(--ink); font-weight: 600; }
+
+  section { padding: 56px 0; }
+  .shot {
+    border-radius: var(--radius-window);
+    box-shadow: 0 22px 60px rgba(0, 0, 0, 0.16), 0 4px 14px rgba(0, 0, 0, 0.08);
+    border: 1px solid var(--hairline);
+  }
+
+  .split {
+    display: grid; grid-template-columns: 0.95fr 1.05fr;
+    gap: 42px; align-items: start;
+  }
+  .split h2 {
+    font-size: clamp(28px, 3vw, 40px);
+    letter-spacing: -0.026em;
+    line-height: 1.08;
+    margin-bottom: 12px;
+  }
+  .split p { color: var(--ink-2); max-width: 39ch; font-size: 18px; }
+
+
+  .note {
+    display: flex; gap: 14px; align-items: flex-start;
+    max-width: 760px;
+    padding: 20px 22px;
+    border: 1px solid var(--hairline);
+    border-radius: var(--radius-window);
+    background: color-mix(in srgb, var(--ink) 3.5%, transparent);
+    font-size: 15px; color: var(--ink-2);
+  }
+  .note svg { flex: none; width: 20px; height: 20px; margin-top: 2px; color: var(--ink); opacity: 0.75; }
+  .note strong { color: var(--ink); font-weight: 600; }
+
+  .oss .wrap {
+    padding: 28px 32px;
+    border: 1px solid var(--hairline);
+    border-radius: 20px;
+    background: color-mix(in srgb, var(--surface) 94%, transparent);
+    box-shadow: 0 14px 34px rgba(0,0,0,0.05);
+  }
+  .oss .row { display: flex; gap: 16px; margin-top: 22px; flex-wrap: wrap; }
+  .lede-2 { color: var(--ink-2); font-size: 18px; max-width: 58ch; margin-top: 12px; }
+
+  footer {
+    border-top: 1px solid var(--hairline);
+    padding: 30px 0 40px;
+    font-size: 13.5px; color: var(--ink-2);
+  }
+  footer .wrap { display: flex; gap: 18px; flex-wrap: wrap; align-items: center; }
+  footer a { color: inherit; }
+
+  @media (max-width: 960px) {
+    .hero-grid, .split { grid-template-columns: 1fr; gap: 36px; }
+    .hero-visual {
+      min-height: auto;
+      padding-top: 8px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+    .hero-popover {
+      position: relative;
+      order: -1;
+      top: auto; right: auto;
+      width: min(440px, 92%);
+      margin: 0 auto;
+      transform: rotate(0.8deg);
+    }
+    .hero-window {
+      width: 100%;
+      max-width: 100%;
+    }
+    .facts { grid-template-columns: 1fr; gap: 22px; }
+  }
+  @media (max-width: 720px) {
+    .wrap { padding: 0 20px; }
+    nav { position: static; }
+    .nav-inner { flex-wrap: wrap; height: auto; padding: 12px 0; gap: 10px; }
+    .brand { font-size: 17px; }
+    .hero { padding: 42px 0 24px; }
+    h1 { max-width: none; }
+    .hero .lede { font-size: 18px; }
+    section { padding: 44px 0; }
+  }
+</style>
+</head>
+<body>
+
+<nav>
+  <div class="wrap nav-inner">
+    <a class="brand" href="/" aria-label="NtfyMe home">NtfyMe</a>
+    <span class="spacer"></span>
+    <a class="nav-link" href="https://ntfy.sh/docs" title="The ntfy project">ntfy.sh</a>
+    <a class="nav-link" href="https://github.com/ctaloi/ntfyme">GitHub</a>
+    <a class="btn" style="padding:8px 16px;font-size:14px" href="https://github.com/ctaloi/ntfyme/releases/latest">Download</a>
+  </div>
+</nav>
+
+<header class="hero">
+  <div class="wrap hero-grid">
+    <div>
+      <h1>Your ntfy topics, as real Mac notifications</h1>
+      <p class="lede">NtfyMe watches the topics you follow and delivers every
+      message natively, with a searchable archive of everything it has seen.</p>
+      <div class="hero-actions">
+        <a class="btn" href="https://github.com/ctaloi/ntfyme/releases/latest">
+          Download for Mac
+        </a>
+        <a class="btn-ghost" href="https://github.com/ctaloi/ntfyme">
+          <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.76 1.27 1.98.91 2.46.7.08-.55.3-.93.54-1.14-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 1.89-1.09 2.31-2.13 2.43.34.29.64.86.64 1.74 0 1.25-.01 2.26-.01 2.57 0 .21.15.46.55.38A7.995 7.995 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
+          View source
+        </a>
+      </div>
+      <p class="meta">Works with <a href="https://ntfy.sh">ntfy.sh</a> or your own server · macOS 26+ · Apple Silicon · signed, with automatic updates</p>
+    </div>
+
+    <div class="hero-visual" aria-label="The NtfyMe app window with the message popover floating above it.">
+      <img class="hero-window" src="assets/main-window-top.webp" alt="The NtfyMe History window showing messages grouped by day and the selected alert on the right." width="1500" height="640">
+      <img class="hero-popover" src="assets/popover.webp" alt="The NtfyMe popover with recent unread messages and quick actions." width="800" height="928">
+    </div>
+  </div>
+</header>
+
+<section style="padding-top:0;">
+  <div class="wrap facts" aria-label="Key capabilities">
+    <div class="fact">
+      <h2>Real notifications</h2>
+      <p>Priority-aware macOS notifications, not a browser tab pretending to be one.</p>
+    </div>
+    <div class="fact">
+      <h2>Everything, kept</h2>
+      <p>A searchable archive of every message, with unread badges, Quick Look, and markdown rendered the way it was sent.</p>
+    </div>
+    <div class="fact">
+      <h2>Send back</h2>
+      <p>A compose window that validates topics as you type and previews the notification before it arrives.</p>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap split">
+    <img class="shot" src="assets/detail.webp" alt="A detailed view of a deploy failure, showing markdown, tags, the build log attachment, and action buttons.">
+    <div>
+      <h2>Read the whole thing later</h2>
+      <p><span class="k">The message doesn't vanish with the banner.</span> The
+      archive keeps the title, body, tags, attachment, links, and actions —
+      the useful part of the alert, not just the fact that it happened.</p>
+    </div>
+  </div>
+</section>
+
+<section class="oss">
+  <div class="wrap">
+    <h2>Open source, signed, self-updating</h2>
+    <p class="lede-2">The whole app — Swift, SwiftUI, and a little stubbornness
+    — is on GitHub under the MIT license. Releases are signed, and the app
+    updates itself through Sparkle, with every update verified against a key
+    only the project controls.</p>
+    <div class="row">
+      <a class="btn" href="https://github.com/ctaloi/ntfyme/releases/latest">Download the latest release</a>
+      <a class="btn-ghost" href="https://github.com/ctaloi/ntfyme">
+        <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.76 1.27 1.98.91 2.46.7.08-.55.3-.93.54-1.14-1.78-.2-3.64-.89-3.64-3.14 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.42 7.42 0 0 1 4 0c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.28.82 2.15 0 2.26-1.87 2.94-3.65 3.14.31.27.58.79.58 1.6 0 1.16-.01 2.09-.01 2.38 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
+        ctaloi/ntfyme
+      </a>
+    </div>
+    <p style="margin-top:18px;font-size:13.5px;color:#6e6e73;">
+      MIT licensed. Not affiliated with the ntfy project — just built on it with gratitude.
+    </p>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <span>© 2026 NtfyMe contributors</span>
+    <span aria-hidden="true">·</span>
+    <a href="https://github.com/ctaloi/ntfyme">GitHub</a>
+    <span aria-hidden="true">·</span>
+    <a href="https://github.com/ctaloi/ntfyme/releases/latest">Releases</a>
+    <span aria-hidden="true">·</span>
+    <a href="https://ntfy.sh/docs">ntfy docs</a>
+  </div>
+</footer>
+
+</body>
+</html>

@@ -130,7 +130,8 @@ private func makeViewModel(messages: [MessageSnapshot], unread: Int,
 
 @MainActor
 private func popoverView(_ viewModel: MenuBarViewModel) -> MenuBarPopoverView {
-    MenuBarPopoverView(viewModel: viewModel, onOpenHistory: {}, onOpenSettings: {}, onQuit: {},
+    MenuBarPopoverView(viewModel: viewModel, onOpenHistory: {}, onOpenSettings: {},
+                       onNewMessage: {}, onQuit: {},
                        onOpenMessage: { _ in }, onRetryConnection: {})
 }
 

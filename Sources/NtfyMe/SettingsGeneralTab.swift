@@ -44,9 +44,10 @@ struct SettingsGeneralTab: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 28) {
-                SettingsSection(title: "Startup") {
+                SettingsSection(title: "Startup", icon: "power") {
                     Toggle("Launch NtfyMe at login", isOn: launchAtLoginBinding)
                         .font(.system(size: 13))
+                        .toggleStyle(.switch)
                         .accessibilityHint(Text("Registers NtfyMe as a login item using Service Management."))
 
                     if model.loginItemStatus == .requiresApproval {
@@ -59,7 +60,7 @@ struct SettingsGeneralTab: View {
                     }
                 }
 
-                SettingsSection(title: "History") {
+                SettingsSection(title: "History", icon: "clock.arrow.circlepath") {
                     SettingsRow(label: "Keep messages for") {
                         HStack(spacing: 6) {
                             TextField("", text: $retentionDaysText)
@@ -103,6 +104,7 @@ struct SettingsGeneralTab: View {
                         } label: {
                             Label(isExporting ? "Exporting\u{2026}" : "Export History to JSON\u{2026}", systemImage: "square.and.arrow.up")
                         }
+                        .buttonStyle(.bordered)
                         .disabled(isExporting || model.messageCount == 0)
 
                         Button(role: .destructive) {
@@ -110,6 +112,7 @@ struct SettingsGeneralTab: View {
                         } label: {
                             Label(isClearing ? "Clearing\u{2026}" : "Clear All Message History\u{2026}", systemImage: "trash")
                         }
+                        .buttonStyle(.bordered)
                         .disabled(isClearing || model.messageCount == 0)
                     }
                     .controlSize(.regular)
@@ -119,9 +122,10 @@ struct SettingsGeneralTab: View {
                     }
                 }
 
-                SettingsSection(title: "Menu Bar") {
+                SettingsSection(title: "Menu Bar", icon: "menubar.dock.rectangle") {
                     Toggle("Badge the menu bar icon with the unread count", isOn: $badgeEnabled)
                         .font(.system(size: 13))
+                        .toggleStyle(.switch)
                 }
             }
             .padding(24)

@@ -44,11 +44,15 @@ private func makeComposeModel(topics: [String]) throws -> ComposeModel {
 
 @MainActor
 @Test(requiresSnapshotRendering) func composeEmpty() async throws {
-    let model = try makeComposeModel(topics: ["alerts", "deploys", "backups"])
+    // One deliberately long topic: the suggestion chips must stay one line
+    // each (they once wrapped into two-row pills once a real topic name met
+    // them), which is what this render is here to catch.
+    let model = try makeComposeModel(topics: ["alerts", "deploys", "backups",
+                                              "homelab-alerts"])
     await model.refresh()
 
     _ = try renderSnapshot(ComposeView(model: model),
-                           size: CGSize(width: 460, height: 520), to: "compose-empty.png")
+                           size: CGSize(width: 480, height: 620), to: "compose-empty.png")
     let colors = try distinctColorCount(ofPNGAt: "/tmp/ntfyshots/compose-empty.png")
     #expect(colors > composeMinimumColors)
     let alpha = try meanAlpha(ofPNGAt: "/tmp/ntfyshots/compose-empty.png")
@@ -66,7 +70,7 @@ private func makeComposeModel(topics: [String]) throws -> ComposeModel {
     model.tagText = "warning, rocket"
 
     _ = try renderSnapshot(ComposeView(model: model),
-                           size: CGSize(width: 460, height: 520), to: "compose-filled.png")
+                           size: CGSize(width: 480, height: 620), to: "compose-filled.png")
     #expect(try distinctColorCount(ofPNGAt: "/tmp/ntfyshots/compose-filled.png") > composeMinimumColors)
 }
 
@@ -95,7 +99,7 @@ private func makeComposeModel(topics: [String]) throws -> ComposeModel {
     #expect(model.draft.body.isEmpty == false, "a failed send must keep the message")
 
     _ = try renderSnapshot(ComposeView(model: model),
-                           size: CGSize(width: 460, height: 520), to: "compose-error.png")
+                           size: CGSize(width: 480, height: 620), to: "compose-error.png")
     #expect(try distinctColorCount(ofPNGAt: "/tmp/ntfyshots/compose-error.png") > composeMinimumColors)
 }
 
@@ -107,7 +111,7 @@ private func makeComposeModel(topics: [String]) throws -> ComposeModel {
     model.draft.body = "Nightly backup finished."
 
     _ = try renderSnapshot(ComposeView(model: model),
-                           size: CGSize(width: 460, height: 520), colorScheme: .dark,
+                           size: CGSize(width: 480, height: 620), colorScheme: .dark,
                            to: "compose-dark.png")
     // Same check the History detail pane needed: every colour on this
     // surface is dynamic, so an unpainted background renders as light text

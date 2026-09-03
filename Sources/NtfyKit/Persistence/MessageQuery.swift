@@ -13,9 +13,10 @@ public struct MessageQuery: Sendable, Equatable {
     public var limit: Int
     public var offset: Int
 
-    public init(serverID: UUID? = nil, topic: String? = nil, searchText: String? = nil,
-                minPriority: Int? = nil, tag: String? = nil, unreadOnly: Bool = false,
-                since: Date? = nil, until: Date? = nil, limit: Int = 200, offset: Int = 0) {
+    public init(serverID: UUID? = nil, topic: String? = nil,
+                searchText: String? = nil, minPriority: Int? = nil, tag: String? = nil,
+                unreadOnly: Bool = false, since: Date? = nil, until: Date? = nil,
+                limit: Int = 200, offset: Int = 0) {
         self.serverID = serverID
         self.topic = topic
         self.searchText = searchText

@@ -27,6 +27,12 @@ final class HistoryViewModel {
     private(set) var servers: [ServerRecordSnapshot] = []
     private(set) var topics: [TopicSummary] = []
     private(set) var allUnreadCount: Int = 0
+    /// Whether topic rows need a server name above them. One server — the
+    /// overwhelming majority — is just a list of topics; a row naming the
+    /// only server that exists is noise.
+    var showsServerHeaders: Bool {
+        servers.count > 1
+    }
     var scope: HistoryScope = .all {
         didSet {
             guard oldValue != scope else { return }
@@ -114,7 +120,15 @@ final class HistoryViewModel {
     /// archive from a filtered-to-nothing one) and to gate the "Clear
     /// Filters" action to when there is actually something to clear.
     var hasActiveFilters: Bool {
-        scope != .all || !searchText.isEmpty || !tagFilter.isEmpty
+        scope != .all || hasFilterConstraints
+    }
+
+    /// Every filter *except* the sidebar scope — the distinction the Unread
+    /// view's empty state turns on. `scope == .unread` with nothing else
+    /// set is not "your filters hid the messages": it is the normal,
+    /// happy, all-caught-up end state, and it deserves its own words.
+    var hasFilterConstraints: Bool {
+        !searchText.isEmpty || !tagFilter.isEmpty
             || priorityFilter != .any || dateRangeFilter != .any || unreadOnly
     }
 
@@ -151,6 +165,7 @@ final class HistoryViewModel {
             recordActionFailure("load the sidebar", error)
         }
     }
+
 
     func refreshMessages() async {
         isLoading = true
@@ -208,6 +223,48 @@ final class HistoryViewModel {
         } catch {
             canLoadMore = false
             recordActionFailure("load more messages", error)
+        }
+    }
+
+    /// Folds messages that arrived since the list was loaded into the top
+    /// of it, without a full reload.
+    ///
+    /// The reported bug: on "All Messages" a message that arrived while the
+    /// window sat open was invisible until the user clicked to another scope
+    /// and back — the store-change broadcast only refreshed the sidebar, and
+    /// deliberately so: the alternative was `refreshMessages()`, which
+    /// resets pagination to page 1 and scrolls the user back to the top of
+    /// a list they were mid-read in. So the fix is neither of those: one
+    /// query for everything at or newer than the newest loaded row, matched
+    /// to the *current* scope and filters, deduplicated by id (`since` is
+    /// inclusive, so the top row itself comes back), and inserted at the
+    /// front. Pages below shift by exactly the number inserted, which is
+    /// what the `nextOffset` bump records; selection is untouched. An empty
+    /// list has no window to widen, so it just does the full refresh.
+    func insertNewArrivals() async {
+        guard let newestLoaded = messages.first?.time else {
+            await refreshMessages()
+            return
+        }
+        // A date-range filter sets `since` of its own; only narrow further,
+        // never widen past what the filter allows.
+        var query = currentQuery(offset: 0)
+        if let filterSince = query.since, filterSince > newestLoaded {
+            query.since = filterSince
+        } else {
+            query.since = newestLoaded
+        }
+        do {
+            let arrivals = try await store.search(query)
+            let known = Set(messages.map(\.id))
+            let fresh = arrivals.filter { !known.contains($0.id) }
+            guard !fresh.isEmpty else { return }
+            messages.insert(contentsOf: fresh, at: 0)
+            nextOffset += fresh.count
+        } catch {
+            // The list on screen is still perfectly good; a failed check
+            // for arrivals must not turn it into an error banner.
+            log("check for new messages", error)
         }
     }
 

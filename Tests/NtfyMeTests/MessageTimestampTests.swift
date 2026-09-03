@@ -100,3 +100,47 @@ private func text(_ date: Date) -> String {
             "a weekday abbreviation")
     #expect(MessageTimestamp.text(for: eightDays, now: now, calendar: calendar).contains("Aug"))
 }
+
+// MARK: - Day headers (list section grouping)
+
+private func header(_ date: Date) -> String {
+    MessageTimestamp.dayHeader(for: date, now: now, calendar: calendar)
+}
+
+@Test func todayAndYesterdayAreNamed() {
+    #expect(header(now) == "Today")
+    #expect(header(now.addingTimeInterval(-3600)) == "Today")
+    #expect(header(now.addingTimeInterval(-24 * 3600 + 60)) == "Yesterday")
+}
+
+/// Two days back is inside the 7-day window — the same window `text(for:)`
+/// uses, so a row saying "Mon" never sits under a header saying "September 1".
+@Test func thisWeekIsAWeekday() {
+    let monday = calendar.date(from: DateComponents(
+        year: 2025, month: 9, day: 1, hour: 9, minute: 0))!
+    #expect(header(monday) == "Monday")
+}
+
+/// Beyond the weekday window but not the year boundary, older dates spell
+/// the month out — a section header has room for "August 12" where a row
+/// column only had room for "Aug 12". Asserts shape, not locale.
+@Test func olderThisYearIsADate() {
+    let lastMonth = calendar.date(from: DateComponents(
+        year: 2025, month: 8, day: 12, hour: 9, minute: 0))!
+    let rendered = header(lastMonth)
+    #expect(rendered.contains("12"))
+    #expect(rendered.contains("Aug"))
+    #expect(!rendered.contains("2025"))
+}
+
+@Test func aHeaderFromAnotherYearCarriesTheYear() {
+    let lastYear = calendar.date(from: DateComponents(
+        year: 2024, month: 12, day: 20, hour: 9, minute: 0))!
+    #expect(header(lastYear).contains("2024"))
+}
+
+/// A message dated in the future (a publisher's clock ahead, ntfy's delayed
+/// delivery) still lands in "Today" rather than some negative-day state.
+@Test func aFutureDateIsStillToday() {
+    #expect(header(now.addingTimeInterval(6 * 3600)) == "Today")
+}

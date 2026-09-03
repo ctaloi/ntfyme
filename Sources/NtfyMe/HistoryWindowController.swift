@@ -13,10 +13,15 @@ import NtfyKit
 final class HistoryWindowController {
     private let viewModel: HistoryViewModel
     private var window: NSWindow?
-    /// Wired by `AppDelegate` to `openCompose()`, and read when the window's
-    /// content view is built on first `show()`. Set it before then — which
-    /// the delegate does, right where it creates this controller.
-    var onNewMessage: () -> Void = {}
+    /// Wired by `AppDelegate` to `openCompose(seed:)`, and read when the
+    /// window's content view is built on first `show()`. Set it before then
+    /// — which the delegate does, right where it creates this controller.
+    /// Takes an optional `ComposeSeed`: `nil` from the toolbar's paperplane,
+    /// a seed when the user asked for "new message to this topic".
+    var onNewMessage: (ComposeSeed?) -> Void = { _ in }
+    /// Wired by `AppDelegate` to open Settings on the Servers tab — the
+    /// toolbar's Add Subscription button.
+    var onAddSubscription: () -> Void = {}
 
     /// - Parameter attachmentsDirectory: must be the exact same directory
     ///   `RetentionScheduler.attachmentsDirectory()` uses
@@ -89,6 +94,17 @@ final class HistoryWindowController {
         await viewModel.loadSidebar()
     }
 
+    /// A store change this window did not make itself — most importantly a
+    /// newly stored batch arriving from a server. Folds new arrivals into
+    /// the top of the loaded list (`insertNewArrivals`, deliberately not a
+    /// full reload — that resets pagination and scrolls the user back to
+    /// the top) and refreshes the sidebar's counts, which arrivals also
+    /// change.
+    func storeDidChange() async {
+        await viewModel.insertNewArrivals()
+        await viewModel.loadSidebar()
+    }
+
     /// Creates the window on first call, brings an existing one forward
     /// otherwise. Used to return whether it had created one, so a caller
     /// could load only for a fresh window; both callers now load either way,
@@ -112,7 +128,8 @@ final class HistoryWindowController {
         window.isReleasedWhenClosed = false
         window.contentView = NSHostingView(rootView: HistoryView(
             viewModel: viewModel,
-            onNewMessage: { [weak self] in self?.onNewMessage() }))
+            onNewMessage: { [weak self] seed in self?.onNewMessage(seed) },
+            onAddSubscription: { [weak self] in self?.onAddSubscription() }))
         self.window = window
 
         window.makeKeyAndOrderFront(nil)

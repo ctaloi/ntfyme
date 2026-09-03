@@ -785,8 +785,7 @@ extension MessageStore {
 
     /// Writes per-topic alert settings to the `Subscription` row.
     public func setAlertSettings(_ settings: TopicAlertSettings,
-                                 forServer serverID: UUID, topic: String) throws {
-        guard let server = try server(serverID) else {
+                                 forServer serverID: UUID, topic: String) throws {        guard let server = try server(serverID) else {
             Log.store.error("no server record for the requested id")
             return
         }

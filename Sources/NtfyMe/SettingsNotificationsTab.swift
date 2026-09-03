@@ -38,28 +38,33 @@ struct SettingsNotificationsTab: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 28) {
-                SettingsSection(title: "Alerts") {
+                SettingsSection(title: "Alerts", icon: "bell.badge") {
                     Toggle("Record only \u{2014} never alert", isOn: recordOnlyBinding)
                         .font(.system(size: 13))
+                        .toggleStyle(.switch)
                         .help("Every message is still saved to history; nothing raises a notification.")
                 }
 
-                SettingsSection(title: "Defaults for New Topics") {
+                SettingsSection(title: "Defaults for New Topics", icon: "slider.horizontal.3") {
                     SettingsRow(label: "Minimum priority") {
+                        // Segmented, not a menu — the same control the Compose
+                        // window uses for the same five values, so "which one
+                        // of these is my current setting" has one shape
+                        // everywhere in the app.
                         Picker("", selection: $defaultMinPriority) {
                             ForEach(NtfyPriority.allCases, id: \.rawValue) { priority in
                                 Text(priorityLabel(priority)).tag(priority.rawValue)
                             }
                         }
                         .labelsHidden()
-                        .pickerStyle(.menu)
-                        .frame(width: 140)
+                        .pickerStyle(.segmented)
+                        .frame(width: 340)
                         .accessibilityLabel("Minimum priority")
                     }
                     SettingsFootnote("Applies when a topic is added. Each topic's own mute and priority can still be changed in Settings \u{2192} Servers.")
                 }
 
-                SettingsSection(title: "System Permission") {
+                SettingsSection(title: "System Permission", icon: "lock.shield") {
                     permissionStatusView
                 }
             }
@@ -78,35 +83,45 @@ struct SettingsNotificationsTab: View {
         case .authorized:
             Label("Notifications are allowed.", systemImage: "checkmark.circle.fill")
                 .font(.system(size: 13))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.green)
                 .accessibilityLabel("Notifications are allowed")
 
         case .denied:
-            Label("Notifications are turned off for NtfyMe in System Settings \u{2014} this is why nothing is alerting.", systemImage: "exclamationmark.triangle.fill")
-                .font(.system(size: 13))
-                .foregroundStyle(.orange)
-                .accessibilityLabel("Notifications are denied")
-            Button {
-                openNotificationSettings()
-            } label: {
-                Label("Open Notification Settings\u{2026}", systemImage: "arrow.up.forward.app")
+            // The one state whose entire job is answering "why isn't this
+            // alerting" — so it gets the loudest, most actionable treatment,
+            // not the same grey line the healthy state gets.
+            VStack(alignment: .leading, spacing: 10) {
+                Label("Notifications are turned off for NtfyMe in System Settings \u{2014} this is why nothing is alerting.", systemImage: "exclamationmark.triangle.fill")
+                    .font(.system(size: 13))
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityLabel("Notifications are denied")
+                Button {
+                    openNotificationSettings()
+                } label: {
+                    Label("Open Notification Settings\u{2026}", systemImage: "arrow.up.forward.app")
+                }
+                .buttonStyle(.bordered)
             }
 
         case .notDetermined:
-            Text("NtfyMe hasn't asked for notification permission yet.")
-                .font(.system(size: 13))
-                .foregroundStyle(.secondary)
-            Button {
-                Task { await enableNotifications() }
-            } label: {
-                if isRequestingAuthorization {
-                    ProgressView().controlSize(.small)
-                } else {
-                    Text("Enable Notifications")
+            VStack(alignment: .leading, spacing: 10) {
+                Text("NtfyMe hasn't asked for notification permission yet.")
+                    .font(.system(size: 13))
+                    .foregroundStyle(.secondary)
+                Button {
+                    Task { await enableNotifications() }
+                } label: {
+                    if isRequestingAuthorization {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Label("Enable Notifications", systemImage: "bell.badge")
+                    }
                 }
+                .buttonStyle(.borderedProminent)
+                .disabled(isRequestingAuthorization)
+                .accessibilityLabel("Enable notifications")
             }
-            .disabled(isRequestingAuthorization)
-            .accessibilityLabel("Enable notifications")
         }
     }
 

@@ -2,6 +2,17 @@ import Foundation
 import Observation
 import NtfyKit
 
+/// A destination handed to the Compose window before it opens — "send to
+/// this topic" from the History window's toolbar or a row's context menu.
+///
+/// Only the destination, deliberately: the message fields stay empty, since
+/// pre-filling a draft with someone else's words invites sending text the
+/// user did not write.
+struct ComposeSeed: Equatable, Sendable {
+    let serverID: UUID
+    let topic: String
+}
+
 /// Backs the Compose window: the draft, the destination, and one send.
 ///
 /// Shaped like `SettingsModel` deliberately — `@MainActor @Observable`, with
@@ -64,7 +75,36 @@ final class ComposeModel {
     }
 
     var canSend: Bool {
-        selectedServerID != nil && draft.isSendable && !isSending
+        // `topicValidation == .valid`, not just `draft.isSendable`'s non-empty
+        // check: an invalid topic is a request that can only fail at the
+        // server, and the destination bar already shows why — disabling the
+        // button is the same answer given before the round trip instead of
+        // after it.
+        selectedServerID != nil && draft.isSendable
+            && topicValidation == .valid && !isSending
+    }
+
+    /// The destination bar's trailing mark, straight from ntfy's own rule
+    /// (`NtfyEndpoint.isTopicValid`) rather than a second copy of it. Empty
+    /// is its own state — nothing typed yet is not an error, and painting a
+    /// warning on a fresh window would be scolding the user for arriving.
+    var topicValidation: TopicValidation {
+        if draft.topic.isEmpty { return .empty }
+        return NtfyEndpoint.isTopicValid(draft.topic) ? .valid : .invalid
+    }
+
+    enum TopicValidation: Equatable {
+        case empty, valid, invalid
+    }
+
+    /// Applies a destination handed over before the window opened (see
+    /// `ComposeSeed`). Runs before `refresh()`, whose keep-or-repair logic
+    /// then does the right thing for free: a server that still exists keeps
+    /// the selection, and a non-empty topic is never overwritten by the
+    /// single-topic prefill.
+    func prefill(from seed: ComposeSeed) {
+        selectedServerID = seed.serverID
+        draft.topic = seed.topic
     }
 
     func refresh() async {

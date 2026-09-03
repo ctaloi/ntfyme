@@ -104,15 +104,23 @@ public struct NtfyEndpoint: Sendable {
         "-_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
     )
 
+    /// ntfy's own topic rule, public so the Compose window can show it live
+    /// while the user types instead of teaching it with an error after a
+    /// round trip. One rule, two readers — this must not drift from
+    /// `validate`, which is why `validate` calls this rather than keeping
+    /// its own copy.
+    public static func isTopicValid(_ topic: String) -> Bool {
+        guard (1...64).contains(topic.count) else { return false }
+        return topic.allSatisfy(allowedTopicCharacters.contains)
+    }
+
     /// Validates against ntfy's rule rather than against a list of characters
     /// that would break *this* client's URL building. The narrower rule let
     /// through `#` (silently truncating the path at a fragment), whitespace,
     /// and non-ASCII — none of which name a real topic, so a request built
     /// from one can only fail confusingly at the server.
     private func validate(_ topic: String) throws {
-        guard (1...64).contains(topic.count),
-              topic.allSatisfy(Self.allowedTopicCharacters.contains)
-        else { throw Error.invalidTopic(topic) }
+        guard Self.isTopicValid(topic) else { throw Error.invalidTopic(topic) }
     }
 
     /// Both steps below are documented as failable and were force-unwrapped

@@ -41,6 +41,21 @@ struct NtfyMeApp: App {
                     appDelegate.openCompose()
                 }
                 .keyboardShortcut("n", modifiers: .command)
+
+                Button("Add Subscription…") {
+                    appDelegate.openAddSubscription()
+                }
+                .keyboardShortcut("n", modifiers: [.command, .shift])
+            }
+            // Right after "About", the Sparkle-conventional spot. The item
+            // is inert in builds built without updater configuration (see
+            // `Updater.isConfigured`) rather than shown disabled — the
+            // menu should not advertise a feature the build does not have.
+            CommandGroup(after: .appInfo) {
+                Button("Check for Updates…") {
+                    appDelegate.checkForUpdates()
+                }
+                .keyboardShortcut("u", modifiers: .command)
             }
             CommandGroup(replacing: .appSettings) {
                 Button("Settings…") {

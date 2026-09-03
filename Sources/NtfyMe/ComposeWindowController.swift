@@ -25,7 +25,13 @@ final class ComposeWindowController {
         self.model = model
     }
 
-    func show() {
+    /// Opens the window, optionally seeded with a destination (see
+    /// `ComposeSeed`) — the "send to this topic" path from History. Prefill
+    /// happens before the first render, so the bar never flashes empty; on
+    /// an already-open window it lands in the live fields, which is the
+    /// behaviour you want when you ask twice.
+    func show(seed: ComposeSeed? = nil) {
+        if let seed { model.prefill(from: seed) }
         if let window {
             window.makeKeyAndOrderFront(nil)
             NSApp.activate()
@@ -33,7 +39,7 @@ final class ComposeWindowController {
         }
 
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 460, height: 520),
+            contentRect: NSRect(x: 0, y: 0, width: 480, height: 640),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false)

@@ -9,6 +9,11 @@ struct MenuBarPopoverView: View {
     @ObservedObject var viewModel: MenuBarViewModel
     let onOpenHistory: () -> Void
     let onOpenSettings: () -> Void
+    /// Opens the Compose window (⌘N everywhere else in the app; this is the
+    /// popover's own affordance for it — a paper plane in the header, where
+    /// the unread count lives, because composing is the other half of what
+    /// this app does with a topic).
+    let onNewMessage: () -> Void
     let onQuit: () -> Void
     /// A row tap opens the app (History, scrolled to that message), not the
     /// message's `click` URL — keyed on `MessageSnapshot.id`, the unique key
@@ -84,6 +89,13 @@ struct MenuBarPopoverView: View {
             Text("NtfyMe")
                 .font(.system(size: 15, weight: .semibold))
             Spacer()
+            Button(action: onNewMessage) {
+                Image(systemName: "paperplane.fill")
+                    .foregroundStyle(Color.accentColor)
+            }
+            .buttonStyle(.plain)
+            .help("New Message (⌘N)")
+            .accessibilityLabel("New Message")
             if viewModel.unreadCount > 0 {
                 Text("\(viewModel.unreadCount) unread")
                     .font(.system(size: TextSize.metadata))
@@ -102,7 +114,7 @@ struct MenuBarPopoverView: View {
 
     /// One line ("Connected", "N servers") when everything is fine.
     /// Otherwise expands below the summary into one row per problem server
-    /// — name plus `ConnectionState.problemLabel`, e.g. "vaspian-alerts —
+    /// — name plus `ConnectionState.problemLabel`, e.g. "server-alerts —
     /// Rate limited" — and a Retry affordance when at least one of those
     /// problems is something a retry can plausibly help with. Collapsing
     /// every non-`.open` state to the single word "Disconnected" was the

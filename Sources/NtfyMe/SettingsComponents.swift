@@ -14,13 +14,26 @@ import SwiftUI
 /// inheriting either `Form` style's built-in choices.
 struct SettingsSection<Content: View>: View {
     let title: String
+    /// Optional SF Symbol drawn before the title — a quiet wayfinding cue
+    /// that also lets each section's *voice* differ (a bell for alerts, a
+    /// clock for retention) where a bare text heading made every section
+    /// read the same. `nil` where an icon would be noise.
+    var icon: String? = nil
     @ViewBuilder let content: Content
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text(title)
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(.primary)
+            HStack(spacing: 6) {
+                if let icon {
+                    Image(systemName: icon)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .accessibilityHidden(true)
+                }
+                Text(title)
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(.primary)
+            }
             VStack(alignment: .leading, spacing: 10) {
                 content
             }

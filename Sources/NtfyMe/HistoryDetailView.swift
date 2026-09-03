@@ -7,15 +7,34 @@ import NtfyKit
 /// rows are selected, or an empty-state placeholder when none are.
 struct HistoryDetailView: View {
     @Bindable var viewModel: HistoryViewModel
+    /// Opens Compose prefilled with this message's destination (see
+    /// `ComposeSeed`). Injected rather than reached for, like the toolbar
+    /// actions on `HistoryView` — this view renders in snapshot tests with
+    /// no app around it.
+    var onComposeToTopic: (ComposeSeed) -> Void = { _ in }
 
     var body: some View {
         Group {
             let selected = viewModel.messages.filter { viewModel.selection.contains($0.id) }
             if selected.isEmpty {
-                HistoryStatusView(systemImage: "envelope", title: "No Message Selected",
-                                  message: "Select a message to see its contents.")
+                if viewModel.messages.isEmpty {
+                    // The list beside this pane is showing its own empty
+                    // state — a full "No Message Selected" banner here made
+                    // two competing grey headlines for one fact (the
+                    // screenshot that prompted this). One quiet glyph,
+                    // barely there, is the pane agreeing with the list.
+                    Image(systemName: viewModel.scope == .unread ? "checkmark.seal" : "tray")
+                        .font(.system(size: 44, weight: .light))
+                        .foregroundStyle(.quaternary)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .accessibilityHidden(true)
+                } else {
+                    HistoryStatusView(systemImage: "envelope", title: "No Message Selected",
+                                      message: "Select a message to see its contents.")
+                }
             } else if selected.count == 1 {
-                MessageDetailContent(snapshot: selected[0], viewModel: viewModel)
+                MessageDetailContent(snapshot: selected[0], viewModel: viewModel,
+                                     onComposeToTopic: onComposeToTopic)
             } else {
                 MultiSelectionSummary(snapshots: selected, viewModel: viewModel)
             }
@@ -47,7 +66,13 @@ struct HistoryDetailView: View {
 private struct MessageDetailContent: View {
     let snapshot: MessageSnapshot
     let viewModel: HistoryViewModel
+    var onComposeToTopic: (ComposeSeed) -> Void = { _ in }
     @State private var quickLookURL: URL?
+    /// One glance of feedback after Copy — the toolbar icon becomes a
+    /// checkmark, then reverts. Copy has no other visible effect (the text
+    /// goes to the pasteboard, somewhere the user is not looking), so without
+    /// this the button reads as a no-op right up until they paste somewhere.
+    @State private var showCopiedCheckmark = false
 
     var body: some View {
         ScrollView {
@@ -60,12 +85,8 @@ private struct MessageDetailContent: View {
                 if !snapshot.tags.isEmpty {
                     tagRow
                 }
-                if let attachmentURL = localAttachmentURL {
-                    Button {
-                        quickLookURL = attachmentURL
-                    } label: {
-                        Label("Preview Attachment", systemImage: "eye")
-                    }
+                if snapshot.attachment != nil {
+                    attachmentCard
                 }
                 if !messageActions.isEmpty {
                     actionButtons
@@ -290,6 +311,53 @@ private struct MessageDetailContent: View {
         .fadedTrailingEdge()
     }
 
+    /// The attachment as its own small object — icon, name, size — rather
+    /// than a bare "Preview" button that left the user guessing what the file
+    /// was or how big it was before opening it. The Preview button appears
+    /// only once the file is actually on disk (`localFilename == nil` until
+    /// `AttachmentFetcher` has it); before that the card still shows what is
+    /// coming, with the size as the honest substitute for a progress bar.
+    @ViewBuilder
+    private var attachmentCard: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "paperclip")
+                .foregroundStyle(.secondary)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(snapshot.attachment?.name ?? "Attachment")
+                    .font(.system(size: 13, weight: .medium))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Text(attachmentSubtitle)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 8)
+            if let url = localAttachmentURL {
+                Button {
+                    quickLookURL = url
+                } label: {
+                    Label("Preview", systemImage: "eye")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+            }
+        }
+        .padding(10)
+        .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
+        .accessibilityElement(children: .combine)
+    }
+
+    /// Size when known, "Downloading…" when the file has not landed yet —
+    /// never blank, since a card with a name and nothing else reads as broken.
+    private var attachmentSubtitle: String {
+        guard let attachment = snapshot.attachment else { return "" }
+        if let size = attachment.size, size > 0 {
+            return ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file)
+        }
+        return attachment.localFilename == nil ? "Downloading…" : ""
+    }
+
     /// Resolves the attachment's local file for Quick Look, or `nil` when
     /// there is nothing to preview: no attachment, no downloaded file yet
     /// (`localFilename == nil`), or no attachments directory configured
@@ -325,12 +393,20 @@ private struct MessageDetailContent: View {
                 Button(action.title) {
                     Task { await NotificationActionHandler.perform(action) }
                 }
+                .buttonStyle(.bordered)
             }
         }
     }
 
     @ToolbarContentBuilder
     private var toolbarActions: some ToolbarContent {
+        // One button inline, one menu for everything else. The first
+        // version put all five actions on the toolbar and the screenshot
+        // said what six trailing icons always say: clutter. Read/unread is
+        // the one action this surface exists for; everything else — Copy,
+        // Send-to-Topic, Open Link, Delete — is real but occasional, and
+        // lives one click away in the overflow, the same place every mature
+        // Mac app puts the long tail.
         ToolbarItemGroup {
             Button {
                 Task { await viewModel.markRead([snapshot], read: !snapshot.isRead) }
@@ -340,28 +416,46 @@ private struct MessageDetailContent: View {
             }
             .help(snapshot.isRead ? "Mark as Unread" : "Mark as Read")
 
-            Button {
-                viewModel.copy([snapshot])
-            } label: {
-                Label("Copy", systemImage: "doc.on.doc")
-            }
-            .help("Copy")
-
-            if snapshot.click != nil {
+            Menu {
                 Button {
-                    viewModel.openClickURL(snapshot)
+                    viewModel.copy([snapshot])
+                    showCopiedCheckmark = true
+                    Task {
+                        try? await Task.sleep(for: .seconds(1.4))
+                        showCopiedCheckmark = false
+                    }
                 } label: {
-                    Label("Open Link", systemImage: "arrow.up.right.square")
+                    Label(showCopiedCheckmark ? "Copied" : "Copy",
+                          systemImage: showCopiedCheckmark ? "checkmark" : "doc.on.doc")
                 }
-                .help("Open Link")
-            }
 
-            Button(role: .destructive) {
-                Task { await viewModel.delete([snapshot]) }
+                Button {
+                    onComposeToTopic(ComposeSeed(serverID: snapshot.serverID,
+                                                 topic: snapshot.topic))
+                } label: {
+                    Label("New Message to This Topic", systemImage: "paperplane")
+                }
+
+                if snapshot.click != nil {
+                    Button {
+                        viewModel.openClickURL(snapshot)
+                    } label: {
+                        Label("Open Link", systemImage: "arrow.up.right.square")
+                    }
+                }
+
+                Divider()
+
+                Button(role: .destructive) {
+                    Task { await viewModel.delete([snapshot]) }
+                } label: {
+                    Label("Delete", systemImage: "trash")
+                }
             } label: {
-                Label("Delete", systemImage: "trash")
+                Label("More", systemImage: "ellipsis.circle")
             }
-            .help("Delete")
+            .help("More Actions")
+            .accessibilityLabel(Text("More actions for this message"))
         }
     }
 }
@@ -369,17 +463,56 @@ private struct MessageDetailContent: View {
 private struct MultiSelectionSummary: View {
     let snapshots: [MessageSnapshot]
     let viewModel: HistoryViewModel
+    /// Same one-glance Copy feedback the single-message toolbar has, so the
+    /// two surfaces do not disagree about what pressing Copy feels like.
+    @State private var showCopiedCheckmark = false
 
     var body: some View {
-        VStack(spacing: 16) {
-            Text("\(snapshots.count) Messages Selected")
-                .font(.title3.bold())
-            HStack {
-                Button("Mark as Read") { Task { await viewModel.markRead(snapshots, read: true) } }
-                Button("Mark as Unread") { Task { await viewModel.markRead(snapshots, read: false) } }
-                Button("Copy") { viewModel.copy(snapshots) }
-                Button("Delete", role: .destructive) { Task { await viewModel.delete(snapshots) } }
+        VStack(spacing: 14) {
+            Image(systemName: "checkmark.circle")
+                .font(.system(size: 36, weight: .light))
+                .foregroundStyle(.secondary)
+                .accessibilityHidden(true)
+            VStack(spacing: 4) {
+                Text("\(snapshots.count) Messages Selected")
+                    .font(.title3.bold())
+                Text("One action, applied to all of them.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
             }
+            HStack(spacing: 8) {
+                Button {
+                    Task { await viewModel.markRead(snapshots, read: true) }
+                } label: {
+                    Label("Mark as Read", systemImage: "envelope.open")
+                }
+                Button {
+                    Task { await viewModel.markRead(snapshots, read: false) }
+                } label: {
+                    Label("Mark as Unread", systemImage: "envelope.badge")
+                }
+                Button {
+                    viewModel.copy(snapshots)
+                    showCopiedCheckmark = true
+                    Task {
+                        try? await Task.sleep(for: .seconds(1.4))
+                        showCopiedCheckmark = false
+                    }
+                } label: {
+                    Label(showCopiedCheckmark ? "Copied" : "Copy",
+                          systemImage: showCopiedCheckmark ? "checkmark" : "doc.on.doc")
+                }
+                .animation(.snappy(duration: 0.15), value: showCopiedCheckmark)
+                Button {
+                    Task { await viewModel.delete(snapshots) }
+                } label: {
+                    Label("Delete", systemImage: "trash")
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.red)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.regular)
         }
         .padding()
         .frame(maxWidth: .infinity, maxHeight: .infinity)

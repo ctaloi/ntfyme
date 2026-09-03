@@ -280,3 +280,59 @@ private final class Recorder: @unchecked Sendable {
     #expect(model.errorMessage == "That server is no longer configured.")
     #expect(model.draft.body == "hello")
 }
+
+// MARK: - Live topic validation
+
+/// The destination bar's trailing mark, and `canSend`'s new requirement that
+/// the topic not merely be non-empty but actually valid — the same answer
+/// `send()` would give, available before the round trip.
+@MainActor @Test func topicValidationTracksNtfysRule() async throws {
+    let (model, serverID) = try makeModel { _, _, _ in }
+    await model.refresh()
+
+    model.draft.topic = ""
+    #expect(model.topicValidation == .empty, "nothing typed yet is not an error")
+
+    model.draft.topic = "alerts"
+    #expect(model.topicValidation == .valid)
+
+    model.draft.topic = "has spaces"
+    #expect(model.topicValidation == .invalid)
+    model.draft.body = "hello"
+    #expect(model.canSend == false, "an invalid topic is a request that can only fail at the server")
+
+    model.draft.topic = String(repeating: "a", count: 65)
+    #expect(model.topicValidation == .invalid)
+    #expect(model.selectedServerID == serverID)
+}
+
+// MARK: - Seeding from History ("send to this topic")
+
+/// `prefill(from:)` sets the destination and nothing else — the message
+/// fields stay empty, because a draft quoting someone else's body invites
+/// sending text the user did not write.
+@MainActor @Test func prefillSetsTheDestinationOnly() async throws {
+    let (model, serverID) = try makeModel { _, _, _ in }
+    model.draft.body = "something the user typed"
+
+    model.prefill(from: ComposeSeed(serverID: serverID, topic: "deploys"))
+    await model.refresh()
+
+    #expect(model.selectedServerID == serverID)
+    #expect(model.draft.topic == "deploys")
+    #expect(model.draft.body == "something the user typed")
+    #expect(model.draft.title == nil)
+    #expect(model.draft.tags.isEmpty)
+}
+
+/// A prefilled topic is never overwritten by the single-topic prefill
+/// (`refresh` only fills when the field is empty).
+@MainActor @Test func prefillSurvivesRefresh() async throws {
+    let (model, serverID) = try makeModel { _, _, _ in }
+    model.prefill(from: ComposeSeed(serverID: serverID, topic: "deploys"))
+
+    await model.refresh()
+
+    #expect(model.draft.topic == "deploys")
+    #expect(model.selectedServerID == serverID)
+}

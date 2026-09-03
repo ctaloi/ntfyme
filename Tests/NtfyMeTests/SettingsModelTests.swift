@@ -268,3 +268,112 @@ private func makeModel() throws -> (store: MessageStore, model: SettingsModel) {
     await model.removeServer(serverID)
     #expect(notifiedCount == 4)
 }
+
+// MARK: - Subscription import/export
+
+/// The transfer file round-trips, and the decoder rejects everything it
+/// should: wrong version, invalid topic, unusable server URL, out-of-range
+/// priority, and duplicate rows (deduped rather than shown twice).
+@MainActor @Test func transferFileRoundTripAndValidation() throws {
+    let originals: [SubscriptionTransfer] = [
+        SubscriptionTransfer(server: "https://ntfy.sh", topic: "alerts",
+                             displayName: nil, muted: false, minAlertPriority: 3),
+        SubscriptionTransfer(server: "HTTPS://NTFY.Example.com/", topic: "deploys",
+                             displayName: "Deploys", muted: true, minAlertPriority: 4),
+    ]
+
+    let data = try SubscriptionsTransferCodec.encode(originals)
+    let decoded = try SubscriptionsTransferCodec.decode(data)
+
+    // URLs normalized on the way through, so an independently-typed copy
+    // of the same server matches on import.
+    #expect(decoded.count == 2)
+    #expect(decoded[0].server == "https://ntfy.sh")
+    #expect(decoded[1].server == "https://ntfy.example.com")
+    #expect(decoded[1].topic == "deploys")
+    #expect(decoded[1].muted)
+}
+
+@Test func transferDecoderRejectsBadFiles() throws {
+    func fileJSON(_ body: String) -> Data {
+        Data("""
+        {"version":1,"subscriptions":[\(body)]}
+        """.utf8)
+    }
+
+    #expect(throws: DecodingError.self) {
+        try SubscriptionsTransferCodec.decode(Data("""
+        {"version":99,"subscriptions":[]}
+        """.utf8))
+    }
+    #expect(throws: DecodingError.self) {
+        try SubscriptionsTransferCodec.decode(fileJSON(
+            #"{"server":"https://ntfy.sh","topic":"has spaces","muted":false,"minAlertPriority":1}"#))
+    }
+    #expect(throws: DecodingError.self) {
+        try SubscriptionsTransferCodec.decode(fileJSON(
+            #"{"server":"ftp://x.example","topic":"ok","muted":false,"minAlertPriority":1}"#))
+    }
+    #expect(throws: DecodingError.self) {
+        try SubscriptionsTransferCodec.decode(fileJSON(
+            #"{"server":"https://ntfy.sh","topic":"ok","muted":false,"minAlertPriority":9}"#))
+    }
+    // A valid duplicate row is deduped, not doubled.
+    let duplicated = try SubscriptionsTransferCodec.decode(fileJSON(
+        #"{"server":"https://ntfy.sh","topic":"alerts","muted":false,"minAlertPriority":1},"# +
+        #"{"server":"https://ntfy.sh","topic":"alerts","muted":false,"minAlertPriority":1}"#))
+    #expect(duplicated.count == 1)
+}
+
+/// Importing against a store that already follows one of the file's topics:
+/// the new server is created without a credential, the known topic is
+/// skipped, and the new topic arrives with the file's alert settings —
+/// not the default `addTopic` would have seeded.
+@MainActor @Test func importingSkipsKnownTopicsAndCarriesSettings() async throws {
+    let (store, model) = try makeModel()
+    await model.seedDefaultServerIfNeeded()
+    // The seed arrives with no topics; "alerts" here is something this
+    // machine already follows, which the seed alone does not give us.
+    let seededID = try #require(try await store.servers().first?.id)
+    try await store.addTopic("alerts", toServer: seededID)
+
+    let outcome = await model.importSubscriptions([
+        // Already followed on the seeded ntfy.sh.
+        SubscriptionTransfer(server: "https://ntfy.sh", topic: "alerts",
+                             displayName: nil, muted: false, minAlertPriority: 3),
+        // New topic on the known server, with non-default settings.
+        SubscriptionTransfer(server: "https://ntfy.sh", topic: "deploys",
+                             displayName: "Deploys", muted: true, minAlertPriority: 4),
+        // A server this machine has never seen. Its host becomes the name.
+        SubscriptionTransfer(server: "https://office.example.com", topic: "builds",
+                             displayName: nil, muted: false, minAlertPriority: 1),
+    ])
+
+    #expect(outcome.imported == 2)
+    #expect(outcome.skipped == 1)
+    #expect(outcome.failed == 0)
+
+    let servers = try await store.servers()
+    #expect(servers.count == 2, "the unknown server was created")
+    let office = try #require(servers.first { $0.baseURL.host == "office.example.com" })
+    #expect(office.name == "office.example.com")
+    #expect(office.authKindRaw == SettingsCredentialKind.unauthenticated.rawValue)
+
+    let ntfySh = try #require(servers.first { $0.baseURL.host == "ntfy.sh" })
+    let deploys = try await store.alertSettings(forServer: ntfySh.id, topic: "deploys")
+    #expect(deploys.muted == true)
+    #expect(deploys.minAlertPriority == 4)
+
+    // Importing the same file again skips everything — the idempotence the
+    // "skipped" column exists to express.
+    let again = await model.importSubscriptions([
+        SubscriptionTransfer(server: "https://ntfy.sh", topic: "alerts",
+                             displayName: nil, muted: false, minAlertPriority: 3),
+        SubscriptionTransfer(server: "https://ntfy.sh", topic: "deploys",
+                             displayName: "Deploys", muted: true, minAlertPriority: 4),
+        SubscriptionTransfer(server: "https://office.example.com", topic: "builds",
+                             displayName: nil, muted: false, minAlertPriority: 1),
+    ])
+    #expect(again.imported == 0)
+    #expect(again.skipped == 3)
+}

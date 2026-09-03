@@ -12,5 +12,11 @@
     <key>CFBundleIconFile</key><string>AppIcon</string>
     <key>LSMinimumSystemVersion</key><string>__MINIMUM_MACOS__</string>
     <key>NSHumanReadableCopyright</key><string>MIT licensed</string>
+    <!-- Sparkle auto-update. Both values are substituted by
+         Scripts/build-app.sh from config.sh; an empty SUPublicEDKey means
+         the app never starts its updater (see Updater.swift). -->
+    <key>SUFeedURL</key><string>__UPDATE_FEED_URL__</string>
+    <key>SUPublicEDKey</key><string>__SPARKLE_ED_PUBLIC_KEY__</string>
+    <key>SUEnableAutomaticChecks</key><true/>
 </dict>
 </plist>

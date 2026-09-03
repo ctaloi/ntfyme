@@ -54,8 +54,8 @@ private struct MockSidebar: View {
                 topic("backups", 1, muted: false)
             }
             Section("ntfy.sh") {
-                topic("vaspian-alerts", 0, muted: false)
-                topic("vaspian-test", 0, muted: true)
+                topic("server-alerts", 0, muted: false)
+                topic("smoke-test", 0, muted: true)
             }
         }
         .listStyle(.sidebar)

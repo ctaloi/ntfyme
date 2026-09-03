@@ -207,7 +207,7 @@ closure, as `SettingsModelTests` does: send succeeds, send fails and keeps
 the draft, credential lookup fails, and the post-success clear keeps server
 and topic.
 
-One live verification before this is called done: send to `vaspian-test` on
+One live verification before this is called done: send to `smoke-test` on
 ntfy.sh and watch it arrive in History through the normal stream path. The
 mock proves the request is shaped right; only a real server proves it is
 shaped right *for ntfy*.

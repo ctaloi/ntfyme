@@ -379,6 +379,34 @@ private let minimumMeanAlpha = 0.85
     #expect(alpha > minimumMeanAlpha)
 }
 
+/// The Unread view with the archive behind it and everything read — the
+/// all-caught-up end state. Not the "Nothing matches the current filters."
+/// shrug the filtered-empty branch would have given it: a green seal, the
+/// words that say it is a win, and the door out. The detail pane beside it
+/// shows only its quiet glyph, so the window does not present two full
+/// competing empty-state banners for one fact.
+@MainActor
+@Test(requiresSnapshotRendering) func historyUnreadAllCaughtUp() async throws {
+    let fixture = try HistorySnapshotFixtures.makePopulated()
+    try await fixture.store.markAllRead(serverID: nil, topic: nil)
+    let viewModel = HistoryViewModel(store: fixture.store)
+    await viewModel.loadSidebar()
+    viewModel.scope = .unread
+    await viewModel.refreshMessages()
+
+    #expect(viewModel.messages.isEmpty)
+    #expect(viewModel.scope == .unread)
+    #expect(!viewModel.hasFilterConstraints, "scope alone is not a filter the user should be told to clear")
+    #expect(!viewModel.archiveIsEmpty)
+
+    _ = try renderSnapshot(HistoryView(viewModel: viewModel),
+                           size: CGSize(width: 900, height: 560), to: "history-caught-up.png")
+    let colors = try distinctColorCount(ofPNGAt: "/tmp/ntfyshots/history-caught-up.png")
+    #expect(colors > 12)
+    let alpha = try meanAlpha(ofPNGAt: "/tmp/ntfyshots/history-caught-up.png")
+    #expect(alpha > minimumMeanAlpha)
+}
+
 @MainActor
 @Test(requiresSnapshotRendering) func historyNoSelection() async throws {
     let fixture = try HistorySnapshotFixtures.makePopulated()
@@ -414,8 +442,13 @@ private let minimumMeanAlpha = 0.85
         }
     }
 
-    _ = try renderSnapshot(HistorySidebarView(viewModel: viewModel),
-                           size: CGSize(width: 240, height: 420), to: "history-sidebar-status.png")
+    // The view itself paints no ground — inside the window the split
+    // view's floating sidebar card is the ground — so the standalone
+    // render wraps it in one, keeping the unpainted-ground guard's intent
+    // (rows must draw) without asking the view for the wrong paint.
+    _ = try renderSnapshot(HistorySidebarView(viewModel: viewModel)
+        .background(Color(nsColor: .windowBackgroundColor)),
+        size: CGSize(width: 240, height: 420), to: "history-sidebar-status.png")
     let colors = try distinctColorCount(ofPNGAt: "/tmp/ntfyshots/history-sidebar-status.png")
     #expect(colors > minimumDistinctColors)
     let alpha = try meanAlpha(ofPNGAt: "/tmp/ntfyshots/history-sidebar-status.png")
@@ -469,4 +502,24 @@ private let minimumMeanAlpha = 0.85
     #expect(colors > minimumDistinctColors)
     let alpha = try meanAlpha(ofPNGAt: "/tmp/ntfyshots/history-long-content.png")
     #expect(alpha > minimumMeanAlpha)
+}
+
+/// The common case the sidebar now treats specially: one server, no
+/// folders — a flat list of topics, no server header naming the only
+/// server that exists.
+@MainActor
+@Test(requiresSnapshotRendering) func historySidebarSingleServerIsFlat() async throws {
+    let fixture = try HistorySnapshotFixtures.makePopulated()
+    try await fixture.store.removeServer(fixture.homeLabID, attachmentsDirectory: nil)
+    try await fixture.store.removeServer(fixture.officeID, attachmentsDirectory: nil)
+    let viewModel = HistoryViewModel(store: fixture.store)
+    await viewModel.loadSidebar()
+    await viewModel.refreshMessages()
+
+    #expect(viewModel.servers.count == 1)
+    #expect(!viewModel.showsServerHeaders)
+
+    _ = try renderSnapshot(HistoryView(viewModel: viewModel),
+                           size: CGSize(width: 900, height: 560), to: "history-single-server.png")
+    #expect(try distinctColorCount(ofPNGAt: "/tmp/ntfyshots/history-single-server.png") > 12)
 }

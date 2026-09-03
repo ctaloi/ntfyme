@@ -10,6 +10,8 @@ import NtfyKit
 /// that file's doc comment for the three bugs that came from it.
 struct HistoryListView: View {
     @Bindable var viewModel: HistoryViewModel
+    /// Opens Compose prefilled with a row's destination (see `ComposeSeed`).
+    var onComposeToTopic: (ComposeSeed) -> Void = { _ in }
 
     var body: some View {
         content
@@ -61,6 +63,12 @@ struct HistoryListView: View {
                     HistoryStatusView(systemImage: "tray", title: "No Messages Yet",
                                       message: "New messages appear here as they arrive.")
                 }
+            } else if viewModel.scope == .unread && !viewModel.hasFilterConstraints {
+                // The Unread view with an archive behind it and nothing left
+                // in it is not a filtered-to-nothing dead end — it is the
+                // state the whole view exists to reach. Say so like it is a
+                // win, and offer the way out of the empty pane.
+                caughtUpState
             } else {
                 HistoryStatusView(systemImage: "line.3.horizontal.decrease.circle", title: "No Messages",
                                   message: "Nothing matches the current filters.") {
@@ -70,6 +78,38 @@ struct HistoryListView: View {
         } else {
             list
         }
+    }
+
+    /// The Unread view's end state — a green seal rather than a grey
+    /// "nothing matched" shrug. The detail pane deliberately shows only its
+    /// quiet glyph beside this: two full empty-state banners side by side
+    /// (the screenshot that prompted this) read as something broken, not as
+    /// two panes politely agreeing there is nothing to show.
+    private var caughtUpState: some View {
+        VStack(spacing: 14) {
+            ZStack {
+                Circle()
+                    .fill(Color.green.opacity(0.12))
+                    .frame(width: 72, height: 72)
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 32, weight: .medium))
+                    .foregroundStyle(.green)
+                    .symbolEffect(.bounce, value: viewModel.messages.isEmpty)
+            }
+            Text("You're All Caught Up")
+                .font(.title3.bold())
+            Text("No unread messages.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+            Button("Show All Messages") {
+                viewModel.scope = .all
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .padding(.top, 2)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .accessibilityElement(children: .combine)
     }
 
     private func actionErrorBanner(_ message: String) -> some View {
@@ -104,11 +144,21 @@ struct HistoryListView: View {
         // hidden inside a property observer.
         ScrollViewReader { proxy in
             List(selection: $viewModel.selection) {
-                ForEach(viewModel.messages) { snapshot in
-                    HistoryRow(snapshot: snapshot)
-                        .tag(snapshot.id)
-                        .onAppear { Task { await viewModel.loadMoreIfNeeded(currentItem: snapshot) } }
-                        .contextMenu { contextMenu(for: snapshot) }
+                // Grouped by day, Mail-style. A bare list of a few hundred
+                // rows is a wall; "Today" / "Yesterday" / "Tuesday" is the
+                // structure the time column was already implying. Groups are
+                // built from *consecutive* same-day runs rather than a
+                // dictionary, so the list's own order (newest first) is
+                // preserved exactly, pagination included.
+                ForEach(dayGroups) { group in
+                    Section(group.label) {
+                        ForEach(group.messages) { snapshot in
+                            HistoryRow(snapshot: snapshot)
+                                .tag(snapshot.id)
+                                .onAppear { Task { await viewModel.loadMoreIfNeeded(currentItem: snapshot) } }
+                                .contextMenu { contextMenu(for: snapshot) }
+                        }
+                    }
                 }
                 if viewModel.isLoadingMore {
                     HStack {
@@ -131,6 +181,28 @@ struct HistoryListView: View {
         }
     }
 
+    /// Messages grouped into labelled days. A group per run of same-day
+    /// rows — not one group per calendar day in a dictionary — so ordering
+    /// is never re-sorted here and the header always names the rows under it.
+    private var dayGroups: [DayGroup] {
+        var groups: [DayGroup] = []
+        for snapshot in viewModel.messages {
+            let label = MessageTimestamp.dayHeader(for: snapshot.time)
+            if let last = groups.last, last.label == label {
+                groups[groups.count - 1].messages.append(snapshot)
+            } else {
+                groups.append(DayGroup(label: label, messages: [snapshot]))
+            }
+        }
+        return groups
+    }
+
+    private struct DayGroup: Identifiable {
+        var id: String { label }
+        let label: String
+        var messages: [MessageSnapshot]
+    }
+
     @ViewBuilder
     private func contextMenu(for snapshot: MessageSnapshot) -> some View {
         let targets = viewModel.actionTargets(for: snapshot)
@@ -141,6 +213,13 @@ struct HistoryListView: View {
         Button("Copy") { viewModel.copy(targets) }
         if targets.count == 1, targets[0].click != nil {
             Button("Open Link") { viewModel.openClickURL(targets[0]) }
+        }
+        Divider()
+        // Same "publish again here" affordance the detail pane's toolbar
+        // has, where the row is the thing under the cursor.
+        Button("New Message to This Topic", systemImage: "paperplane") {
+            onComposeToTopic(ComposeSeed(serverID: snapshot.serverID,
+                                         topic: snapshot.topic))
         }
         Divider()
         Button("Delete", role: .destructive) {
@@ -215,6 +294,23 @@ private struct HistoryRow: View {
                             .font(.system(size: 9, weight: .bold))
                             .foregroundStyle(snapshot.priority >= NtfyPriority.max.rawValue ? .red : .orange)
                             .fixedSize()
+                    }
+                    // Quiet capability markers, not decoration: a paperclip
+                    // says "this row has a file to open" and the arrow says
+                    // "this row has a link to follow", both before the row
+                    // is opened. Tertiary, because a row carrying neither —
+                    // most of them — must cost nothing visually.
+                    if snapshot.attachment != nil {
+                        Image(systemName: "paperclip")
+                            .font(.system(size: 9))
+                            .foregroundStyle(.tertiary)
+                            .accessibilityLabel(Text("Has attachment"))
+                    }
+                    if snapshot.click != nil {
+                        Image(systemName: "arrow.up.right.square")
+                            .font(.system(size: 9))
+                            .foregroundStyle(.tertiary)
+                            .accessibilityLabel(Text("Has link"))
                     }
                 }
             }

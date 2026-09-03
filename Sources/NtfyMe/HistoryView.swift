@@ -29,19 +29,22 @@ struct HistoryView: View {
     @Bindable var viewModel: HistoryViewModel
     /// Opens the Compose window. Injected rather than reached for: this view
     /// knows nothing about `AppDelegate`, and the snapshot tests render it
-    /// with no app around it at all.
-    var onNewMessage: () -> Void = {}
+    /// with no app around it at all. `nil` is the plain ⌘N; a seed routes
+    /// "send to this topic" from the detail pane or a row's context menu
+    /// through the same single path to one Compose window.
+    var onNewMessage: (ComposeSeed?) -> Void = { _ in }
+    /// Opens Settings on the Servers tab — the Add Subscription toolbar
+    /// button's whole job. Injected like `onNewMessage` for the same reasons.
+    var onAddSubscription: () -> Void = {}
 
     /// Driven by this view's own sidebar toggle rather than left to the
     /// automatic one — see `sidebarToggleButton`.
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
-    @State private var dateRangePopoverShown = false
-    @State private var customSince: Date = Calendar.current.date(byAdding: .day, value: -7, to: Date()) ?? Date()
-    @State private var customUntil: Date = Date()
 
     var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
-            HistorySidebarView(viewModel: viewModel)
+            HistorySidebarView(viewModel: viewModel,
+                               onComposeToTopic: { onNewMessage($0) })
                 // On the sidebar's *content*, not on the split view. The
                 // automatic toggle belongs to the column that owns the
                 // sidebar, and applying this one level up silently does
@@ -50,9 +53,11 @@ struct HistoryView: View {
                 // it.
                 .toolbar(removing: .sidebarToggle)
         } content: {
-            HistoryListView(viewModel: viewModel)
+            HistoryListView(viewModel: viewModel,
+                            onComposeToTopic: { onNewMessage($0) })
         } detail: {
-            HistoryDetailView(viewModel: viewModel)
+            HistoryDetailView(viewModel: viewModel,
+                              onComposeToTopic: { onNewMessage($0) })
         }
         .navigationSplitViewStyle(.balanced)
         .searchable(text: $viewModel.searchText, placement: .toolbar,
@@ -67,15 +72,8 @@ struct HistoryView: View {
             ToolbarItem(id: "newMessage", placement: .navigation) {
                 newMessageButton
             }
-            // `.primaryAction` rather than `.automatic`: window-relative, so
-            // these do not move when a column does. Stable `id`s are what
-            // let AppKit remember a customized toolbar across launches —
-            // they must not be renamed once shipped.
-            ToolbarItem(id: "filter", placement: .primaryAction) {
-                filterMenu
-            }
-            ToolbarItem(id: "markAllRead", placement: .primaryAction) {
-                markAllReadButton
+            ToolbarItem(id: "addSubscription", placement: .navigation) {
+                addSubscriptionButton
             }
         }
     }
@@ -113,89 +111,31 @@ struct HistoryView: View {
     /// that is what was asked for, and because this app publishes to a topic
     /// rather than composing correspondence — the pencil implies a reply
     /// surface that does not exist here.
+    /// New Message. A paperplane, not Mail's `square.and.pencil` and —
+    /// pointedly — not the `plus` it used to be: the paperplane is what the
+    /// Compose window's Send button and the popover's compose button both
+    /// already say, and freeing `plus` up is what lets the toolbar's second
+    /// button mean *create* without two buttons wearing the same glyph.
+    /// This app publishes to a topic rather than composing correspondence;
+    /// the pencil implied a reply surface that does not exist here.
     private var newMessageButton: some View {
-        Button(action: onNewMessage) {
-            Label("New Message", systemImage: "plus")
+        Button { onNewMessage(nil) } label: {
+            Label("New Message", systemImage: "paperplane.fill")
         }
         .help("New Message (⌘N)")
     }
 
-    /// One menu holding all four filter dimensions (unread, priority, tag,
-    /// date range) — the approved redesign
-    /// (`Tests/NtfyMeTests/RedesignMockups.swift`) replaced three loose
-    /// toolbar capsules plus a raw tag `TextField` with this, because two
-    /// competing text fields next to `.searchable`'s own was the single
-    /// biggest reason the window did not read as a Mac app.
-    private var filterMenu: some View {
-        Menu {
-            Toggle(isOn: $viewModel.unreadOnly) {
-                Label("Unread Only", systemImage: "circle.inset.filled")
-            }
-
-            Menu {
-                Picker("Priority", selection: $viewModel.priorityFilter) {
-                    ForEach(PriorityFilter.allCases) { filter in
-                        Text(filter.label).tag(filter)
-                    }
-                }
-                .pickerStyle(.inline)
-            } label: {
-                Label("Priority: \(viewModel.priorityFilter.label)", systemImage: "flag")
-            }
-
-            Menu {
-                Button("Any Time") { viewModel.dateRangeFilter = .any }
-                Button("Today") { viewModel.dateRangeFilter = .today }
-                Button("Last 7 Days") { viewModel.dateRangeFilter = .last7Days }
-                Button("Last 30 Days") { viewModel.dateRangeFilter = .last30Days }
-                Divider()
-                Button("Custom Range…") { dateRangePopoverShown = true }
-            } label: {
-                Label("Date: \(viewModel.dateRangeFilter.label)", systemImage: "calendar")
-            }
-
-            Divider()
-
-            TextField("Tag", text: $viewModel.tagFilter)
-                .accessibilityLabel(Text("Filter by tag"))
-        } label: {
-            // The title is not decoration: in "Text Only" it is the entire
-            // item, and in Customize Toolbar it is how the item is named.
-            // The symbol changes to its filled variant when a filter is
-            // active — the one state this control has that is worth seeing
-            // without opening it.
-            Label("Filter", systemImage: viewModel.hasActiveFilters
-                  ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease")
+    /// Add Subscription — the creating-new-things half of the toolbar.
+    /// `plus` because it creates a subscription rather than sending
+    /// anything, and it lands on Settings → Servers, where subscriptions
+    /// actually live, rather than inventing a second topic-adding UI on
+    /// this window. One place to add a topic; many doors to it.
+    private var addSubscriptionButton: some View {
+        Button(action: onAddSubscription) {
+            Label("Add Subscription", systemImage: "plus")
         }
-        .help("Filter messages")
-        .accessibilityLabel(Text(viewModel.hasActiveFilters ? "Filter (active)" : "Filter"))
-        // Attached to the menu rather than nested inside it: a `Menu`
-        // presenting a `.popover` from one of its own items works, but
-        // anchoring the popover at the toolbar control itself (not the
-        // transient menu item) is what keeps it from disappearing the
-        // instant the menu that spawned it closes.
-        .popover(isPresented: $dateRangePopoverShown) {
-            VStack(alignment: .leading, spacing: 12) {
-                DatePicker("From", selection: $customSince, displayedComponents: .date)
-                DatePicker("To", selection: $customUntil, displayedComponents: .date)
-                Button("Apply") {
-                    viewModel.dateRangeFilter = .custom(since: customSince, until: customUntil)
-                    dateRangePopoverShown = false
-                }
-                .keyboardShortcut(.defaultAction)
-            }
-            .padding()
-            .frame(width: 220)
-        }
+        .help("Add a topic to follow…")
     }
 
-    private var markAllReadButton: some View {
-        Button {
-            Task { await viewModel.markAllRead(serverID: viewModel.scope.serverID,
-                                               topic: viewModel.scope.topic) }
-        } label: {
-            Label("Mark All Read", systemImage: "envelope.open")
-        }
-        .help("Mark All Read")
-    }
+
 }

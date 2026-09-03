@@ -205,3 +205,40 @@ private func makeStore(messageIsRead: Bool) throws -> (store: MessageStore, mess
     let stored = try await store.message(uniqueKey: messageID)
     #expect(stored?.isRead == true)
 }
+
+/// The bug report: "when on all messages if a new message arrives it's not
+/// in the UI until you click out and back." The store gains a message while
+/// the list is already loaded; `insertNewArrivals` (what the store-change
+/// broadcast now calls) must fold it into the top of the list — without a
+/// full reload, which is what was deliberately avoided because it resets
+/// pagination — and be idempotent, since the broadcast fires per batch.
+@MainActor @Test func aMessageArrivingWhileTheListIsOpenJoinsTheTop() async throws {
+    let (store, firstMessageID) = try makeStore(messageIsRead: false)
+    let viewModel = HistoryViewModel(store: store)
+    await viewModel.loadSidebar()
+    await viewModel.refreshMessages()
+    #expect(viewModel.messages.count == 1)
+    let serverID = viewModel.servers[0].id
+    viewModel.selection = [firstMessageID]
+
+    // A message arrives through the normal ingest path while the window
+    // sits open. The list does not know yet — the stale state the bug
+    // report describes.
+    let eventJSON = """
+    {"id":"m2","time":\(Int(Date().addingTimeInterval(60).timeIntervalSince1970)),"event":"message","topic":"alerts","message":"api-gateway back to healthy."}
+    """
+    let event = try JSONDecoder().decode(NtfyEvent.self, from: Data(eventJSON.utf8))
+    _ = try await store.insert([event], serverID: serverID)
+
+    await viewModel.insertNewArrivals()
+
+    #expect(viewModel.messages.count == 2)
+    #expect(viewModel.messages.first?.id != firstMessageID, "the arrival sits at the top, newest-first")
+    #expect(viewModel.messages.first?.body == "api-gateway back to healthy.")
+    #expect(viewModel.selection == [firstMessageID], "a refill under the user must not disturb their selection")
+
+    // A second broadcast for the same batch (or a rerun after the first)
+    // must not duplicate the row.
+    await viewModel.insertNewArrivals()
+    #expect(viewModel.messages.count == 2)
+}

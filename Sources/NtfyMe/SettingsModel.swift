@@ -3,6 +3,16 @@ import Observation
 import ServiceManagement
 import NtfyKit
 
+/// Which tab Settings shows. Lives on the model rather than in the view so
+/// an entry point outside Settings — the History window toolbar's Add
+/// Subscription button — can open the window already pointed at the tab it
+/// means, instead of dumping the user on General to hunt from there.
+enum SettingsTab: String, CaseIterable, Identifiable {
+    case general, servers, notifications
+
+    var id: String { rawValue }
+}
+
 /// Backs every Settings tab from one shared instance, supplied by the wiring
 /// pass with the same `MessageStore`/`PreferencesStore`/`KeychainStore` the
 /// rest of the app runs against.
@@ -90,6 +100,9 @@ final class SettingsModel {
     private(set) var servers: [ServerRecordSnapshot] = []
     private(set) var topicSummaries: [TopicSummary] = []
     private(set) var isLoadingServers = false
+    /// The visible tab. Written by Settings' own TabView binding, and by
+    /// `AppDelegate.openAddSubscription()` before the window opens.
+    var selectedTab: SettingsTab = .general
 
     private(set) var messageCount = 0
 
@@ -604,5 +617,122 @@ final class SettingsModel {
         // other surface showing messages that are gone.
         await onStoreChanged()
         await refreshMessageCount()
+    }
+}
+
+// MARK: - Subscription import/export
+
+/// What one import pass did. `skipped` counts subscriptions the file named
+/// that this machine already follows — a skip is success, reported
+/// separately so the summary can say "nothing was lost" precisely.
+struct SubscriptionImportOutcome: Equatable {
+    var imported = 0
+    var skipped = 0
+    var failed = 0
+}
+
+extension SettingsModel {
+    /// Every subscription as it would appear in an export file, across all
+    /// servers, in sidebar order. The picker sheet checks rows off this
+    /// list; credentials are deliberately not part of the shape (see
+    /// `SubscriptionTransfer`'s doc comment).
+    func subscriptionsForTransfer() -> [SubscriptionTransfer] {
+        servers.flatMap { server in
+            topics(for: server.id).map { topic in
+                SubscriptionTransfer(
+                    server: server.baseURL.absoluteString,
+                    topic: topic.topic,
+                    displayName: topic.displayName,
+                    muted: topic.muted,
+                    minAlertPriority: topic.minAlertPriority)
+            }
+        }
+    }
+
+    /// Reads and validates a subscriptions file. Throws — the caller shows
+    /// a sentence — for anything malformed; a good file returns the full
+    /// list for the user to pick from.
+    func readImportFile(at url: URL) throws -> [SubscriptionTransfer] {
+        try SubscriptionsTransferCodec.decode(Data(contentsOf: url))
+    }
+
+    func exportSubscriptions(_ picks: [SubscriptionTransfer], to url: URL) throws {
+        try SubscriptionsTransferCodec.encode(picks).write(to: url, options: .atomic)
+    }
+
+    /// Imports the picked subscriptions: an unknown server is created with
+    /// no credential (the file cannot carry one, and an unauthenticated
+    /// attempt gets a 401 the user can see and fill in via Edit), a known
+    /// server is reused, and a topic this machine already follows is
+    /// counted as skipped rather than added twice. One `syncConnections()`
+    /// at the end opens every new connection in one pass — per-topic syncs
+    /// would each restart the coordinator for no benefit.
+    func importSubscriptions(_ picks: [SubscriptionTransfer]) async -> SubscriptionImportOutcome {
+        await refresh()
+
+        var outcome = SubscriptionImportOutcome()
+        var serverIDByURL: [String: UUID] = [:]
+        for server in servers {
+            if let key = SubscriptionsTransferCodec.normalizedServerURL(server.baseURL.absoluteString)?.absoluteString {
+                serverIDByURL[key] = server.id
+            }
+        }
+
+        for pick in picks {
+            guard let serverURL = SubscriptionsTransferCodec.normalizedServerURL(pick.server) else {
+                outcome.failed += 1
+                continue
+            }
+            let serverKey = serverURL.absoluteString
+
+            let serverID: UUID
+            if let known = serverIDByURL[serverKey] {
+                serverID = known
+            } else {
+                let host = serverURL.host ?? serverKey
+                guard await addServer(name: host, baseURL: serverURL,
+                                      kind: .unauthenticated, credential: .unauthenticated)
+                else {
+                    outcome.failed += 1
+                    continue
+                }
+                // `addServer` refreshes `servers` as part of its success
+                // path; match by normalized URL rather than trusting which
+                // position the new record landed in.
+                guard let added = servers.first(where: {
+                    SubscriptionsTransferCodec.normalizedServerURL($0.baseURL.absoluteString)?.absoluteString == serverKey
+                })?.id else {
+                    outcome.failed += 1
+                    continue
+                }
+                serverIDByURL[serverKey] = added
+                serverID = added
+            }
+
+            if topics(for: serverID).contains(where: { $0.topic == pick.topic }) {
+                outcome.skipped += 1
+                continue
+            }
+
+            await addTopic(pick.topic, toServer: serverID)
+            // `addTopic` failure is signalled by the topic simply not
+            // existing afterwards (it sets `errorMessage` itself); check
+            // rather than assume.
+            guard topics(for: serverID).contains(where: { $0.topic == pick.topic }) else {
+                outcome.failed += 1
+                continue
+            }
+            await setAlertSettings(
+                TopicAlertSettings(muted: pick.muted, minAlertPriority: pick.minAlertPriority),
+                serverID: serverID, topic: pick.topic)
+            outcome.imported += 1
+        }
+
+        if outcome.failed > 0 {
+            errorMessage = "Couldn't import \(outcome.failed) of the selected subscriptions."
+        }
+        await syncConnections()
+        await refresh()
+        return outcome
     }
 }

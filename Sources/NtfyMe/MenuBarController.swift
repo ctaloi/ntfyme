@@ -23,6 +23,10 @@ final class MenuBarController: NSObject {
     /// than two.
     var onOpenHistory: () -> Void = {}
     var onOpenSettings: () -> Void = {}
+    /// Opens the Compose window — the popover header's paper-plane button
+    /// and the right-click menu's "New Message…", both routed through the
+    /// same one path to Compose everything else uses.
+    var onCompose: () -> Void = {}
     /// Takes the tapped message's unique key (`MessageSnapshot.id`) — the
     /// wiring pass opens History and reveals that message by key. Wrapped in
     /// `configurePopover()` to close the popover first: leaving it floating
@@ -105,6 +109,8 @@ final class MenuBarController: NSObject {
         menu.addItem(withTitle: "Open NtfyMe", action: #selector(menuOpenPopover), keyEquivalent: "")
             .target = self
         menu.addItem(.separator())
+        menu.addItem(withTitle: "New Message…", action: #selector(menuCompose), keyEquivalent: "n")
+            .target = self
         menu.addItem(withTitle: "History…", action: #selector(menuOpenHistory), keyEquivalent: "")
             .target = self
         menu.addItem(withTitle: "Settings…", action: #selector(menuOpenSettings), keyEquivalent: ",")
@@ -121,6 +127,7 @@ final class MenuBarController: NSObject {
     @objc private func menuOpenPopover() { showPopover() }
     @objc private func menuOpenHistory() { onOpenHistory() }
     @objc private func menuOpenSettings() { onOpenSettings() }
+    @objc private func menuCompose() { onCompose() }
     @objc private func menuQuit() { onQuit() }
 
     // MARK: - Popover
@@ -133,6 +140,7 @@ final class MenuBarController: NSObject {
                 viewModel: viewModel,
                 onOpenHistory: { [weak self] in self?.onOpenHistory() },
                 onOpenSettings: { [weak self] in self?.onOpenSettings() },
+                onNewMessage: { [weak self] in self?.onCompose() },
                 onQuit: { [weak self] in self?.onQuit() },
                 onOpenMessage: { [weak self] uniqueKey in
                     self?.closePopover()

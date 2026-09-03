@@ -81,7 +81,7 @@ final class NotificationPresenter: NSObject, UNUserNotificationCenterDelegate {
     ///
     /// Without this delegate method, macOS silently swallows a notification
     /// that is delivered while the app is frontmost — nothing is shown and
-    /// nothing is logged. That is rare for a menu-bar app with no Dock icon,
+    /// nothing is logged. That is rare for an app with no visible window,
     /// but it is exactly the state the app is in whenever a window of its own
     /// is focused, which would make a real notification look like a broken
     /// one. `.list` keeps it in Notification Center afterwards; `.sound` only

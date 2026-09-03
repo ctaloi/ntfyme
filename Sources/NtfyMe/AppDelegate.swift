@@ -17,6 +17,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     private var compose: ComposeWindowController?
     private var onboardingWindow: NSWindow?
     private let activationPolicy = ActivationPolicyController()
+    /// Sparkle auto-update wrapper (see `Updater`). Started at launch when
+    /// the app is configured for updates; inert otherwise.
+    private let updater = Updater()
     /// The one fan-out from "the store changed" to every surface displaying
     /// it. Owned here because this is where those surfaces are created; see
     /// `StoreChangeBroadcast` for why the point-to-point closures it replaces
@@ -58,6 +61,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         // notification client has to do to be worth anything.
         NSApp.setActivationPolicy(.regular)
         activationPolicy.start()
+        updater.start()
 
         do {
             let graph = try AppGraph()
@@ -102,15 +106,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             history.setStatusProvider { [weak graph] id in
                 graph?.historyStatus(forServer: id) ?? .unknown
             }
-            // The toolbar's + and ⌘N reach the same window through the same
-            // method — there is deliberately one path to a Compose window,
-            // as there is to a Settings one.
-            history.onNewMessage = { [weak self] in self?.openCompose() }
+            // The toolbar's paperplane and ⇧⌘N reach the same window through
+            // the same method — there is deliberately one path to a Compose
+            // window, as there is to a Settings one. The toolbar's + is the
+            // one door to "add a subscription": Settings, already pointed
+            // at the tab where topics live.
+            history.onNewMessage = { [weak self] seed in self?.openCompose(seed: seed) }
+            history.onAddSubscription = { [weak self] in self?.openAddSubscription() }
             self.history = history
 
             let menuBar = MenuBarController(dependencies: graph.menuBarDependencies())
             menuBar.onOpenHistory = { [weak self] in self?.openHistory() }
             menuBar.onOpenSettings = { [weak self] in self?.openSettings() }
+            menuBar.onCompose = { [weak self] in self?.openCompose() }
             menuBar.onOpenMessage = { [weak self] key in self?.openHistory(revealing: key) }
             menuBar.onRetryConnection = { [weak graph, weak menuBar] in
                 Task {
@@ -129,15 +137,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             // this is what makes one whose surface is gone a no-op instead of
             // something that keeps it alive.
             //
-            // Only the sidebar, not the message list: the sidebar is what
-            // servers, topics and unread counts live in, and it is what goes
-            // stale on a configuration change. A message list that reloads
-            // under the user resets pagination to the first page, which is a
-            // worse trade on every write than the staleness it fixes — the
-            // list already reloads on a scope or filter change, and its
-            // remaining gap (new messages not appearing in an open, untouched
-            // list) is tracked in `docs/superpowers/followups.md`.
-            storeChanges.observe { [weak history] in await history?.refreshSidebar() }
+            // The sidebar, and now also the open list — but the list only
+            // ever by *inserting new arrivals* (`storeDidChange`), never a
+            // full reload: a `refreshMessages()` under the user resets
+            // pagination to the first page and scrolls them back to the top,
+            // which is a worse trade than any staleness. Arriving messages
+            // joining the top of "All Messages" while the window sits open
+            // is the behavior a live archive owes its reader; everything else
+            // about the list (scope, filters, page 2+) still reloads on the
+            // user's own actions. Its remaining gap (a read/delete made in
+            // another surface not re-querying an open list) is tracked in
+            // `docs/superpowers/followups.md`.
+            storeChanges.observe { [weak history] in await history?.storeDidChange() }
             storeChanges.observe { [weak menuBar] in await menuBar?.refreshNow() }
 
             // A stored batch is a store change like any other, so it goes
@@ -208,10 +219,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     /// `CommandGroup(replacing: .newItem)` calls this for ⌘N, the same route
     /// `openSettings()` takes for ⌘, and for the same reason — a command
     /// that has to reach a window this app hosts itself rather than a
-    /// SwiftUI scene.
-    func openCompose() {
-        compose?.show()
+    /// SwiftUI scene. A seed (see `ComposeSeed`) is the "send to this topic"
+    /// path from History's toolbar or a row's context menu.
+    /// Check for Updates (⌘U). A no-op when the app was built without
+    /// updater configuration — dev builds — rather than an error dialog
+    /// about a missing appcast.
+    func checkForUpdates() {
+        updater.checkForUpdates()
+    }
+
+    func openCompose(seed: ComposeSeed? = nil) {
+        compose?.show(seed: seed)
         activationPolicy.update()
+    }
+
+    /// Opens Settings already on the Servers tab — the History toolbar's
+    /// Add Subscription button, and ⇧⌘N. Not a new path to Settings: the
+    /// same `openSettings()` everything else uses, with the tab chosen
+    /// first, because "add a subscription" is a destination, not a tab the
+    /// user should have to find.
+    func openAddSubscription() {
+        settingsModel?.selectedTab = .servers
+        openSettings()
     }
 
     /// The notification-permission pane (spec §6): a short explanation before

@@ -33,7 +33,10 @@ NOTARY_PROFILE="${NOTARY_PROFILE:-}"
 # updater — dev builds that will never check for updates. Overridable via
 # Scripts/local.sh or the environment.
 UPDATE_FEED_URL="${UPDATE_FEED_URL:-https://raw.githubusercontent.com/ctaloi/ntfyme/main/appcast.xml}"
-SPARKLE_ED_PUBLIC_KEY="${SPARKLE_ED_PUBLIC_KEY:-}"
+# The EdDSA PUBLIC key — safe (and right) to commit; it verifies update
+# signatures but cannot create them. The private half lives only in the
+# release machine's Keychain (see README "Auto-updates").
+SPARKLE_ED_PUBLIC_KEY="${SPARKLE_ED_PUBLIC_KEY:-XQQcXU8Xxf/us/k4rHx1b3NN8EE/rXScgBaMn+3LoIE=}"
 # Where release artifacts publish (GitHub Releases) and the appcast lives.
 GITHUB_REPO="${GITHUB_REPO:-ctaloi/ntfyme}"
 

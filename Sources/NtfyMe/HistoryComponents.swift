@@ -130,4 +130,32 @@ enum MessageTimestamp {
         }
         return date.formatted(.dateTime.day().month(.abbreviated).year())
     }
+
+    /// A list-section header naming the day a group of messages arrived on —
+    /// Mail's grouping, the same scheme `text(for:)` already speaks: Today,
+    /// Yesterday, the weekday within a week, then a date. Sections make a
+    /// long archive scannable the way a bare time column stopped doing the
+    /// moment messages from different days shared it.
+    static func dayHeader(for date: Date, now: Date = Date(),
+                          calendar: Calendar = .current) -> String {
+        if calendar.isDate(date, inSameDayAs: now) {
+            return "Today"
+        }
+        if let yesterday = calendar.date(byAdding: .day, value: -1, to: now),
+           calendar.isDate(date, inSameDayAs: yesterday) {
+            return "Yesterday"
+        }
+        // Same 7-day window `text(for:)` uses, so a row saying "Tuesday"
+        // never sits under a header saying "Sep 2".
+        if now.timeIntervalSince(date) < 7 * 24 * 3600 {
+            // `.wide`: a section header has room for "Monday" — and `.weekday()`
+            // alone renders abbreviated, which would make headers and rows
+            // disagree for no reason.
+            return date.formatted(.dateTime.weekday(.wide))
+        }
+        if calendar.component(.year, from: date) == calendar.component(.year, from: now) {
+            return date.formatted(.dateTime.day().month(.wide))
+        }
+        return date.formatted(.dateTime.day().month(.wide).year())
+    }
 }

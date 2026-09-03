@@ -1,11 +1,11 @@
 # NtfyMe
 
-A native macOS menu-bar client for [ntfy](https://ntfy.sh). It watches your
+A native macOS app for [ntfy](https://ntfy.sh) — it lives in your Dock, its menu bar, and your Notification Center. It watches your
 subscriptions, delivers native notifications, and keeps a searchable local
 archive of every message it has seen.
 
-This project is under active development. Publishing messages and notarized
-distribution are not built yet; everything below is.
+This project is under active development. Notarized distribution is not
+exercised yet; everything below is.
 
 ## What works
 
@@ -85,6 +85,48 @@ an App ID with that capability enabled, which plain local "Apple Development"
 signing does not provide. This is expected, is not a blocker for early
 development, and is deferred to a future release-signing task once a paid
 Developer Program account and Developer ID are available.
+
+## Auto-updates
+
+Releases use [Sparkle](https://sparkle-project.org): the app checks an
+appcast (every 24h, or via App menu → Check for Updates, ⌘U) and
+self-installs updates signed with our EdDSA key. One-time setup:
+
+```bash
+swift build   # resolves Sparkle
+# Build Sparkle's CLI tools once (SPM resolves the framework, Xcode builds the CLIs)
+export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
+cd .build/checkouts/Sparkle
+xcodebuild -project Sparkle.xcodeproj -scheme generate_keys -configuration Release -derivedDataPath /tmp/sparkle-tools build
+xcodebuild -project Sparkle.xcodeproj -scheme sign_update  -configuration Release -derivedDataPath /tmp/sparkle-tools build
+mkdir -p bin
+cp /tmp/sparkle-tools/Build/Products/Release/sign_update bin/
+/tmp/sparkle-tools/Build/Products/Release/generate_keys          # keypair → macOS Keychain
+/tmp/sparkle-tools/Build/Products/Release/generate_keys -p       # prints the public key
+# If the public key changes (rotation), copy it into Scripts/config.sh.
+```
+
+The private half never leaves your Keychain and never touches the repo.
+The **public** key is committed in `Scripts/config.sh` on purpose — it
+verifies updates but cannot create them. Builds without the private key in
+your Keychain cannot cut a release, but can still run the app.
+
+Cutting a release:
+
+```bash
+Scripts/release.sh 0.2.0
+```
+
+That bumps the version, builds and signs the app, zips it, signs the zip for
+Sparkle, and updates `appcast.xml` (newest-first) in the repository root.
+Then create the GitHub release with the printed `gh release create` command,
+commit `appcast.xml` + `Scripts/config.sh`, and push — clients see the
+update within their next check. The EdDSA signature is what makes the
+appcast safe to host anywhere: without your private key, nobody can ship a
+poisoned update to your users.
+
+For the complete operator runbook — release, site deploy, GitHub About,
+Cloudflare DNS, and what pushes to `main` do — see `docs/release-and-deploy.md`.
 
 ## Development
 

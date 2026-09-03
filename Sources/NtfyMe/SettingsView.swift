@@ -16,18 +16,21 @@ import SwiftUI
 /// app is frequently not the active application, and the scene's
 /// `showSettingsWindow:` had nothing on the responder chain to answer it.
 struct SettingsView: View {
-    let model: SettingsModel
+    @Bindable var model: SettingsModel
 
     var body: some View {
-        TabView {
+        TabView(selection: $model.selectedTab) {
             SettingsGeneralTab(model: model)
                 .tabItem { Label("General", systemImage: "gearshape") }
+                .tag(SettingsTab.general)
 
             SettingsServersTab(model: model)
                 .tabItem { Label("Servers", systemImage: "server.rack") }
+                .tag(SettingsTab.servers)
 
             SettingsNotificationsTab(model: model)
                 .tabItem { Label("Notifications", systemImage: "bell.badge") }
+                .tag(SettingsTab.notifications)
         }
         .frame(width: 640, height: 560)
         .task {
