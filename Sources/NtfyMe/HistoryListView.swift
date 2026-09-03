@@ -199,6 +199,7 @@ private struct HistoryRow: View {
                             ForEach(snapshot.tags, id: \.self) { TagChip(tag: $0) }
                         }
                     }
+                    .fadedTrailingEdge()
                 }
             }
         }

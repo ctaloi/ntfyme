@@ -64,6 +64,25 @@ struct TagChip: View {
     }
 }
 
+extension View {
+    /// Fades the trailing ~10% of a horizontally-scrolling row (tag chips,
+    /// here) rather than leaving its content clipped hard at the container
+    /// edge. Without this, a chip that happens to end mid-word right at the
+    /// boundary — e.g. tag text sliced to "urge" — reads as a rendering
+    /// fault, not as an invitation to scroll for more; the fade is what
+    /// signals "there is more here" instead.
+    func fadedTrailingEdge() -> some View {
+        mask(
+            LinearGradient(
+                stops: [
+                    .init(color: .black, location: 0),
+                    .init(color: .black, location: 0.88),
+                    .init(color: .clear, location: 1),
+                ],
+                startPoint: .leading, endPoint: .trailing))
+    }
+}
+
 /// A centered icon + message, for empty and loading states that say
 /// something useful rather than leaving a blank pane.
 struct HistoryStatusView: View {

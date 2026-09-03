@@ -89,9 +89,17 @@ private struct MessageDetailContent: View {
                 PriorityPill(priority: snapshot.resolvedPriority)
             }
             HStack(spacing: 6) {
+                // A long topic name must stay one line and truncate — the
+                // same rule the sidebar already applies to long topic names
+                // — rather than wrap: a wrapped topic pushes the "· time"
+                // that follows it down to sit stranded beside the wrapped
+                // block instead of reading as one metadata line.
                 Text(snapshot.topic)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
                 Text("·")
                 Text(snapshot.time, format: .dateTime.year().month().day().hour().minute())
+                    .fixedSize(horizontal: true, vertical: false)
             }
             .font(.caption)
             .foregroundStyle(.secondary)
@@ -176,6 +184,7 @@ private struct MessageDetailContent: View {
                 ForEach(snapshot.tags, id: \.self) { TagChip(tag: $0) }
             }
         }
+        .fadedTrailingEdge()
     }
 
     /// Resolves the attachment's local file for Quick Look, or `nil` when
