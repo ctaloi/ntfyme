@@ -620,9 +620,12 @@ extension MessageStore {
     /// cascades (`deleteRule: .cascade` in `Models.swift`), so its
     /// `Attachment` row goes with it — and, when `attachmentsDirectory` is
     /// given, its downloaded FILE goes too, via the same guarded deletion
-    /// `prune` uses (see `deleteAttachmentFile`). The parameter defaults to
-    /// `nil`, matching `prune`'s signature, for tests and for a build with
-    /// no downloader.
+    /// `prune` uses (see `deleteAttachmentFile`). No default: both of this
+    /// project's app-layer call sites once omitted this parameter, silently
+    /// never deleting a single downloaded file no matter how many messages
+    /// were deleted — the parameter must be impossible to forget, not
+    /// merely possible to pass. Pass `nil` explicitly for tests and for a
+    /// build with no downloader.
     ///
     /// Attachment filenames are captured before the rows are deleted, and
     /// the files themselves are only removed *after* `save()` durably
@@ -632,7 +635,7 @@ extension MessageStore {
     /// — until an unrelated later `save()` (from any other method) commits
     /// a deletion nobody was told succeeded. That is data loss the caller
     /// has no way to detect, not just a stale read.
-    public func deleteMessages(_ uniqueKeys: [String], attachmentsDirectory: URL? = nil) throws {
+    public func deleteMessages(_ uniqueKeys: [String], attachmentsDirectory: URL?) throws {
         guard !uniqueKeys.isEmpty else { return }
         let keys = Set(uniqueKeys)
         let messages = try modelContext.fetch(
@@ -678,8 +681,15 @@ extension MessageStore {
     /// `Message.serverID` is a plain value, not a relationship, so the
     /// cascade delete on `Server.subscriptions` does not reach messages —
     /// they must be deleted explicitly here or they are orphaned forever.
-    /// `Attachment` still cascades from `Message` (see `deleteMessages`), so
-    /// no separate attachment query is needed.
+    /// `Attachment` still cascades from `Message` at the row level, but a
+    /// row's cascade deletion does not touch the downloaded FILE it named —
+    /// `attachmentsDirectory`, when given, is what actually removes those,
+    /// via the same guarded deletion `prune` and `deleteMessages` use (see
+    /// `deleteAttachmentFile`). No default: a server removal that silently
+    /// skipped file cleanup because a caller forgot the parameter would
+    /// orphan every downloaded file with no row left to name it, forever —
+    /// a caller must decide, not fall into `nil` by omission. Pass `nil`
+    /// explicitly for tests and for a build with no downloader.
     ///
     /// Deliberately asymmetric with `removeTopic`, which keeps history: a
     /// removed server's messages would otherwise be unreachable forever —
@@ -688,7 +698,7 @@ extension MessageStore {
     /// keeping dead weight. A topic removed from a server that still exists
     /// has no such problem; its messages stay reachable through that
     /// server, which is exactly why `removeTopic` leaves them alone.
-    public func removeServer(_ serverID: UUID) throws {
+    public func removeServer(_ serverID: UUID, attachmentsDirectory: URL?) throws {
         guard let server = try server(serverID) else {
             // An unknown server id is a caller bug, the same as every other
             // server-scoped method in this actor — nothing to remove.
@@ -697,6 +707,13 @@ extension MessageStore {
         }
         let messages = try modelContext.fetch(
             FetchDescriptor<Message>(predicate: #Predicate { $0.serverID == serverID }))
+        // Captured before the rows are deleted, and the files themselves
+        // removed only after `save()` durably commits — see
+        // `deleteMessages`'s doc comment for why the ordering matters: a
+        // file deleted before its row's deletion is committed risks a
+        // failed `save()` leaving the file gone but the row still present,
+        // later silently finished off by an unrelated `save()`.
+        let attachmentFilenames = messages.map { $0.attachment?.localFilename }
         for message in messages { modelContext.delete(message) }
         modelContext.delete(server)
         do {
@@ -704,6 +721,11 @@ extension MessageStore {
         } catch {
             modelContext.rollback()
             throw error
+        }
+
+        guard attachmentsDirectory != nil else { return }
+        for filename in attachmentFilenames {
+            _ = deleteAttachmentFile(named: filename, in: attachmentsDirectory)
         }
     }
 

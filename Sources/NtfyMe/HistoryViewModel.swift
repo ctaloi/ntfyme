@@ -240,7 +240,7 @@ final class HistoryViewModel {
         guard !snapshots.isEmpty else { return }
         let ids = Set(snapshots.map(\.id))
         do {
-            try await store.deleteMessages(snapshots.map(\.id))
+            try await store.deleteMessages(snapshots.map(\.id), attachmentsDirectory: attachmentsDirectory)
             selection.subtract(ids)
             await reloadLoadedWindow()
             await loadSidebar()

@@ -829,7 +829,7 @@ private func makeSearchStore() throws -> (MessageStore, ModelContext, UUID) {
     try context.save()
     let keyA = Message.uniqueKey(serverID: serverID, topic: "alerts", messageID: "a")
 
-    try await store.deleteMessages([keyA])
+    try await store.deleteMessages([keyA], attachmentsDirectory: nil)
     #expect(try await store.messageCount() == 1)
     let remaining = try await store.messages(forServer: serverID, topic: nil, limit: 10)
     #expect(remaining.map(\.body) == ["b"])
@@ -862,11 +862,11 @@ private func makeSearchStore() throws -> (MessageStore, ModelContext, UUID) {
     #expect(FileManager.default.fileExists(atPath: file.path) == false)
 }
 
-/// The `attachmentsDirectory` parameter defaults to `nil`, so a caller that
-/// omits it (tests, or a build with no downloader) deletes the row without
-/// attempting any file operation — this is the contrast that proves the
-/// test above is actually exercising the file-deletion path, not something
-/// that always happens regardless.
+/// `attachmentsDirectory` has no default — a caller must pass `nil`
+/// explicitly (tests, or a build with no downloader) to delete the row
+/// without attempting any file operation — this is the contrast that
+/// proves the test above is actually exercising the file-deletion path,
+/// not something that always happens regardless.
 @Test func deleteMessagesLeavesTheFileAloneWhenNoDirectoryIsGiven() async throws {
     let (store, context, serverID) = try makeSearchStore()
     let directory = FileManager.default.temporaryDirectory
@@ -886,7 +886,7 @@ private func makeSearchStore() throws -> (MessageStore, ModelContext, UUID) {
     try context.save()
     let key = Message.uniqueKey(serverID: serverID, topic: "alerts", messageID: "a")
 
-    try await store.deleteMessages([key])
+    try await store.deleteMessages([key], attachmentsDirectory: nil)
     #expect(try await store.messageCount() == 0)
     #expect(FileManager.default.fileExists(atPath: file.path) == true)
 }
@@ -976,7 +976,7 @@ private func makeSearchStore() throws -> (MessageStore, ModelContext, UUID) {
     try context.save()
     #expect(try await store.messageCount() == 1)
 
-    try await store.removeServer(serverID)
+    try await store.removeServer(serverID, attachmentsDirectory: nil)
     #expect(try await store.messageCount() == 0)
 }
 
@@ -1002,7 +1002,7 @@ private func makeSearchStore() throws -> (MessageStore, ModelContext, UUID) {
     try context.save()
 
     let store = MessageStore(modelContainer: container)
-    try await store.removeServer(removedID)
+    try await store.removeServer(removedID, attachmentsDirectory: nil)
 
     #expect(try await store.messageCount() == 1)
     let remaining = try await store.messages(forServer: keptID, topic: nil, limit: 10)
@@ -1011,7 +1011,7 @@ private func makeSearchStore() throws -> (MessageStore, ModelContext, UUID) {
 
 @Test func removeServerAlsoRemovesItsSubscriptions() async throws {
     let (store, _, serverID) = try makeSearchStore()
-    try await store.removeServer(serverID)
+    try await store.removeServer(serverID, attachmentsDirectory: nil)
     let servers = try await store.servers()
     #expect(servers.isEmpty)
 }

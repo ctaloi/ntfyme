@@ -81,7 +81,7 @@ private func makeCoordinator(_ store: MessageStore, client: FakeStreamClient)
     await coordinator.start()
     #expect(await coordinator.connectionCount == 1)
 
-    try await store.removeServer(id)
+    try await store.removeServer(id, attachmentsDirectory: nil)
     await coordinator.sync()
     #expect(await coordinator.connectionCount == 0,
             "a removed server must stop streaming, or it keeps inserting orphan rows")
