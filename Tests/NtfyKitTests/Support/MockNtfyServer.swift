@@ -165,6 +165,20 @@ actor MockNtfyServer {
         await withCheckedContinuation { connectionWaiters.append($0) }
     }
 
+    /// Every raw request served, in order. See `respond(to:on:)`.
+    private(set) var receivedRequests: [String] = []
+
+    /// The body of the last request served: everything after the blank line
+    /// that ends the headers. Empty when there was none (a GET) or when the
+    /// request arrived split across reads — `accept` performs a single
+    /// `receive`, which is enough for the small publish bodies these tests
+    /// send but is not a general-purpose HTTP read.
+    var lastRequestBody: String {
+        guard let request = receivedRequests.last,
+              let separator = request.range(of: "\r\n\r\n") else { return "" }
+        return String(request[separator.upperBound...])
+    }
+
     func setResponse(status: Int, body: String) {
         self.status = status
         self.errorBody = body
@@ -181,18 +195,87 @@ actor MockNtfyServer {
         connectionWaiters.removeAll()
         toWake.forEach { $0.resume() }
         conn.start(queue: .global())
-        conn.receive(minimumIncompleteLength: 1, maximumLength: 8192) { [weak self] data, _, _, _ in
+        readRequest(from: conn, accumulated: Data())
+    }
+
+    /// Reads until the whole request has arrived, rather than assuming one
+    /// `receive` returns it.
+    ///
+    /// It does for a GET, which is all this server served until publishing
+    /// existed. `URLSession` writes a POST's headers and body as separate
+    /// TCP segments, so a single read returns the headers alone — which
+    /// showed up as every assertion about a published *body* seeing an empty
+    /// string, while the same tests' assertions about method and headers
+    /// passed.
+    private func readRequest(from conn: NWConnection, accumulated: Data) {
+        conn.receive(minimumIncompleteLength: 1, maximumLength: 8192) { [weak self] data, _, isComplete, _ in
             guard let self else { return }
-            guard let data, let request = String(data: data, encoding: .utf8) else {
-                // Not a readable HTTP request (no bytes, or not valid UTF-8).
-                // Answer instead of silently dropping the connection, which
-                // would otherwise leave the client hanging until its own
-                // timeout rather than seeing a failure.
+            var buffer = accumulated
+            if let data { buffer.append(data) }
+
+            if let request = Self.completeRequest(from: buffer) {
+                Task { await self.respond(to: request, on: conn) }
+            } else if Self.cannotBecomeARequest(buffer) || isComplete || data == nil {
+                // The client closed, or sent nothing readable, before a
+                // complete request arrived. Answer rather than silently
+                // dropping the connection, which would leave it hanging
+                // until its own timeout instead of seeing a failure.
                 Task { await self.respondBadRequest(on: conn) }
-                return
+            } else {
+                Task { await self.readRequest(from: conn, accumulated: buffer) }
             }
-            Task { await self.respond(to: request, on: conn) }
         }
+    }
+
+    /// The request as text once all of it has arrived, or `nil` while it is
+    /// still incomplete.
+    ///
+    /// Completeness is judged on the bytes, and only the header block is
+    /// decoded to find `Content-Length` — decoding the whole partial buffer
+    /// on every read would fail spuriously whenever a read boundary landed
+    /// inside a multi-byte character, which the non-ASCII title test sends
+    /// on purpose.
+    ///
+    /// `nonisolated` and `static`: called from the `receive` completion,
+    /// which runs off the actor.
+    private nonisolated static func completeRequest(from buffer: Data) -> String? {
+        guard let separator = buffer.range(of: Data("\r\n\r\n".utf8)),
+              let headers = String(data: buffer[buffer.startIndex..<separator.lowerBound],
+                                   encoding: .utf8)
+        else { return nil }
+
+        let bodyBytes = buffer.distance(from: separator.upperBound, to: buffer.endIndex)
+        guard bodyBytes >= (contentLength(in: headers) ?? 0) else { return nil }
+        return String(decoding: buffer, as: UTF8.self)
+    }
+
+    /// Whether waiting for more bytes is pointless: the header block has
+    /// not ended and what has arrived is not even text, so no continuation
+    /// of it can be an HTTP request.
+    ///
+    /// Without this, "keep reading until the request is complete" turns the
+    /// unparsable-bytes case into a hang — a client that sends garbage and
+    /// holds the connection open waits forever, which is the exact
+    /// behaviour `mockServerAnswersBadRequestInsteadOfHangingOnUnparsableBytes`
+    /// exists to prevent (and which caught this).
+    ///
+    /// Only checked before the terminator, never after: headers are ASCII,
+    /// but a read boundary inside a body can land mid-character, and
+    /// treating *that* as unparsable would fail the non-ASCII title test.
+    private nonisolated static func cannotBecomeARequest(_ buffer: Data) -> Bool {
+        buffer.range(of: Data("\r\n\r\n".utf8)) == nil
+            && String(data: buffer, encoding: .utf8) == nil
+    }
+
+    private nonisolated static func contentLength(in headers: String) -> Int? {
+        for line in headers.split(separator: "\r\n") {
+            let parts = line.split(separator: ":", maxSplits: 1)
+            guard parts.count == 2,
+                  parts[0].trimmingCharacters(in: .whitespaces).lowercased() == "content-length"
+            else { continue }
+            return Int(parts[1].trimmingCharacters(in: .whitespaces))
+        }
+        return nil
     }
 
     /// Clears `connection` back to `nil` if it still refers to `conn`. Used
@@ -225,10 +308,18 @@ actor MockNtfyServer {
             let parts = requestLine.split(separator: " ")
             if parts.count >= 2 { receivedRequestPaths.append(String(parts[1])) }
         }
+        // The whole raw request, for tests that need more than the path:
+        // publishing is asserted on its method, its `Authorization` and
+        // `Content-Type` headers, and its JSON body, none of which the path
+        // shows. Kept as the raw text rather than parsed into a request
+        // type — a parser here would be a second, untested HTTP
+        // implementation, and every assertion against it would really be an
+        // assertion about the parser.
+        receivedRequests.append(request)
 
         if let errorBody {
             let head = """
-            HTTP/1.1 \(status) Error\r
+            HTTP/1.1 \(status) \((200...299).contains(status) ? "OK" : "Error")\r
             Content-Type: application/json\r
             Content-Length: \(errorBody.utf8.count)\r
             Connection: close\r

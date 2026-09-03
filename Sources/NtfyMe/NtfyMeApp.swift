@@ -32,6 +32,16 @@ struct NtfyMeApp: App {
             }
         }
         .commands {
+            // ⌘N. `replacing: .newItem` rather than adding to it: the
+            // default group is "New Window", which this app has no concept
+            // of — its windows are one History, one Settings, one Compose,
+            // each a singleton its controller owns.
+            CommandGroup(replacing: .newItem) {
+                Button("New Message…") {
+                    appDelegate.openCompose()
+                }
+                .keyboardShortcut("n", modifiers: .command)
+            }
             CommandGroup(replacing: .appSettings) {
                 Button("Settings…") {
                     appDelegate.openSettings()

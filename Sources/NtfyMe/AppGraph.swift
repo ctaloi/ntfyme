@@ -26,6 +26,10 @@ final class AppGraph {
     /// reference — so this graph outliving the app delegate's `Task`s is what
     /// keeps it alive.
     let presenter = NotificationPresenter()
+    /// The one publisher, shared by every Compose window. An actor holding a
+    /// `URLSession`; `let` because nothing about it depends on `start()`
+    /// having run, unlike `coordinator`.
+    let publisher = NtfyPublisher()
     private let router: NotificationRouter
     private var coordinator: ConnectionCoordinator?
     private var scheduler: RetentionScheduler?
@@ -298,6 +302,22 @@ final class AppGraph {
             onStoreChanged: onStoreChanged)
     }
 
+
+    /// The Compose window's model. Same shape as `makeSettingsModel` — the
+    /// graph supplies collaborators, the window owns its model — so a
+    /// published message goes out over the same Keychain service and against
+    /// the same server records the connections read.
+    ///
+    /// The publish closure rather than the `NtfyPublisher` itself, so
+    /// `ComposeModel` can be tested with no network at all: it is the one
+    /// type in this app whose failure paths (five status codes and a
+    /// transport error) matter more than its happy path.
+    func makeComposeModel() -> ComposeModel {
+        ComposeModel(store: store, keychain: keychain,
+                     publish: { [publisher] draft, baseURL, credential in
+                         try await publisher.publish(draft, to: baseURL, credential: credential)
+                     })
+    }
 
     /// Reconnects every server immediately, bypassing any pending backoff.
     /// Wired to the popover's Retry control — before it existed, a user who

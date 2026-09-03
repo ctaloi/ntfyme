@@ -14,6 +14,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     private var menuBar: MenuBarController?
     private var history: HistoryWindowController?
     private var settings: SettingsWindowController?
+    private var compose: ComposeWindowController?
     private var onboardingWindow: NSWindow?
     private let activationPolicy = ActivationPolicyController()
     /// The one fan-out from "the store changed" to every surface displaying
@@ -72,6 +73,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                 onStoreChanged: { [storeChanges] in await storeChanges.post() })
             self.settingsModel = settingsModel
             settings = SettingsWindowController(model: settingsModel)
+            compose = ComposeWindowController(model: graph.makeComposeModel())
 
             // Spec §6 activation. The presenter resolves what the tap meant
             // from the notification's own payload; this decides what to do
@@ -195,6 +197,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     /// deliberately only this one path to a Settings window.
     func openSettings() {
         settings?.show()
+        activationPolicy.update()
+    }
+
+    /// Opens the Compose window. Not `private`: `NtfyMeApp`'s
+    /// `CommandGroup(replacing: .newItem)` calls this for ⌘N, the same route
+    /// `openSettings()` takes for ⌘, and for the same reason — a command
+    /// that has to reach a window this app hosts itself rather than a
+    /// SwiftUI scene.
+    func openCompose() {
+        compose?.show()
         activationPolicy.update()
     }
 

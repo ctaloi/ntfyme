@@ -40,6 +40,65 @@ public struct NtfyEndpoint: Sendable {
         ])
     }
 
+    /// Publishes one message: `POST` to the server's base URL with a JSON
+    /// body.
+    ///
+    /// Its own builder rather than a `method:` parameter on the private
+    /// `request(path:query:)` below. That one appends `/json` to the path,
+    /// which a publish must not have, and threading two behaviours through
+    /// one function to save a few lines is how that function stops being
+    /// readable. What it *does* share is what matters: the same topic
+    /// validation and the same credential application, so a topic this
+    /// client refuses to stream cannot be published to either, and a
+    /// publish authenticates exactly as a subscribe does.
+    ///
+    /// JSON body rather than `POST /{topic}` with `X-Title`/`X-Priority`
+    /// headers. ntfy supports both; the header form needs a non-ASCII title
+    /// percent- or RFC 2047-encoded to survive an HTTP header, which is how
+    /// a mojibake bug arrives weeks later in the one field nobody tested
+    /// with an umlaut. The body is also the shape `NtfyEvent` already
+    /// decodes, so the two directions stay symmetric.
+    public func publishRequest(_ draft: MessageDraft) throws -> URLRequest {
+        try validate(draft.topic)
+        guard let components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false),
+              let requestURL = components.url else {
+            throw Error.invalidServerURL
+        }
+
+        var req = URLRequest(url: requestURL)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if let header = credential.authorizationHeader {
+            req.setValue(header, forHTTPHeaderField: "Authorization")
+        }
+        // An empty title and an empty tag list are *omitted*, not sent
+        // empty: ntfy treats an empty `title` as a title and an empty
+        // `tags` array as no tags, so both happen to work — but not
+        // sending them says what is meant, in a body a human may well end
+        // up reading in a server log.
+        let title = draft.title?.trimmingCharacters(in: .whitespacesAndNewlines)
+        req.httpBody = try JSONEncoder().encode(PublishPayload(
+            topic: draft.topic,
+            title: (title?.isEmpty == false) ? title : nil,
+            message: draft.body,
+            priority: draft.priority.rawValue,
+            tags: draft.tags.isEmpty ? nil : draft.tags))
+        return req
+    }
+
+    /// The publish wire format. Optionals are omitted rather than sent as
+    /// `null` — Swift's synthesized `encode(to:)` uses `encodeIfPresent`
+    /// for an `Optional` property, which is exactly the behaviour wanted
+    /// here and the reason this is a `Codable` struct rather than a
+    /// hand-built dictionary.
+    private struct PublishPayload: Encodable {
+        let topic: String
+        let title: String?
+        let message: String
+        let priority: Int
+        let tags: [String]?
+    }
+
     /// ntfy's own topic rule, `[-_A-Za-z0-9]{1,64}`.
     private static let allowedTopicCharacters = Set(
         "-_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
