@@ -15,13 +15,18 @@ import NtfyKit
 /// blank and draws every `Button`/`TextField` as a placeholder box, which is
 /// nearly everything on this tab's surface.
 ///
-/// Every assertion below checks more than "a file was written": each state
-/// asserts a minimum byte count too small to be plausible for empty chrome,
-/// and every pair of states that must look different (populated vs. empty,
-/// light vs. dark, with vs. without the error alert) asserts their byte
-/// counts actually differ. A snapshot test that cannot fail is worse than
-/// none — this wave's own History round produced five byte-identical blank
-/// renders that each looked like a pass.
+/// **Every content assertion below is `distinctColorCount`, not a byte
+/// floor.** A blank Settings-sized PNG is 18,960 bytes — still a
+/// full-resolution image, just of nothing — so a byte floor set below that
+/// (as this file's first version was) cannot fail on a surface that drew
+/// nothing at all, which is exactly the regression this suite exists to
+/// catch. A blank render has 1-2 distinct colours regardless of size or
+/// display scale; a real tab has dozens. And the two states that must
+/// specifically look *dark*, not just *different*, are compared by
+/// `meanLuminance` rather than colour count or byte size — a dark-mode view
+/// that forgot to recolour its text would still differ from its light
+/// counterpart in colour count and byte size while being unreadable
+/// white-on-white, which only a luminance comparison catches.
 ///
 /// Every fixture below uses placeholder content only — this repository is
 /// public: "ntfy.sh" (the real public service, safe to name), "Home Lab" and
@@ -83,33 +88,47 @@ private func seedServers(store: MessageStore, model: SettingsModel) async throws
 private let settingsSize = CGSize(width: 520, height: 440)
 private let onboardingSize = CGSize(width: 420, height: 340)
 
-/// Below this, a render is almost certainly empty chrome, not real content —
-/// every actual tab render in this file comes back well past 10x this.
-private let minPlausibleContentBytes = 5_000
+/// A blank render measures 1-2 distinct colours regardless of size or
+/// display scale (`distinctColorCount`'s doc comment); every real tab in
+/// this file measures in the dozens. 5 sits well clear of both.
+private let minPlausibleColorCount = 5
+
+private func path(_ filename: String) -> String { "/tmp/ntfyshots/\(filename)" }
 
 @MainActor @Test func renderGeneralTab() async throws {
     let (_, model) = try makeStoreAndModel()
     model.refreshPreferences()
-    let bytes = try renderSnapshot(
-        SettingsGeneralTab(model: model), size: settingsSize, to: "settings-general.png")
-    #expect(bytes > minPlausibleContentBytes)
+    let filename = "settings-general.png"
+    _ = try renderSnapshot(SettingsGeneralTab(model: model), size: settingsSize, to: filename)
+    #expect(try distinctColorCount(ofPNGAt: path(filename)) > minPlausibleColorCount)
 }
 
 @MainActor @Test func renderServersTabPopulatedAndEmptyDiffer() async throws {
     let (store, populatedModel) = try makeStoreAndModel()
     try await seedServers(store: store, model: populatedModel)
+    let populatedFile = "settings-servers-populated.png"
     let populatedBytes = try renderSnapshot(
-        SettingsServersTab(model: populatedModel), size: settingsSize,
-        to: "settings-servers-populated.png")
+        SettingsServersTab(model: populatedModel), size: settingsSize, to: populatedFile)
 
     let (_, emptyModel) = try makeStoreAndModel()
     await emptyModel.loadServers()
+    let emptyFile = "settings-servers-empty.png"
     let emptyBytes = try renderSnapshot(
-        SettingsServersTab(model: emptyModel), size: settingsSize,
-        to: "settings-servers-empty.png")
+        SettingsServersTab(model: emptyModel), size: settingsSize, to: emptyFile)
 
-    #expect(populatedBytes > minPlausibleContentBytes)
-    #expect(emptyBytes > minPlausibleContentBytes)
+    #expect(try distinctColorCount(ofPNGAt: path(populatedFile)) > minPlausibleColorCount)
+
+    // Not `distinctColorCount` for the empty state: reproduced and isolated
+    // to `ContentUnavailableView` specifically (reported to the SnapshotSupport
+    // owner) — `colorAt(x:y:)` reads back exactly 1 colour for a render that
+    // is visually correct and 31,427 bytes, well past a blank render's
+    // measured 18,960. `distinctColorCount` on a bare `ContentUnavailableView`
+    // with no other content around it reproduces the same 1, so this is not
+    // about this file's layout. Falls back to the byte floor that count was
+    // meant to replace, using the *measured* blank size (not a guessed one)
+    // as its baseline, and only for this one state until the helper's fixed.
+    #expect(emptyBytes > 20_000)
+
     // Three server rows vs. a `ContentUnavailableView` must not coincide.
     #expect(populatedBytes != emptyBytes)
 }
@@ -117,46 +136,47 @@ private let minPlausibleContentBytes = 5_000
 @MainActor @Test func renderNotificationsTab() async throws {
     let (_, model) = try makeStoreAndModel()
     model.refreshPreferences()
-    let bytes = try renderSnapshot(
-        SettingsNotificationsTab(model: model), size: settingsSize, to: "settings-notifications.png")
-    #expect(bytes > minPlausibleContentBytes)
+    let filename = "settings-notifications.png"
+    _ = try renderSnapshot(SettingsNotificationsTab(model: model), size: settingsSize, to: filename)
+    #expect(try distinctColorCount(ofPNGAt: path(filename)) > minPlausibleColorCount)
 }
 
 @MainActor @Test func renderAdvancedTab() async throws {
     let (_, model) = try makeStoreAndModel()
     await model.refreshMessageCount()
-    let bytes = try renderSnapshot(
-        SettingsAdvancedTab(model: model), size: settingsSize, to: "settings-advanced.png")
-    #expect(bytes > minPlausibleContentBytes)
+    let filename = "settings-advanced.png"
+    _ = try renderSnapshot(SettingsAdvancedTab(model: model), size: settingsSize, to: filename)
+    #expect(try distinctColorCount(ofPNGAt: path(filename)) > minPlausibleColorCount)
 }
 
 /// The alert path: `errorMessage` set on the shared model, rendered through
 /// the real `SettingsView` root so its `.alert(...)` — the actual mechanism
 /// every failure in `SettingsModel` reports through — is what's on screen,
-/// not a stand-in for it. Compared against the same tab with no error set,
-/// so a harness that silently fails to draw the alert (this offscreen
-/// window is never key, and a system alert sheet may need that) shows up as
-/// a byte-count match instead of a silent false pass.
+/// not a stand-in for it.
+///
+/// Two kinds of assertion here, deliberately not confused with each other.
+/// The `distinctColorCount` floors are live: they fail if either render
+/// stops showing real content, and they do not depend on the alert working.
+/// The byte-identity check inside `withKnownIssue` is the one assertion
+/// that is actually *about* the alert, and it is expected to keep firing —
+/// the alert provably does not draw from a never-key offscreen window — so
+/// it is quarantined rather than left as a permanent hard failure. Without
+/// the colour-count floors, this test would have had no assertion capable
+/// of failing on its own account once the known issue is set aside, which
+/// is the same shape of gap `distinctColorCount` was written to close.
 @MainActor @Test func renderErrorStateDiffersFromNoError() async throws {
     let (store, model) = try makeStoreAndModel()
     try await seedServers(store: store, model: model)
-    let cleanBytes = try renderSnapshot(
-        SettingsView(model: model), size: settingsSize, to: "settings-no-error.png")
+    let cleanFile = "settings-no-error.png"
+    let cleanBytes = try renderSnapshot(SettingsView(model: model), size: settingsSize, to: cleanFile)
 
     model.errorMessage = "Couldn't remove the server: the operation couldn't be completed."
-    let errorBytes = try renderSnapshot(
-        SettingsView(model: model), size: settingsSize, to: "settings-error.png")
+    let errorFile = "settings-error.png"
+    let errorBytes = try renderSnapshot(SettingsView(model: model), size: settingsSize, to: errorFile)
 
-    #expect(cleanBytes > minPlausibleContentBytes)
-    #expect(errorBytes > minPlausibleContentBytes)
-    // The alert provably does NOT draw in this harness: the two renders come
-    // out byte-identical. That is recorded as a *known* issue rather than a
-    // hard failure, for two reasons. A permanently red test teaches everyone
-    // to stop reading the suite, which costs more than this one gap. And
-    // `withKnownIssue` fails if the issue ever stops occurring — so the day
-    // the alert does start drawing, this test tells us instead of quietly
-    // passing, and `settings-error.png` becomes trustworthy at exactly that
-    // moment rather than whenever somebody happens to look.
+    #expect(try distinctColorCount(ofPNGAt: path(cleanFile)) > minPlausibleColorCount)
+    #expect(try distinctColorCount(ofPNGAt: path(errorFile)) > minPlausibleColorCount)
+
     withKnownIssue("""
         The .alert(...) is presented from an offscreen NSWindow that is never \
         key, so it does not draw and settings-error.png shows the tab beneath \
@@ -168,21 +188,26 @@ private let minPlausibleContentBytes = 5_000
 
 /// Servers is the densest tab (rows, toggles, steppers, inline fields), so
 /// it is the one rendered in dark mode. Compared against the light render
-/// for the same reason as the error-state pair above.
-@MainActor @Test func renderServersTabDarkDiffersFromLight() async throws {
+/// with `meanLuminance`, not a colour-count or byte-size diff: a dark-mode
+/// render that forgot to recolour its text would still differ from its
+/// light counterpart by both of those measures while being unreadable
+/// white-on-white — only "is it actually darker" catches that.
+@MainActor @Test func renderServersTabDarkIsActuallyDarker() async throws {
     let (store, model) = try makeStoreAndModel()
     try await seedServers(store: store, model: model)
 
-    let lightBytes = try renderSnapshot(
+    let lightFile = "settings-servers-populated-light-reference.png"
+    _ = try renderSnapshot(
         SettingsServersTab(model: model), size: settingsSize,
-        colorScheme: .light, to: "settings-servers-populated-light-reference.png")
-    let darkBytes = try renderSnapshot(
+        colorScheme: .light, to: lightFile)
+    let darkFile = "settings-servers-populated-dark.png"
+    _ = try renderSnapshot(
         SettingsServersTab(model: model), size: settingsSize,
-        colorScheme: .dark, to: "settings-servers-populated-dark.png")
+        colorScheme: .dark, to: darkFile)
 
-    #expect(lightBytes > minPlausibleContentBytes)
-    #expect(darkBytes > minPlausibleContentBytes)
-    #expect(lightBytes != darkBytes)
+    #expect(try distinctColorCount(ofPNGAt: path(lightFile)) > minPlausibleColorCount)
+    #expect(try distinctColorCount(ofPNGAt: path(darkFile)) > minPlausibleColorCount)
+    #expect(try meanLuminance(ofPNGAt: path(darkFile)) < meanLuminance(ofPNGAt: path(lightFile)))
 }
 
 /// First-run onboarding (spec §6), at the size `AppDelegate` actually hosts
@@ -193,6 +218,7 @@ private let minPlausibleContentBytes = 5_000
         onRequestAuthorization: { true },
         onFinish: {},
         onSkip: {})
-    let bytes = try renderSnapshot(view, size: onboardingSize, to: "onboarding.png")
-    #expect(bytes > minPlausibleContentBytes)
+    let filename = "onboarding.png"
+    _ = try renderSnapshot(view, size: onboardingSize, to: filename)
+    #expect(try distinctColorCount(ofPNGAt: path(filename)) > minPlausibleColorCount)
 }

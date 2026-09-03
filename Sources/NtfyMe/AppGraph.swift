@@ -72,8 +72,6 @@ final class AppGraph {
     }
 
     func start() async {
-        let prefs = preferences.load()
-
         let router = self.router
         let coordinator = ConnectionCoordinator(
             store: store,
@@ -95,7 +93,14 @@ final class AppGraph {
         self.coordinator = coordinator
         await coordinator.start()
 
-        let scheduler = RetentionScheduler(store: store, policy: prefs.retention)
+        // `[preferences]`, not a `Preferences` value loaded once here: this
+        // closure is re-invoked on every prune pass, and must read whatever
+        // is on disk *at that time*, not the value that happened to be
+        // current at launch — see `RetentionScheduler`'s `policyProvider`
+        // doc comment.
+        let scheduler = RetentionScheduler(store: store, policyProvider: { [preferences] in
+            preferences.load().retention
+        })
         self.scheduler = scheduler
         await scheduler.start()
 

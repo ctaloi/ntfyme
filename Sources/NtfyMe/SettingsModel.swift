@@ -217,7 +217,38 @@ final class SettingsModel {
             errorMessage = "Couldn't add the topic: \(ns.localizedDescription)"
             return
         }
+
+        // Seeds the Notifications tab's "Minimum priority" default onto the
+        // row `store.addTopic` just created, which otherwise defaults to 1
+        // (alert on everything) — see `Subscription.init`. Not folded into
+        // the failure path above: the topic was already added successfully,
+        // so a failure here is a mismatch from the user's stated default,
+        // not a lost topic, and it fails toward "alerts on everything"
+        // rather than toward silently dropping notifications — the safer
+        // direction — so it is logged rather than surfaced as a blocking
+        // error over an action that actually succeeded.
+        do {
+            try await store.setAlertSettings(
+                TopicAlertSettings(muted: false, minAlertPriority: defaultMinAlertPriority()),
+                forServer: serverID, topic: topic)
+        } catch {
+            let ns = error as NSError
+            Log.app.error("seeding default alert priority failed: \(ns.domain, privacy: .public) \(ns.code, privacy: .public)")
+        }
+
         await loadServers()
+    }
+
+    /// Mirrors `SettingsNotificationsTab`'s `@AppStorage(SettingsDefaultsKey
+    /// .defaultMinPriority)` fallback. `SettingsModel` is a plain class, not
+    /// a `View`, so it cannot use `@AppStorage` itself — and
+    /// `UserDefaults.integer(forKey:)` returns `0` for a key nobody has
+    /// written yet, not that wrapper's Swift-side default, so `0` (not a
+    /// valid `NtfyPriority`) has to be mapped back to the same
+    /// `NtfyPriority.default` the picker starts on.
+    private func defaultMinAlertPriority() -> Int {
+        let stored = UserDefaults.standard.integer(forKey: SettingsDefaultsKey.defaultMinPriority)
+        return NtfyPriority(rawValue: stored)?.rawValue ?? NtfyPriority.default.rawValue
     }
 
     func removeTopic(_ topic: String, fromServer serverID: UUID) async {

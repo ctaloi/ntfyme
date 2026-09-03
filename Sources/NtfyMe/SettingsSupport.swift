@@ -1,6 +1,19 @@
 import Foundation
 import NtfyKit
 
+// MARK: - Shared UserDefaults keys
+//
+// One definition per key, so the Notifications tab's `@AppStorage` and
+// `SettingsModel`'s plain `UserDefaults` reads of the same value cannot
+// drift apart into two different strings.
+enum SettingsDefaultsKey {
+    /// The minimum alert priority a newly added topic is seeded with
+    /// (`SettingsModel.addTopic`). Read with `UserDefaults.integer(forKey:)`
+    /// rather than through `@AppStorage`, so the fallback for an absent key
+    /// must be applied explicitly — see `SettingsModel.defaultMinAlertPriority`.
+    static let defaultMinPriority = "settings.notifications.defaultMinPriority"
+}
+
 // MARK: - Credential kind
 //
 // Everything below this line down to `SettingsHistoryExport` is deliberately

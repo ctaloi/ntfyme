@@ -5,21 +5,19 @@ import NtfyKit
 /// Spec §7: "default priority threshold, sound, and a shortcut to System
 /// Settings for the app's notification permission."
 ///
-/// Only "record only, never alert" is wired to real behavior today —
-/// `Preferences.recordOnlyNeverAlert` is read end-to-end by
-/// `NotificationRouter.handleStored` via `NotificationDecision`. The default
-/// priority threshold and sound toggle below are display-only: they persist
-/// to `UserDefaults` under this tab's own keys, but nothing in
-/// `NotificationDecision` or `Ingest` reads them yet — there is no field for
-/// either on `Preferences`, and adding one is outside `Settings*.swift`. See
-/// the wave2-settings report for exactly what a wiring pass needs to do to
-/// make them take effect (most likely: seed a new subscription's
-/// `TopicAlertSettings.minAlertPriority` from the threshold, and have
-/// `NotificationPresenter.present` skip `content.sound` when sound is off).
+/// "Record only, never alert" and "Minimum priority" are both wired to real
+/// behavior. `Preferences.recordOnlyNeverAlert` is read end-to-end by
+/// `NotificationRouter.handleStored` via `NotificationDecision`, and
+/// `SettingsModel.addTopic` seeds a newly added topic's
+/// `TopicAlertSettings.minAlertPriority` from this picker's stored value —
+/// see its doc comment. "Play a sound" is still display-only: it persists
+/// under its own `UserDefaults` key, but nothing in `NotificationPresenter`
+/// reads it yet, and the user has been asked whether to wire it or remove
+/// it (see the wave2 report) — do not act on it without that answer.
 struct SettingsNotificationsTab: View {
     let model: SettingsModel
 
-    @AppStorage("settings.notifications.defaultMinPriority") private var defaultMinPriority = NtfyPriority.default.rawValue
+    @AppStorage(SettingsDefaultsKey.defaultMinPriority) private var defaultMinPriority = NtfyPriority.default.rawValue
     @AppStorage("settings.notifications.soundEnabled") private var soundEnabled = true
 
     var body: some View {

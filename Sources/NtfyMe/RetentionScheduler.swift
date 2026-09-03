@@ -4,13 +4,19 @@ import NtfyKit
 /// Runs retention at launch and daily thereafter (spec §8).
 actor RetentionScheduler {
     private let store: MessageStore
-    private let policy: RetentionPolicy
+    /// Re-read on every pass rather than captured once at `init` as a plain
+    /// `RetentionPolicy` — this scheduler lives for the whole app run, so a
+    /// value captured once would freeze whatever retention was set at
+    /// launch. A change made in Settings must reach the very next prune, not
+    /// wait for a relaunch to reconstruct this actor with a fresh value.
+    private let policyProvider: @Sendable () -> RetentionPolicy
     private let interval: Duration
     private var task: Task<Void, Never>?
 
-    init(store: MessageStore, policy: RetentionPolicy, interval: Duration = .seconds(86_400)) {
+    init(store: MessageStore, policyProvider: @escaping @Sendable () -> RetentionPolicy,
+         interval: Duration = .seconds(86_400)) {
         self.store = store
-        self.policy = policy
+        self.policyProvider = policyProvider
         self.interval = interval
     }
 
@@ -39,7 +45,7 @@ actor RetentionScheduler {
 
     func pruneNow() async {
         do {
-            let result = try await store.prune(policy: policy, attachmentsDirectory: attachmentsDirectory())
+            let result = try await store.prune(policy: policyProvider(), attachmentsDirectory: attachmentsDirectory())
             Log.store.info("pruned \(result.messagesDeleted, privacy: .public) messages, \(result.attachmentFilesDeleted, privacy: .public) files")
         } catch {
             let ns = error as NSError
