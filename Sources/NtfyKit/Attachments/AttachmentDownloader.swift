@@ -66,38 +66,146 @@ public actor AttachmentDownloader {
         // never leaves the directory in a half-created state to reason about.
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
 
-        let (bytes, response) = try await session.bytes(for: URLRequest(url: url))
-
-        if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
-            throw Error.httpError(status: http.statusCode)
-        }
-
-        // `expectedContentLength` reflects the response's `Content-Length`
-        // header when present, -1 when absent. This is a fast rejection for
-        // the common case, not the enforcement itself — a server can send an
-        // absent or dishonest header, so the loop below is what actually
-        // bounds the download regardless of what the server claims.
-        if response.expectedContentLength >= 0, response.expectedContentLength > Int64(maximumBytes) {
-            throw Error.tooLarge(bytes: Int(response.expectedContentLength))
-        }
-
-        var data = Data()
-        for try await byte in bytes {
-            data.append(byte)
-            if data.count > maximumBytes {
-                // Stop pulling bytes off the wire the instant the cap is
-                // crossed, rather than after the whole body has arrived —
-                // the server is untrusted and may be trying to exhaust disk
-                // or memory with an unbounded body.
-                bytes.task.cancel()
-                throw Error.tooLarge(bytes: data.count)
-            }
-        }
+        let data = try await streamedData(from: url)
 
         let filename = Self.generatedFilename(name: attachment.name, type: attachment.type)
         let destination = directory.appendingPathComponent(filename)
         try data.write(to: destination, options: .atomic)
         return filename
+    }
+
+    /// Drives a plain, delegate-based `URLSessionDataTask` and bridges its
+    /// callbacks to this one `async` call — not `session.bytes(for:)`'s
+    /// byte-at-a-time `AsyncSequence`, and not `session.data(for:delegate:)`
+    /// either. Both were tried and rejected:
+    /// - `bytes(for:)` suspended this actor once per byte of the ENTIRE
+    ///   body — roughly 4 million times for an ordinary screenshot, up to
+    ///   25 million at the cap — stalling every other caller of this actor
+    ///   for the whole download.
+    /// - `data(for:delegate:)`'s per-call `delegate:` parameter looked like
+    ///   the fix, but confirmed empirically NOT to invoke
+    ///   `URLSessionDataDelegate`'s incremental callbacks at all — that
+    ///   parameter only supports `URLSessionTaskDelegate` events (redirects,
+    ///   auth challenges, metrics); the whole response streamed in and the
+    ///   call returned success with no chance to reject or bound it. A
+    ///   delegate attached to the session at construction time did not fix
+    ///   this either — Apple's async convenience methods appear to bypass
+    ///   `URLSessionDataDelegate` regardless of where the delegate lives.
+    ///
+    /// A classic `URLSessionDataTask`, created via `dataTask(with:)` on a
+    /// session whose delegate IS `cap`, is the one combination that
+    /// reliably delivers `didReceive`. `cap`'s session shares `session`'s
+    /// configuration — including a test's stubbed `protocolClasses` and
+    /// `makeSession()`'s security-relevant cookie/credential settings —
+    /// scoped to exactly the one request it exists for.
+    private func streamedData(from url: URL) async throws -> Data {
+        let cap = SizeCappingDelegate(maximumBytes: maximumBytes)
+        let taskSession = URLSession(configuration: session.configuration, delegate: cap, delegateQueue: nil)
+        defer { taskSession.finishTasksAndInvalidate() }
+
+        return try await withCheckedThrowingContinuation { continuation in
+            cap.continuation = continuation
+            taskSession.dataTask(with: URLRequest(url: url)).resume()
+        }
+    }
+
+    /// Bridges `URLSessionDataDelegate`'s callbacks — which arrive on the
+    /// session's own delegate queue, never this actor — into
+    /// `streamedData`'s continuation, and rejects the response as early as
+    /// possible: before the body at all for a bad status or an honest,
+    /// oversize `Content-Length`, mid-body the instant the cap is crossed
+    /// otherwise. Accumulates the body itself, since a plain `dataTask` has
+    /// no return value to hand it back with.
+    ///
+    /// `didReceive data:` still scans every byte of each chunk to find the
+    /// EXACT byte at which `maximumBytes` is crossed — `tooLarge`'s
+    /// associated value is meaningful to callers (and pinned exactly, chunk
+    /// boundaries and all, by this file's own tests), so the byte-level
+    /// check itself is not the thing this rewrite removes. What changed is
+    /// where it runs: entirely inside one synchronous, in-memory loop per
+    /// already-delivered chunk — `didReceive` fires a handful of times per
+    /// download, each call already holding a complete chunk to scan for
+    /// free, never `await`ed one byte at a time.
+    private final class SizeCappingDelegate: NSObject, URLSessionDataDelegate, @unchecked Sendable {
+        private let maximumBytes: Int
+        private var totalBytes = 0
+        private var body = Data()
+        private var rejection: AttachmentDownloader.Error?
+        // `URLSessionTask.didCompleteWithError` is guaranteed to fire
+        // exactly once per task, so `continuation` is resumed exactly once
+        // from there — never from `didReceive`, which only records the
+        // reason. The lock guards the two properties against the delegate
+        // queue and this class's own `continuation` setter (called from
+        // `streamedData`, on the caller's task) touching them concurrently.
+        private let lock = NSLock()
+        private var _continuation: CheckedContinuation<Data, Swift.Error>?
+        var continuation: CheckedContinuation<Data, Swift.Error>? {
+            get { lock.lock(); defer { lock.unlock() }; return _continuation }
+            set { lock.lock(); defer { lock.unlock() }; _continuation = newValue }
+        }
+
+        init(maximumBytes: Int) {
+            self.maximumBytes = maximumBytes
+        }
+
+        func urlSession(_ session: URLSession, dataTask: URLSessionDataTask,
+                        didReceive response: URLResponse,
+                        completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
+            if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
+                rejection = .httpError(status: http.statusCode)
+                completionHandler(.cancel)
+                return
+            }
+            // `expectedContentLength` reflects the response's
+            // `Content-Length` header when present, -1 when absent. A fast
+            // rejection for the common case, not the enforcement itself — a
+            // server can send an absent or dishonest header, so
+            // `didReceive data:` below is what actually bounds the download
+            // regardless of what the server claims.
+            if response.expectedContentLength >= 0, response.expectedContentLength > Int64(maximumBytes) {
+                rejection = .tooLarge(bytes: Int(response.expectedContentLength))
+                completionHandler(.cancel)
+                return
+            }
+            completionHandler(.allow)
+        }
+
+        func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+            guard rejection == nil else { return }
+            for byte in data {
+                body.append(byte)
+                totalBytes += 1
+                if totalBytes > maximumBytes {
+                    // Stop pulling bytes off the wire the instant the cap is
+                    // crossed, rather than after the whole body has arrived
+                    // — the server is untrusted and may be trying to
+                    // exhaust disk or memory with an unbounded body.
+                    rejection = .tooLarge(bytes: totalBytes)
+                    dataTask.cancel()
+                    return
+                }
+            }
+        }
+
+        func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Swift.Error?) {
+            // `cancel()` is a best-effort request, not a guarantee — a
+            // source that hands every chunk to the session before this
+            // delegate reacts to the last one can still complete with no
+            // error despite it. `rejection`, not whether the task itself
+            // reports an error, is authoritative: checked first so a
+            // recorded rejection is never silently dropped in favor of
+            // "completed successfully" or a generic `URLError(.cancelled)`
+            // that loses the distinction between `tooLarge` and
+            // `httpError` this type's callers need.
+            if let rejection {
+                continuation?.resume(throwing: rejection)
+            } else if let error {
+                continuation?.resume(throwing: error)
+            } else {
+                continuation?.resume(returning: body)
+            }
+            continuation = nil
+        }
     }
 
     /// `raw` is a wire value — see the type doc comment. Same allow-list as

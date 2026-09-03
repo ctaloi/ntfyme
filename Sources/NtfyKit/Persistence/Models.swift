@@ -135,6 +135,23 @@ public final class Message {
         "\(serverID.uuidString)/\(topic)/\(messageID)"
     }
 
+    /// Splits a `uniqueKey` back into the server and topic it names, without
+    /// requiring the row itself to still exist. Used to recover "where this
+    /// message would have been" when retention (spec §8) has pruned the row
+    /// between whoever captured the key — a notification, a menu bar tap —
+    /// and the key being used to open the app: the message is gone, but the
+    /// topic it belonged to is still worth navigating to rather than doing
+    /// nothing. `messageID` is deliberately not recovered; nothing needs it.
+    ///
+    /// Reliable because ntfy topic names and message IDs are both drawn from
+    /// `[-_A-Za-z0-9]`, never `/` — `maxSplits: 2` still guards against a
+    /// value that does not actually fit this shape rather than assuming it.
+    public static func topicScope(forUniqueKey uniqueKey: String) -> (serverID: UUID, topic: String)? {
+        let parts = uniqueKey.split(separator: "/", maxSplits: 2, omittingEmptySubsequences: false)
+        guard parts.count == 3, let serverID = UUID(uuidString: String(parts[0])) else { return nil }
+        return (serverID, String(parts[1]))
+    }
+
     /// Builds `tagsJoined` from `tags`. The leading AND trailing `"|"`
     /// matter: without them, a search for `"alert"` would also match a
     /// message tagged only `"alerts"`, since `"tag1|alerts|tag3".contains

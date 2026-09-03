@@ -222,3 +222,33 @@ private func freshDirectory() -> URL {
     #expect(isDirectory.boolValue)
     #expect(try Data(contentsOf: dir.appendingPathComponent(filename)) == body)
 }
+
+/// `download` accumulates the body across `didReceive data:`'s chunk-at-a-
+/// time delivery rather than `session.bytes(for:)`'s byte-at-a-time
+/// `AsyncSequence` — this is the actual code path the rewrite (for
+/// performance: one async suspension per byte was roughly 4 million for an
+/// ordinary screenshot) changed. A single small chunk, as every other test
+/// above uses, would pass just as easily under a naive implementation that
+/// silently dropped every chunk after the first; many chunks, spanning well
+/// past the cap's own size, is what actually distinguishes "accumulates
+/// every chunk in order" from "only kept the last one" or "only kept the
+/// first one".
+@Test func downloadReassemblesManyChunksInOrderWithoutLoss() async throws {
+    let url = URL(string: "https://example.com/k")!
+    // 500 chunks of 200 bytes each, each byte-filled with its own chunk
+    // index (mod 256) so a reordering or a dropped/duplicated chunk shows
+    // up as a content mismatch, not just a wrong total length.
+    let chunks = (0..<500).map { index in Data(repeating: UInt8(index % 256), count: 200) }
+    let body = chunks.reduce(Data(), +)
+    AttachmentStubRegistry.shared.register(
+        AttachmentStub(status: 200, headers: ["Content-Length": "\(body.count)"], bodyChunks: chunks),
+        for: url)
+    let dir = freshDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+
+    let downloader = AttachmentDownloader(
+        session: AttachmentDownloader.stubbedSession(), directory: dir, maximumBytes: body.count)
+    let filename = try await downloader.download(attachment(name: "big.bin", url: url.absoluteString))
+
+    #expect(try Data(contentsOf: dir.appendingPathComponent(filename)) == body)
+}

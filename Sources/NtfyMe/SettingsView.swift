@@ -1,10 +1,15 @@
 import SwiftUI
 
-/// The Settings window's root content, tabbed exactly as spec §7 specifies:
-/// General, Servers, Notifications, Advanced. All four tabs share one
-/// `SettingsModel` — see its doc comment for why that is load-bearing, not
-/// just convenient — so the wiring pass constructs a single instance and
-/// hands it here.
+/// The Settings window's root content, tabbed: General, Servers,
+/// Notifications. All tabs share one `SettingsModel` — see its doc comment
+/// for why that is load-bearing, not just convenient — so the wiring pass
+/// constructs a single instance and hands it here.
+///
+/// Three tabs, not spec §7's four: Advanced folded into General once the
+/// log-level control was removed left it — see `SettingsGeneralTab`'s doc
+/// comment for the reasoning (two tabs both titled "History" is the kind of
+/// split that makes people hunt, and a tab holding one thin group was not
+/// earning its place in the tab bar).
 ///
 /// Hosted by `SettingsWindowController`, not the SwiftUI `Settings` scene —
 /// see that controller's doc comment for why: as a menu-bar accessory this
@@ -23,12 +28,18 @@ struct SettingsView: View {
 
             SettingsNotificationsTab(model: model)
                 .tabItem { Label("Notifications", systemImage: "bell.badge") }
-
-            SettingsAdvancedTab(model: model)
-                .tabItem { Label("Advanced", systemImage: "wrench.and.screwdriver") }
         }
         .frame(width: 520, height: 440)
-        .task { await model.refresh() }
+        .task {
+            // Seed before refresh, not after: so a genuinely first-run
+            // window shows the seeded ntfy.sh server on its very first
+            // paint rather than an empty state that fills in a moment
+            // later. See `SettingsModel.seedDefaultServerIfNeeded`'s doc
+            // comment for why this is safe to call every time Settings
+            // opens (it is a one-shot, flag-gated no-op after the first).
+            await model.seedDefaultServerIfNeeded()
+            await model.refresh()
+        }
         .alert("Settings", isPresented: errorPresented) {
             Button("OK", role: .cancel) {}
         } message: {

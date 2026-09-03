@@ -17,10 +17,23 @@ import NtfyKit
 /// new `NtfyKit` surface with no test coverage, decided against at the merge
 /// gate. Sound stays governed entirely by priority, per spec §6's table. Can
 /// come back with its own plumbing and tests later.
+///
+/// **System Permission reads the live status, not a static how-to.** A tab
+/// whose entire job is answering "why isn't this alerting" said nothing
+/// about that when permission was actually denied — identical copy whether
+/// authorized, denied, or never asked. `model.notificationAuthorization`
+/// (refreshed on every appearance, since the user can change it in System
+/// Settings while this window stays open) drives three distinct states
+/// below: denied says so plainly and points at the fix; not-determined
+/// offers to ask directly, through the same `NotificationPresenter
+/// .requestAuthorization()` onboarding uses, rather than sending the user to
+/// System Settings for a prompt the app has never made; authorized is a
+/// quiet confirmation for anyone debugging.
 struct SettingsNotificationsTab: View {
     let model: SettingsModel
 
     @AppStorage(SettingsDefaultsKey.defaultMinPriority) private var defaultMinPriority = NtfyPriority.default.rawValue
+    @State private var isRequestingAuthorization = false
 
     var body: some View {
         Form {
@@ -42,17 +55,54 @@ struct SettingsNotificationsTab: View {
             }
 
             Section("System Permission") {
-                Button {
-                    openNotificationSettings()
-                } label: {
-                    Label("Open Notification Settings\u{2026}", systemImage: "arrow.up.forward.app")
-                }
-                Text("NtfyMe must be allowed to send notifications in System Settings for alerts to appear.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                permissionStatusView
             }
         }
         .formStyle(.grouped)
+        .onAppear {
+            Task { await model.refreshNotificationAuthorization() }
+        }
+    }
+
+    @ViewBuilder
+    private var permissionStatusView: some View {
+        switch model.notificationAuthorization {
+        case .authorized:
+            Label("Notifications are allowed.", systemImage: "checkmark.circle.fill")
+                .foregroundStyle(.secondary)
+                .accessibilityLabel("Notifications are allowed")
+
+        case .denied:
+            Label("Notifications are turned off for NtfyMe in System Settings \u{2014} this is why nothing is alerting.", systemImage: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+                .accessibilityLabel("Notifications are denied")
+            Button {
+                openNotificationSettings()
+            } label: {
+                Label("Open Notification Settings\u{2026}", systemImage: "arrow.up.forward.app")
+            }
+
+        case .notDetermined:
+            Text("NtfyMe hasn't asked for notification permission yet.")
+                .foregroundStyle(.secondary)
+            Button {
+                Task { await enableNotifications() }
+            } label: {
+                if isRequestingAuthorization {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Text("Enable Notifications")
+                }
+            }
+            .disabled(isRequestingAuthorization)
+            .accessibilityLabel("Enable notifications")
+        }
+    }
+
+    private func enableNotifications() async {
+        isRequestingAuthorization = true
+        await model.enableNotifications()
+        isRequestingAuthorization = false
     }
 
     private var recordOnlyBinding: Binding<Bool> {

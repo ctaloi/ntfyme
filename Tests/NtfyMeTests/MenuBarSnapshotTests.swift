@@ -130,7 +130,8 @@ private func makeViewModel(messages: [MessageSnapshot], unread: Int,
 
 @MainActor
 private func popoverView(_ viewModel: MenuBarViewModel) -> MenuBarPopoverView {
-    MenuBarPopoverView(viewModel: viewModel, onOpenHistory: {}, onOpenSettings: {}, onQuit: {})
+    MenuBarPopoverView(viewModel: viewModel, onOpenHistory: {}, onOpenSettings: {}, onQuit: {},
+                       onOpenMessage: { _ in }, onRetryConnection: {})
 }
 
 /// Below a blank render's own colour count (1, per `SnapshotSupport`'s
@@ -184,11 +185,41 @@ private let minimumOpacity = 0.85
     let viewModel = makeViewModel(messages: MenuBarFixtures.messages(), unread: 3, statuses: statuses)
     await viewModel.refresh()
     #expect(viewModel.connectivity == .disconnected)
+    // Both problems here are retryable (backoff, rate limit) — Retry must
+    // show, and both servers' names and reasons must be present so the row
+    // says which server and why, not just "Disconnected".
+    #expect(viewModel.canRetryConnection)
+    #expect(viewModel.problemServers.map(\.name) == ["Home Lab", "ntfy.sh"])
+    #expect(viewModel.problemServers.map { $0.state.problemLabel } == ["Retrying…", "Rate limited"])
     _ = try renderSnapshot(popoverView(viewModel), size: MenuBarPopoverView.size,
                            to: "menubar-disconnected.png")
     let colors = try distinctColorCount(ofPNGAt: "/tmp/ntfyshots/menubar-disconnected.png")
     #expect(colors > minimumDistinctColors)
     #expect(try meanAlpha(ofPNGAt: "/tmp/ntfyshots/menubar-disconnected.png") > minimumOpacity)
+}
+
+/// A rejected credential is terminal until the user changes it — offering
+/// "Retry" would suggest an action that cannot help (see
+/// `ConnectionState.canRetry`'s doc comment). One healthy server plus one
+/// unauthorized one, so `.needsAttention` here also isn't "everything is
+/// broken": `MenuBarConnectivity.summarize` gives `.unauthorized` priority
+/// over `.open` regardless of the rest.
+@MainActor @Test(requiresSnapshotRendering) func renderNeedsAttention() async throws {
+    let statuses = [
+        MenuBarFixtures.homeLab,
+        MenuBarServerStatus(serverID: MenuBarFixtures.publicID, name: "ntfy.sh", state: .unauthorized),
+    ]
+    let viewModel = makeViewModel(messages: MenuBarFixtures.messages(), unread: 3, statuses: statuses)
+    await viewModel.refresh()
+    #expect(viewModel.connectivity == .needsAttention)
+    #expect(!viewModel.canRetryConnection)
+    #expect(viewModel.problemServers.map(\.name) == ["ntfy.sh"])
+    #expect(viewModel.problemServers.map { $0.state.problemLabel } == ["Sign-in needed"])
+    _ = try renderSnapshot(popoverView(viewModel), size: MenuBarPopoverView.size,
+                           to: "menubar-needs-attention.png")
+    let colors = try distinctColorCount(ofPNGAt: "/tmp/ntfyshots/menubar-needs-attention.png")
+    #expect(colors > minimumDistinctColors)
+    #expect(try meanAlpha(ofPNGAt: "/tmp/ntfyshots/menubar-needs-attention.png") > minimumOpacity)
 }
 
 @MainActor @Test(requiresSnapshotRendering) func renderLoadError() async throws {

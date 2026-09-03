@@ -29,6 +29,7 @@ final class AppGraph {
     private let router: NotificationRouter
     private var coordinator: ConnectionCoordinator?
     private var scheduler: RetentionScheduler?
+    private var attachments: AttachmentFetcher?
     private var wakeObserver: NSObjectProtocol?
 
     /// Where the real database lives, under a directory this app owns —
@@ -88,6 +89,9 @@ final class AppGraph {
                 // for up to 30 seconds before the menu bar admitted it existed.
                 // `weak`: the coordinator owns the ingest that owns this
                 // closure, and the graph owns the coordinator.
+                // Fire-and-return: the fetcher owns the task, so a slow
+                // remote host cannot stall this flush or the pump behind it.
+                await self?.attachments?.fetchAttachments(for: events, serverID: serverID)
                 await self?.notifyStoredBatch()
             })
         self.coordinator = coordinator
@@ -98,6 +102,10 @@ final class AppGraph {
         // is on disk *at that time*, not the value that happened to be
         // current at launch — see `RetentionScheduler`'s `policyProvider`
         // doc comment.
+        if let directory = Self.attachmentsDirectory() {
+            attachments = AttachmentFetcher(store: store, directory: directory)
+        }
+
         let scheduler = RetentionScheduler(store: store, policyProvider: { [preferences] in
             preferences.load().retention
         })
@@ -121,6 +129,7 @@ final class AppGraph {
             NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver)
             self.wakeObserver = nil
         }
+        await attachments?.stop()
         await scheduler?.stop()
         await coordinator?.stop()
     }
@@ -243,9 +252,30 @@ final class AppGraph {
             closeConnection: { [weak self] serverID in
                 guard let coordinator = await MainActor.run(body: { self?.coordinator }) else { return }
                 await coordinator.close(serverID: serverID)
+            },
+            // The one definition of this path, not recomputed here — see
+            // `Self.attachmentsDirectory`'s doc comment.
+            attachmentsDirectory: Self.attachmentsDirectory,
+            // `presenter` is `let` and outlives this graph regardless (see
+            // its own doc comment), so a plain capture is fine here — unlike
+            // `coordinator`, there is no "not started yet" state to guard.
+            notificationAuthorizationStatus: { [presenter] in
+                await presenter.authorizationStatus()
+            },
+            requestNotificationAuthorization: { [presenter] in
+                await presenter.requestAuthorization()
             })
     }
 
+
+    /// Reconnects every server immediately, bypassing any pending backoff.
+    /// Wired to the popover's Retry control — before it existed, a user who
+    /// saw a disconnected state could only quit and relaunch, since reconnects
+    /// otherwise happen only on wake-from-sleep and network-path transitions,
+    /// neither of which they can trigger deliberately.
+    func reconnectAll() async {
+        await coordinator?.reconnectAll()
+    }
 
     /// Called after a batch is stored and its notifications raised, so the
     /// menu bar reflects a new message immediately rather than at the next

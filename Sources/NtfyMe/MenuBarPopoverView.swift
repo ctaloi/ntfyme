@@ -10,8 +10,20 @@ struct MenuBarPopoverView: View {
     let onOpenHistory: () -> Void
     let onOpenSettings: () -> Void
     let onQuit: () -> Void
-
-    @Environment(\.openURL) private var openURL
+    /// A row tap opens the app (History, scrolled to that message), not the
+    /// message's `click` URL — keyed on `MessageSnapshot.id`, the unique key
+    /// the wiring pass's reveal-by-key API takes, so this view hands out
+    /// exactly what that API needs rather than the whole snapshot. See
+    /// `messageRow`'s doc comment for why `click` no longer has a row-tap
+    /// path at all.
+    let onOpenMessage: (String) -> Void
+    /// Reconnects every server. Global rather than per-server: the popover
+    /// can already show several problem servers at once, and a retry button
+    /// on each would add more visual weight than a small popover has room
+    /// for. `ConnectionCoordinator.reconnectAll()` is what the wiring pass
+    /// has ready today; a per-server version is a reasonable future step if
+    /// this ever feels too broad, not something this surface needs now.
+    let onRetryConnection: () -> Void
 
     static let size = CGSize(width: 360, height: 440)
 
@@ -68,59 +80,89 @@ struct MenuBarPopoverView: View {
 
     // MARK: - Connection status
 
+    /// One line ("Connected", "N servers") when everything is fine.
+    /// Otherwise expands below the summary into one row per problem server
+    /// — name plus `ConnectionState.problemLabel`, e.g. "vaspian-alerts —
+    /// Rate limited" — and a Retry affordance when at least one of those
+    /// problems is something a retry can plausibly help with. Collapsing
+    /// every non-`.open` state to the single word "Disconnected" was the
+    /// actual gap: it told the user nothing about which server, why, or
+    /// what to do, which is backwards for the state where that information
+    /// matters most.
     private var connectionRow: some View {
-        let info = connectivityDisplay
-        return HStack(spacing: 6) {
-            Circle()
-                .fill(info.color)
-                .frame(width: 8, height: 8)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(info.text)
+        let problems = viewModel.problemServers
+        return VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
+                Circle()
+                    .fill(summaryColor)
+                    .frame(width: 8, height: 8)
+                Text(viewModel.connectivity.statusText)
                     .font(.caption)
-                if let detail = info.detail {
-                    Text(detail)
+                if problems.isEmpty, viewModel.serverStatuses.count > 1 {
+                    Text("· \(viewModel.serverStatuses.count) servers")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                if viewModel.canRetryConnection {
+                    Button("Retry") { onRetryConnection() }
+                        .buttonStyle(.plain)
+                        .font(.caption)
+                        .foregroundStyle(Color.accentColor)
+                        .accessibilityLabel("Retry connecting now")
+                }
+            }
+            ForEach(problems) { status in
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(dotColor(for: status.state))
+                        .frame(width: 6, height: 6)
+                    Text(status.name)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                    Text(status.state.problemLabel ?? "")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                         .truncationMode(.tail)
                 }
+                .padding(.leading, 14)
             }
-            Spacer()
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("Connection status: \(info.text)\(info.detail.map { ", \($0)" } ?? "")")
+        .accessibilityLabel(connectionAccessibilityLabel(problems: problems))
     }
 
-    private struct ConnectivityDisplay {
-        let text: String
-        let detail: String?
-        let color: Color
-    }
-
-    private var connectivityDisplay: ConnectivityDisplay {
-        let statuses = viewModel.serverStatuses
-        let connectivity = viewModel.connectivity
-        let text = connectivity.statusText
-        switch connectivity {
-        case .noServers, .connecting, .disconnected:
-            return ConnectivityDisplay(text: text, detail: nil,
-                                       color: connectivity == .disconnected ? .red : .secondary)
-        case .allConnected:
-            let detail = statuses.count > 1 ? "\(statuses.count) servers" : nil
-            return ConnectivityDisplay(text: text, detail: detail, color: .green)
-        case .someConnected:
-            let names = statuses.filter { $0.state != .open }.map(\.name)
-            return ConnectivityDisplay(text: text,
-                                       detail: names.isEmpty ? nil : names.joined(separator: ", "),
-                                       color: .yellow)
-        case .needsAttention:
-            let names = statuses.filter { $0.state == .unauthorized }.map(\.name)
-            return ConnectivityDisplay(text: text,
-                                       detail: names.isEmpty ? nil : names.joined(separator: ", "),
-                                       color: .red)
+    private var summaryColor: Color {
+        switch viewModel.connectivity {
+        case .noServers, .connecting: .secondary
+        case .allConnected: .green
+        case .someConnected: .yellow
+        case .disconnected, .needsAttention: .red
         }
+    }
+
+    private func dotColor(for state: ConnectionState) -> Color {
+        switch state {
+        case .open: .green
+        case .idle, .connecting: .secondary
+        case .unauthorized: .red
+        case .degraded, .backoff: .orange
+        }
+    }
+
+    private func connectionAccessibilityLabel(problems: [MenuBarServerStatus]) -> String {
+        var label = "Connection status: \(viewModel.connectivity.statusText)."
+        for status in problems {
+            label += " \(status.name): \(status.state.problemLabel ?? "unknown")."
+        }
+        if viewModel.canRetryConnection {
+            label += " Retry available."
+        }
+        return label
     }
 
     // MARK: - Search
@@ -146,12 +188,17 @@ struct MenuBarPopoverView: View {
         .padding(EdgeInsets(top: 6, leading: 12, bottom: 6, trailing: 12))
     }
 
+    /// A subtle inset ground, not just floating text between the search
+    /// field and the first topic group — without it this read as stray text
+    /// rather than a banner (seen directly in the rendered popover).
     private func errorBanner(_ message: String) -> some View {
         Label(message, systemImage: "exclamationmark.triangle")
             .font(.caption)
             .foregroundStyle(.secondary)
-            .padding(.horizontal, 12)
-            .padding(.bottom, 4)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(8)
+            .background(.quaternary, in: RoundedRectangle(cornerRadius: 6))
+            .padding(EdgeInsets(top: 0, leading: 12, bottom: 6, trailing: 12))
     }
 
     // MARK: - Messages
@@ -212,19 +259,21 @@ struct MenuBarPopoverView: View {
         }
     }
 
+    /// A tap marks the row read and opens the app to that message — never
+    /// the message's `click` URL, even when one is set. That URL used to be
+    /// opened here (through `NtfyURLPolicy`, since `click` is
+    /// attacker-controlled — spec §9 — and a bare `URL(string:)` would let a
+    /// `file://` or custom-scheme value read a local file or launch another
+    /// app), but a row that sometimes opens a browser and sometimes opens a
+    /// window is exactly the kind of inconsistent control that erodes trust
+    /// in what a tap will do. The History detail pane's own "open click URL"
+    /// action button is the deliberate, visible place for that now — still
+    /// routed through `NtfyURLPolicy` there, since the message is the same
+    /// attacker-controlled content wherever it is opened from.
     private func messageRow(_ message: MessageSnapshot) -> some View {
         Button {
             viewModel.markRead(message)
-            // `message.click` is attacker-controlled (spec §9 — a topic name
-            // is effectively a password on public ntfy.sh), so it goes
-            // through the shared `NtfyURLPolicy` rather than `URL(string:)`
-            // directly: a `file://` or custom-scheme click would otherwise
-            // read a local file or launch another app. `nil` means the row
-            // still marks read but opens nothing — never logged, since
-            // `Log.swift` bars action/click URLs as message content.
-            if let url = NtfyURLPolicy.sanitized(message.click) {
-                openURL(url)
-            }
+            onOpenMessage(message.id)
         } label: {
             HStack(alignment: .top, spacing: 6) {
                 priorityDot(message.resolvedPriority)

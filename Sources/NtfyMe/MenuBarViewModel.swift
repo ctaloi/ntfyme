@@ -40,6 +40,26 @@ final class MenuBarViewModel: ObservableObject {
 
     var connectivity: MenuBarConnectivity { .summarize(serverStatuses) }
 
+    /// Every server that isn't `.open`, in `serverStatuses`' own order
+    /// (`store.servers()`'s `sortOrder`, stable and already what the History
+    /// sidebar uses). The connection row expands into this list — name plus
+    /// `ConnectionState.problemLabel` per row — instead of the single
+    /// aggregate word `connectivity.statusText` gives, once there is
+    /// anything to report: "Disconnected" alone doesn't say which server or
+    /// why, and why is exactly what decides whether the user should wait,
+    /// retry, or go fix a credential.
+    var problemServers: [MenuBarServerStatus] {
+        serverStatuses.filter { $0.state != .open }
+    }
+
+    /// Whether a retry affordance is worth showing at all. `false` when
+    /// every problem server is `.unauthorized` — retrying a rejected
+    /// credential only burns rate limit (`ConnectionState.canRetry`), so
+    /// offering "Retry" there would suggest an action that cannot help.
+    var canRetryConnection: Bool {
+        problemServers.contains { $0.state.canRetry }
+    }
+
     /// `Server.name` for a group's header, so "alerts" on two servers reads
     /// as two distinct sections rather than one merged list. `nil` when the
     /// server isn't in the latest status fetch (e.g. removed since, or

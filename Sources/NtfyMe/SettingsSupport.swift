@@ -12,6 +12,15 @@ enum SettingsDefaultsKey {
     /// rather than through `@AppStorage`, so the fallback for an absent key
     /// must be applied explicitly — see `SettingsModel.defaultMinAlertPriority`.
     static let defaultMinPriority = "settings.notifications.defaultMinPriority"
+
+    /// Gates the `ntfy.sh` default-server seed (`SettingsModel
+    /// .seedDefaultServerIfNeeded`) to a genuine first run. Deliberately not
+    /// derived from "the server list is empty": a user who deletes the
+    /// seeded server must see it stay deleted, not have it reappear because
+    /// the list emptied out again. Set only once the seed attempt actually
+    /// succeeds, so a transient failure on one launch is retried on the next
+    /// rather than being recorded as done.
+    static let hasSeededDefaultServer = "settings.hasSeededDefaultServer"
 }
 
 // MARK: - Credential kind
@@ -134,6 +143,22 @@ enum SettingsRetentionValidation {
         return RetentionPolicy(maxAge: TimeInterval(days) * 86_400,
                                maxMessagesPerTopic: maxMessagesPerTopic)
     }
+}
+
+// MARK: - Notification authorization
+
+/// This app's own mirror of the three `UNAuthorizationStatus` cases a user
+/// can actually act on (`.provisional`/`.ephemeral` collapse into
+/// `.authorized` — notifications still show either way, and this app never
+/// requests them itself). Kept as a local enum, not `UNAuthorizationStatus`
+/// directly, so `SettingsNotificationsTab.swift` never has to import
+/// `UserNotifications` — the mapping happens once, in
+/// `NotificationPresenter` via the wiring pass, the one place this app
+/// already talks to `UNUserNotificationCenter`.
+enum SettingsNotificationAuthorization: Equatable, Sendable {
+    case authorized
+    case denied
+    case notDetermined
 }
 
 // MARK: - JSON export

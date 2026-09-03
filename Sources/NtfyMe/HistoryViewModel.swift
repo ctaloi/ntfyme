@@ -240,7 +240,7 @@ final class HistoryViewModel {
         guard !snapshots.isEmpty else { return }
         let ids = Set(snapshots.map(\.id))
         do {
-            try await store.deleteMessages(snapshots.map(\.id))
+            try await store.deleteMessages(snapshots.map(\.id), attachmentsDirectory: attachmentsDirectory)
             selection.subtract(ids)
             await reloadLoadedWindow()
             await loadSidebar()
@@ -269,6 +269,87 @@ final class HistoryViewModel {
     func openClickURL(_ snapshot: MessageSnapshot) {
         guard let url = NtfyURLPolicy.sanitized(snapshot.click) else { return }
         NSWorkspace.shared.open(url)
+    }
+
+    /// Wide enough to cover retention's default per-topic cap
+    /// (`RetentionPolicy.default.maxMessagesPerTopic`) without importing a
+    /// hard dependency on that value — a widened `reveal` fetch bounded by
+    /// `since:` a specific message's own time is already capped by whatever
+    /// retention the user has configured; this only bounds the pathological
+    /// case of a much larger configured limit.
+    private static let revealFetchLimit = 20_000
+
+    /// Reveals one message by its store key: widens the scope and clears
+    /// every filter that could otherwise make a real message invisible,
+    /// loads it if it is not already in the current page, and selects it —
+    /// called for "open this message" from the menu bar popover and from a
+    /// notification click (spec §6), both of which hand this the same
+    /// `MessageSnapshot.id`.
+    ///
+    /// Clearing filters rather than merely widening `scope` is the point of
+    /// this method existing instead of a caller setting `scope`/`selection`
+    /// directly: a user with an active topic, priority, tag, search, or date
+    /// filter would otherwise "select" a message that the current filters
+    /// hide, which reads as the feature being broken, not as a message that
+    /// is merely filtered out of view right now.
+    ///
+    /// If the key no longer resolves — retention (spec §8) pruned it between
+    /// whoever captured the key and this call landing — there is no message
+    /// left to select, but `Message.topicScope(forUniqueKey:)` can still
+    /// recover which server and topic it belonged to from the key's own
+    /// structure. Scoping the window there, with a banner explaining why
+    /// nothing is selected, is more useful than either doing nothing or
+    /// silently landing on the topic with no explanation for the missing
+    /// click.
+    func reveal(messageKey: String) async {
+        do {
+            guard let snapshot = try await store.message(uniqueKey: messageKey) else {
+                if let target = Message.topicScope(forUniqueKey: messageKey) {
+                    searchText = ""
+                    tagFilter = ""
+                    priorityFilter = .any
+                    dateRangeFilter = .any
+                    scope = .topic(serverID: target.serverID, topic: target.topic)
+                    await refreshMessages()
+                }
+                // Not `recordActionFailure`'s usual shape ("Couldn't X. Try
+                // again.") — retrying resolves nothing once a message is
+                // pruned, so the banner says what actually happened instead.
+                actionErrorMessage = "That message is no longer in the archive."
+                return
+            }
+
+            searchText = ""
+            tagFilter = ""
+            priorityFilter = .any
+            dateRangeFilter = .any
+            scope = .topic(serverID: snapshot.serverID, topic: snapshot.topic)
+            await refreshMessages()
+
+            if !messages.contains(where: { $0.id == snapshot.id }) {
+                // Not on the first page. Widen just enough to include it —
+                // `since: snapshot.time` bounds this to the target and
+                // everything newer in its topic, not an unbounded fetch —
+                // rather than assume it is nearby and silently show the
+                // wrong selection.
+                var query = currentQuery(offset: 0)
+                query.since = snapshot.time
+                query.limit = Self.revealFetchLimit
+                do {
+                    let widened = try await store.search(query)
+                    messages = widened
+                    nextOffset = widened.count
+                    canLoadMore = widened.count == Self.revealFetchLimit
+                } catch {
+                    recordActionFailure("open that message", error)
+                    return
+                }
+            }
+
+            selection = [snapshot.id]
+        } catch {
+            recordActionFailure("open that message", error)
+        }
     }
 
     private func recordSearchFailure(_ operation: String, _ error: Error) {

@@ -81,24 +81,36 @@ struct HistoryListView: View {
     }
 
     private var list: some View {
-        List(selection: $viewModel.selection) {
-            ForEach(viewModel.messages) { snapshot in
-                HistoryRow(snapshot: snapshot)
-                    .tag(snapshot.id)
-                    .onAppear { Task { await viewModel.loadMoreIfNeeded(currentItem: snapshot) } }
-                    .contextMenu { contextMenu(for: snapshot) }
+        // `ScrollViewReader` + the `onChange` below is what makes
+        // `HistoryViewModel.reveal(messageKey:)` actually visible rather
+        // than merely selected: setting `selection` alone does not scroll
+        // `List` to the newly-selected row.
+        ScrollViewReader { proxy in
+            List(selection: $viewModel.selection) {
+                ForEach(viewModel.messages) { snapshot in
+                    HistoryRow(snapshot: snapshot)
+                        .tag(snapshot.id)
+                        .onAppear { Task { await viewModel.loadMoreIfNeeded(currentItem: snapshot) } }
+                        .contextMenu { contextMenu(for: snapshot) }
+                }
+                if viewModel.isLoadingMore {
+                    HStack {
+                        Spacer()
+                        ProgressView()
+                            .accessibilityLabel(Text("Loading more messages"))
+                        Spacer()
+                    }
+                }
             }
-            if viewModel.isLoadingMore {
-                HStack {
-                    Spacer()
-                    ProgressView()
-                        .accessibilityLabel(Text("Loading more messages"))
-                    Spacer()
+            .listStyle(.inset)
+            .frame(minWidth: 280)
+            .onChange(of: viewModel.selection) { _, newSelection in
+                guard newSelection.count == 1, let target = newSelection.first else { return }
+                withAnimation {
+                    proxy.scrollTo(target, anchor: .center)
                 }
             }
         }
-        .listStyle(.inset)
-        .frame(minWidth: 280)
     }
 
     @ViewBuilder

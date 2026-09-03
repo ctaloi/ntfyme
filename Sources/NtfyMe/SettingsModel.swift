@@ -36,6 +36,35 @@ final class SettingsModel {
     /// server before its row (and every message row keyed to it) is purged.
     /// See `removeServer`'s doc comment for why the ordering matters.
     private let closeConnection: @Sendable (UUID) async -> Void
+    /// Backs `SettingsDefaultsKey`-keyed reads/writes that aren't part of
+    /// `Preferences` (that struct and its store are `NtfyKit`, out of this
+    /// surface's ownership). Injectable rather than always `.standard` so a
+    /// test never reads or writes the real domain — the same isolation
+    /// `PreferencesStore(defaults:)` and `KeychainStore(service:)` already
+    /// get in every fixture in this file's test target.
+    private let defaults: UserDefaults
+    /// Where downloaded attachments live — required by `MessageStore
+    /// .deleteMessages`/`.removeServer` so a deleted message's or removed
+    /// server's downloaded files are actually deleted, not merely
+    /// unreferenced. `AppGraph.attachmentsDirectory()` is the single
+    /// definition of this path, shared with `RetentionScheduler` and the
+    /// History window's Quick Look; this is threaded in rather than
+    /// recomputed locally, which is exactly the duplication a review
+    /// already collapsed once. `nil` is a legitimate result (Application
+    /// Support couldn't be resolved), not an error — see that function's
+    /// doc comment.
+    private let attachmentsDirectory: @Sendable () -> URL?
+    /// Reads `NotificationPresenter.authorizationStatus()`. Not a value read
+    /// once at init: it can change any time System Settings is open (see
+    /// `refreshNotificationAuthorization`), so this stays a closure the
+    /// Notifications tab re-invokes on every appearance.
+    private let notificationAuthorizationStatus: @Sendable () async -> SettingsNotificationAuthorization
+    /// Reads `NotificationPresenter.requestAuthorization()` — the same
+    /// closure shape and the same underlying call `OnboardingView` uses, so
+    /// the Notifications tab's "ask now" path for a not-yet-determined
+    /// status goes through the identical, single request path rather than a
+    /// second one this file invents.
+    private let requestNotificationAuthorization: @Sendable () async -> Bool
 
     private(set) var prefs: Preferences = .default
     /// Read fresh from `SMAppService` rather than derived from
@@ -53,6 +82,13 @@ final class SettingsModel {
 
     private(set) var messageCount = 0
 
+    /// What the Notifications tab actually shows — see
+    /// `refreshNotificationAuthorization`. Starts `.notDetermined` rather
+    /// than a made-up "unknown" case: that is the honest default before the
+    /// first read completes, and it is also a real status this type has to
+    /// represent regardless.
+    private(set) var notificationAuthorization: SettingsNotificationAuthorization = .notDetermined
+
     /// The one error channel every mutator below writes to. Set, never
     /// silently dropped — an alert bound to this in `SettingsView` is the
     /// user-visible half of "no silent failures" (spec §10); `Log.app` calls
@@ -64,13 +100,21 @@ final class SettingsModel {
     init(store: MessageStore, preferences: PreferencesStore, keychain: KeychainStore,
          syncConnections: @escaping @Sendable () async -> Void = {},
          restartConnection: @escaping @Sendable (UUID) async -> Void = { _ in },
-         closeConnection: @escaping @Sendable (UUID) async -> Void = { _ in }) {
+         closeConnection: @escaping @Sendable (UUID) async -> Void = { _ in },
+         defaults: UserDefaults = .standard,
+         attachmentsDirectory: @escaping @Sendable () -> URL? = { nil },
+         notificationAuthorizationStatus: @escaping @Sendable () async -> SettingsNotificationAuthorization = { .notDetermined },
+         requestNotificationAuthorization: @escaping @Sendable () async -> Bool = { false }) {
         self.store = store
         self.preferences = preferences
         self.keychain = keychain
         self.syncConnections = syncConnections
         self.restartConnection = restartConnection
         self.closeConnection = closeConnection
+        self.defaults = defaults
+        self.attachmentsDirectory = attachmentsDirectory
+        self.notificationAuthorizationStatus = notificationAuthorizationStatus
+        self.requestNotificationAuthorization = requestNotificationAuthorization
     }
 
     func refresh() async {
@@ -84,6 +128,26 @@ final class SettingsModel {
     func refreshPreferences() {
         prefs = preferences.load()
         loginItemStatus = SMAppService.mainApp.status
+    }
+
+    // MARK: - Notification authorization
+
+    /// Re-reads the system's current answer. Not read once and cached: the
+    /// user can flip it in System Settings while this window is open, so
+    /// `SettingsNotificationsTab` calls this on every appearance rather than
+    /// once at construction.
+    func refreshNotificationAuthorization() async {
+        notificationAuthorization = await notificationAuthorizationStatus()
+    }
+
+    /// The Notifications tab's "ask now" action for a `.notDetermined`
+    /// status — offering to request permission directly rather than sending
+    /// the user to System Settings for a prompt the app has not made yet.
+    /// Re-reads the status afterward so the tab reflects the system's
+    /// answer immediately instead of waiting for the next appearance.
+    func enableNotifications() async {
+        _ = await requestNotificationAuthorization()
+        await refreshNotificationAuthorization()
     }
 
     /// Reload-mutate-save, see the type's doc comment for why every write
@@ -148,6 +212,82 @@ final class SettingsModel {
         topicSummaries.filter { $0.serverID == serverID }
     }
 
+    /// Seeds `https://ntfy.sh` — ntfy's own public instance — as a starting
+    /// point on a genuinely new install, so a new user does not need to
+    /// already know the public server's address before Settings → Servers
+    /// has anything to click on.
+    ///
+    /// Added with **no topics**, which is the load-bearing half: a server
+    /// with no topics opens no connection at all
+    /// (`ConnectionCoordinator.sync`'s `wanted` set filters on
+    /// `!topics.isEmpty`), so this subscribes the user to nothing and starts
+    /// no network activity — it only removes the "what do I type here" step.
+    /// `syncConnections()` is deliberately not called here for the same
+    /// reason: there is nothing for it to do.
+    ///
+    /// **Two guards, not one, because they protect against two different
+    /// histories.** `SettingsDefaultsKey.hasSeededDefaultServer` (see its
+    /// doc comment) stops a re-seed after a user deliberately removes the
+    /// seeded row. The base-URL check below stops something else: an
+    /// install that already had `https://ntfy.sh` configured — added by
+    /// hand, before this method existed — where the flag has never been
+    /// set. Without it, every such install seeds a *second*
+    /// `https://ntfy.sh` row the first time this runs. That is not
+    /// cosmetic: two `Server` rows at the same base URL are two
+    /// `ServerConnection`s once a topic is added to either, so two streams,
+    /// two inserts racing on the same `uniqueKey`, and — dedup being
+    /// per-row — plausibly two notifications for every message. Compared
+    /// with a normalized form (scheme and host lowercased, no trailing
+    /// slash) so `https://ntfy.sh/` or `https://NTFY.SH` still count as
+    /// already present.
+    ///
+    /// Called from `SettingsView`'s `.task`, so this runs once per
+    /// Settings-window open — cheap enough (one `store.servers()` call) to
+    /// not bother caching that it already ran within a session.
+    func seedDefaultServerIfNeeded() async {
+        guard !defaults.bool(forKey: SettingsDefaultsKey.hasSeededDefaultServer) else { return }
+
+        let seedURL = URL(string: "https://ntfy.sh")!
+        let seedKey = Self.normalizedBaseURLKey(seedURL)
+
+        do {
+            let existing = try await store.servers()
+            if existing.contains(where: { Self.normalizedBaseURLKey($0.baseURL) == seedKey }) {
+                // Already configured, just not by this method — most likely
+                // added by hand before this flag existed. Recorded as done
+                // without adding a duplicate.
+                defaults.set(true, forKey: SettingsDefaultsKey.hasSeededDefaultServer)
+                return
+            }
+            _ = try await store.addServer(
+                name: "ntfy.sh", baseURL: seedURL,
+                authKindRaw: SettingsCredentialKind.unauthenticated.rawValue)
+        } catch {
+            // Not marked seeded: a transient failure here (e.g. the store
+            // was briefly unavailable) should retry on the next launch
+            // rather than being recorded as permanently done.
+            let ns = error as NSError
+            Log.app.error("seeding default server failed: \(ns.domain, privacy: .public) \(ns.code, privacy: .public)")
+            return
+        }
+
+        defaults.set(true, forKey: SettingsDefaultsKey.hasSeededDefaultServer)
+        await loadServers()
+    }
+
+    /// A same-server comparison key: scheme and host lowercased, no trailing
+    /// slash. Exists solely so `seedDefaultServerIfNeeded` can recognize
+    /// `https://ntfy.sh`, `https://ntfy.sh/`, and `https://NTFY.SH` as the
+    /// same server rather than three different ones.
+    private static func normalizedBaseURLKey(_ url: URL) -> String {
+        let scheme = (url.scheme ?? "").lowercased()
+        let host = (url.host ?? "").lowercased()
+        let port = url.port.map { ":\($0)" } ?? ""
+        var path = url.path
+        while path.hasSuffix("/") { path.removeLast() }
+        return "\(scheme)://\(host)\(port)\(path)"
+    }
+
     /// Adds a server and its credential together. If the credential fails to
     /// save, the just-created server row is removed rather than left behind
     /// claiming a kind (`authKindRaw`) the Keychain does not actually hold —
@@ -172,7 +312,13 @@ final class SettingsModel {
             let ns = error as NSError
             Log.app.error("keychain save failed for server \(id.uuidString, privacy: .public): \(ns.domain, privacy: .public) \(ns.code, privacy: .public)")
             do {
-                try await store.removeServer(id)
+                // `attachmentsDirectory: nil` is correct here, not just
+                // convenient: `syncConnections()` is never called before
+                // this rollback runs, so `ConnectionCoordinator` never knew
+                // this server existed and never opened a connection for it —
+                // there is provably no message, and so no attachment file,
+                // for `id` to delete.
+                try await store.removeServer(id, attachmentsDirectory: nil)
             } catch {
                 let rollbackNS = error as NSError
                 Log.app.error("rollback removeServer failed for server \(id.uuidString, privacy: .public): \(rollbackNS.domain, privacy: .public) \(rollbackNS.code, privacy: .public)")
@@ -235,12 +381,15 @@ final class SettingsModel {
     /// comment is explicit that credentials are the caller's responsibility
     /// — so the explicit `keychain.delete` below is required, not optional:
     /// skipping it would leave a stale credential in the Keychain forever,
-    /// keyed by a server UUID nothing can look up again.
+    /// keyed by a server UUID nothing can look up again. The real
+    /// `attachmentsDirectory()` is passed for the same reason, not `nil`:
+    /// this server's messages are gone after this call, so nothing could
+    /// ever look up their downloaded attachment files again either.
     func removeServer(_ serverID: UUID) async {
         await closeConnection(serverID)
 
         do {
-            try await store.removeServer(serverID)
+            try await store.removeServer(serverID, attachmentsDirectory: attachmentsDirectory())
         } catch {
             let ns = error as NSError
             Log.app.error("removeServer failed: \(ns.domain, privacy: .public) \(ns.code, privacy: .public)")
@@ -306,7 +455,7 @@ final class SettingsModel {
     /// valid `NtfyPriority`) has to be mapped back to the same
     /// `NtfyPriority.default` the picker starts on.
     private func defaultMinAlertPriority() -> Int {
-        let stored = UserDefaults.standard.integer(forKey: SettingsDefaultsKey.defaultMinPriority)
+        let stored = defaults.integer(forKey: SettingsDefaultsKey.defaultMinPriority)
         return NtfyPriority(rawValue: stored)?.rawValue ?? NtfyPriority.default.rawValue
     }
 
@@ -411,12 +560,16 @@ final class SettingsModel {
     /// `removeServer` above). Always re-fetches at offset 0: each delete
     /// shrinks the table, so the next page is whatever slid into the rows
     /// just cleared, not whatever used to sit past them.
+    ///
+    /// Passes the real `attachmentsDirectory()`, not `nil`: a "clear data"
+    /// button that deletes every message row but leaves every downloaded
+    /// attachment file behind is not actually clearing the data.
     func clearAllMessages() async {
         do {
             while true {
                 let page = try await store.search(MessageQuery(limit: 500, offset: 0))
                 guard !page.isEmpty else { break }
-                try await store.deleteMessages(page.map(\.id))
+                try await store.deleteMessages(page.map(\.id), attachmentsDirectory: attachmentsDirectory())
             }
         } catch {
             let ns = error as NSError
