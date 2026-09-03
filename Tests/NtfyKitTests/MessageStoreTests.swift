@@ -1,8 +1,5 @@
 import Foundation
 import SwiftData
-#if canImport(Darwin)
-import Darwin
-#endif
 import Testing
 @testable import NtfyKit
 
@@ -11,6 +8,37 @@ private func event(_ id: String, topic: String = "alerts", time: Int, body: Stri
     {"id":"\(id)","time":\(time),"event":"message","topic":"\(topic)","message":"\(body)"}
     """
     return try! JSONDecoder().decode(NtfyEvent.self, from: Data(json.utf8))
+}
+
+private struct CommandFailed: Error, CustomStringConvertible {
+    let executable: String
+    let arguments: [String]
+    let output: String
+    var description: String {
+        "\(executable) \(arguments.joined(separator: " ")) failed: \(output)"
+    }
+}
+
+/// Runs `executable` and returns its combined stdout/stderr, throwing if it
+/// exits non-zero or cannot be launched at all (e.g. the path does not
+/// exist). Used by `aFailedSaveRollsBackSoARetriedBatchIsNotMistakenForA
+/// Duplicate` to drive `hdiutil` — a test that silently skipped when the
+/// tool it depends on is missing would report green while pinning nothing,
+/// so this throws instead.
+private func run(_ executable: String, _ arguments: [String]) throws -> String {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: executable)
+    process.arguments = arguments
+    let pipe = Pipe()
+    process.standardOutput = pipe
+    process.standardError = pipe
+    try process.run()
+    process.waitUntilExit()
+    let output = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+    guard process.terminationStatus == 0 else {
+        throw CommandFailed(executable: executable, arguments: arguments, output: output)
+    }
+    return output
 }
 
 private func makeStore() throws -> (MessageStore, UUID) {
@@ -63,7 +91,7 @@ private func makeStore() throws -> (MessageStore, UUID) {
 ///
 /// This needs a `save()` that genuinely throws, not a mock: the project has
 /// twice declined to add a `MessageWriting` seam for exactly this kind of
-/// injection, so there is no protocol to substitute here. Two techniques
+/// injection, so there is no protocol to substitute here. Three techniques
 /// were tried and rejected before this one:
 /// - Revoking POSIX write permission on an on-disk store's files/directory
 ///   *after* opening them once: permission bits are checked at `open(2)`
@@ -80,23 +108,55 @@ private func makeStore() throws -> (MessageStore, UUID) {
 ///   artifact of the technique, not evidence about the fix, since a
 ///   deliberately-never-saved insert *does* correctly disappear after
 ///   `rollback()` on a normal writable context (verified separately).
-/// `RLIMIT_FSIZE` avoids both problems: it caps how large a file this
-/// process may write to *right now*, checked on every `write(2)`, and never
-/// touches how the store itself is configured — the connection stays a
-/// completely ordinary read-write one throughout, so restoring the limit
-/// affects the very next write, not a cached decision from `open(2)` time.
-/// `SIGXFSZ` is ignored first because exceeding the limit sends that signal
-/// by default, which would kill the test process outright instead of
-/// letting the `write(2)` call return `EFBIG` for SQLite to surface as a
-/// normal thrown error.
+/// - `RLIMIT_FSIZE` + ignoring `SIGXFSZ`: this genuinely produced a clean,
+///   fast, connection-local `EFBIG` failure — but `setrlimit` is
+///   PROCESS-wide, and Swift Testing runs the whole suite in one process
+///   with tests in parallel. For as long as the limit was lowered, any
+///   concurrently running test that wrote a file anywhere failed alongside
+///   this one with an unrelated-looking `EFBIG` — confirmed: the suite was
+///   green with this test skipped, and red on every full run with a
+///   *different* random victim each time (whichever test happened to be
+///   mid-write). A process-global mutation — `setrlimit`, `signal`,
+///   `chdir`, `umask` — is not safe in a parallel test process however
+///   tightly its window is scoped; the window is not the problem,
+///   concurrency during the window is.
+///
+/// A small HFS+ disk image, mounted for this test alone, scopes the
+/// induced failure (genuine `ENOSPC`, not `EFBIG`) to one filesystem that
+/// nothing else touches — no process-wide state, so no blast radius on a
+/// concurrently running test. `hdiutil` is a system tool; if it is ever
+/// unavailable, `run(_:_:)` throws rather than this test silently skipping.
 @Test func aFailedSaveRollsBackSoARetriedBatchIsNotMistakenForADuplicate() async throws {
-    let directory = FileManager.default.temporaryDirectory
+    let workDirectory = FileManager.default.temporaryDirectory
         .appendingPathComponent("MessageStoreTests-\(UUID().uuidString)", isDirectory: true)
-    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-    defer { try? FileManager.default.removeItem(at: directory) }
+    try FileManager.default.createDirectory(at: workDirectory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: workDirectory) }
 
-    let storeURL = directory.appendingPathComponent("store.sqlite")
+    let imagePath = workDirectory.appendingPathComponent("tiny.dmg").path
+    let mountPoint = workDirectory.appendingPathComponent("mnt")
+    try FileManager.default.createDirectory(at: mountPoint, withIntermediateDirectories: true)
+
+    // 8 MiB comfortably fits this schema's catalog plus a `Server` and
+    // `Subscription` row (step 1 below asserts that explicitly) while still
+    // filling in well under a second.
+    _ = try run("/usr/bin/hdiutil", ["create", "-size", "8m", "-fs", "HFS+",
+                                     "-volname", "NtfyTinyTestVolume", "-quiet", imagePath])
+    _ = try run("/usr/bin/hdiutil", ["attach", imagePath, "-nobrowse", "-quiet",
+                                     "-mountpoint", mountPoint.path])
+    defer {
+        // Always detach, even if an assertion above threw — an undetached
+        // scratch volume leaks for the rest of the test run, and possibly
+        // beyond it.
+        _ = try? run("/usr/bin/hdiutil", ["detach", mountPoint.path, "-quiet"])
+    }
+
+    let storeURL = mountPoint.appendingPathComponent("store.sqlite")
     let serverID = UUID()
+
+    // Step 1: open the store and do the initial write on the small,
+    // otherwise-empty volume. This must succeed — asserted by `try`, not
+    // caught — or a later failure could be the store never opening at all
+    // rather than the `save()` this test actually means to exercise.
     let container = try ModelContainer(
         for: Message.self, Subscription.self, Server.self, Attachment.self,
         configurations: ModelConfiguration(url: storeURL))
@@ -104,39 +164,43 @@ private func makeStore() throws -> (MessageStore, UUID) {
     let server = Server(id: serverID, name: "Example", baseURLString: "https://ntfy.example.com")
     setupContext.insert(server)
     setupContext.insert(Subscription(topic: "alerts", server: server))
-    try setupContext.save()   // Creates the on-disk files at their baseline size.
+    try setupContext.save()
 
-    let previousXFSZHandler = signal(SIGXFSZ, SIG_IGN)
-    var originalLimit = rlimit()
-    getrlimit(RLIMIT_FSIZE, &originalLimit)
-    defer {
-        setrlimit(RLIMIT_FSIZE, &originalLimit)
-        signal(SIGXFSZ, previousXFSZHandler)
+    // Step 2: fill whatever room is left. Writes a filler file until one
+    // chunk fails, rather than trusting a precomputed free-space number —
+    // filesystem metadata overhead makes that number imprecise.
+    // Shrinking chunk sizes, each looped to exhaustion: a single 64 KiB
+    // loop leaves however much slack is smaller than 64 KiB unclaimed, and
+    // that slack was enough room for SQLite to grow its WAL by one small
+    // page — confirmed empirically, the first version of this fill (one
+    // fixed 64 KiB chunk size) left enough room that `insert` below
+    // succeeded outright. Working down to a 1-byte chunk squeezes out
+    // whatever is left, well under SQLite's default page size, so even the
+    // smallest possible WAL growth has nowhere to go.
+    let fillerURL = mountPoint.appendingPathComponent("filler")
+    FileManager.default.createFile(atPath: fillerURL.path, contents: nil)
+    let fillerHandle = try FileHandle(forWritingTo: fillerURL)
+    for chunkSize in [1_048_576, 65_536, 4_096, 512, 64, 8, 1] {
+        let chunk = Data(repeating: 0, count: chunkSize)
+        while (try? fillerHandle.write(contentsOf: chunk)) != nil {}
     }
+    try? fillerHandle.close()
 
     let store = MessageStore(modelContainer: container)
     let batch = [event("a", time: 100, body: "one")]
 
-    // Cap file growth at the baseline size reached above — the very next
-    // write that would grow the store fails with EFBIG.
-    let baselineFiles = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
-    let baselineSize = try baselineFiles
-        .map { try FileManager.default.attributesOfItem(atPath: $0.path)[.size] as? Int ?? 0 }
-        .max() ?? 0
-    var tightLimit = rlimit()
-    tightLimit.rlim_cur = rlim_t(baselineSize)
-    tightLimit.rlim_max = originalLimit.rlim_max
-    #expect(setrlimit(RLIMIT_FSIZE, &tightLimit) == 0)
-
+    // Step 3: the volume is full, not the store misconfigured or
+    // unopenable — this is the `save()` failure the test is actually
+    // about.
     await #expect(throws: (any Error).self) {
         try await store.insert(batch, serverID: serverID)
     }
 
-    // Lift the cap — mirroring however a real transient I/O failure would
-    // clear — and retry the SAME batch, unchanged, on the SAME store (same
-    // actor, same `modelContext`), exactly as `Ingest.Buffer` does after a
-    // failed flush.
-    #expect(setrlimit(RLIMIT_FSIZE, &originalLimit) == 0)
+    // Free the room back up — mirroring however a real transient
+    // disk-full condition would clear — and retry the SAME batch,
+    // unchanged, on the SAME store (same actor, same `modelContext`),
+    // exactly as `Ingest.Buffer` does after a failed flush.
+    try FileManager.default.removeItem(at: fillerURL)
 
     let retry = try await store.insert(batch, serverID: serverID)
     #expect(retry.stored.map(\.id) == ["a"])
