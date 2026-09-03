@@ -42,6 +42,13 @@ struct HistoryView: View {
     var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
             HistorySidebarView(viewModel: viewModel)
+                // On the sidebar's *content*, not on the split view. The
+                // automatic toggle belongs to the column that owns the
+                // sidebar, and applying this one level up silently does
+                // nothing — which shipped as two sidebar buttons, the
+                // replacement before the title and the original still after
+                // it.
+                .toolbar(removing: .sidebarToggle)
         } content: {
             HistoryListView(viewModel: viewModel)
         } detail: {
@@ -50,9 +57,6 @@ struct HistoryView: View {
         .navigationSplitViewStyle(.balanced)
         .searchable(text: $viewModel.searchText, placement: .toolbar,
                     prompt: "Search title or body")
-        // The automatic one sits *after* the window title, which is not
-        // where a Mac user looks for it — see `sidebarToggleButton`.
-        .toolbar(removing: .sidebarToggle)
         .toolbar(id: "history") {
             // `.navigation` is the leading group, before the title: the
             // sidebar toggle then the compose button, which is the order
