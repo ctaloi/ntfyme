@@ -129,3 +129,74 @@ private func makeCoordinator(_ store: MessageStore, client: FakeStreamClient)
     #expect(await coordinator.connectionCount == 1)
     await coordinator.stop()
 }
+
+// MARK: - Backfill
+
+/// `Backfill`'s whole reason to exist: the shared multi-topic stream
+/// deliberately excludes a nil-watermark topic from its resume point (see
+/// `Backfill`'s own doc comment), so nothing else ever fetches a brand-new
+/// topic's server-cached history — `open` firing one for the topic itself
+/// is the only thing that does.
+@Test func openBackfillsATopicWithNoWatermarkYet() async throws {
+    let store = try emptyStore()
+    let fake = FakeStreamClient()
+    // First `stream()` call: the live connection's own subscribe, held open
+    // so it cannot also retry and consume the backfill's script below.
+    await fake.enqueueThenHang([.event(try Fixtures.decode(Fixtures.openEvent))])
+    // Second `stream()` call: `Backfill`'s one-shot poll for "alerts", the
+    // topic just added — no watermark yet, since it was never subscribed to
+    // before this test added it.
+    await fake.enqueue([.event(try Fixtures.decode(Fixtures.minimalMessage))])
+    let coordinator = makeCoordinator(store, client: fake)
+
+    let id = try await store.addServer(
+        name: "Home Lab", baseURL: URL(string: "https://example.invalid")!,
+        authKindRaw: "none")
+    try await store.addTopic("alerts", toServer: id)
+
+    await coordinator.start()
+    #expect(await coordinator.connectionCount == 1)
+
+    // Runs as a background task alongside the connection, not before it —
+    // polled rather than asserted immediately after `start()` returns.
+    let backfilled = await waitUntil { (try? await store.messageCount()) == 1 }
+    #expect(backfilled)
+    await coordinator.stop()
+}
+
+/// `stop()`'s contract — nothing still writing once it returns — extends to
+/// backfill tasks, not just pumps: a poll that never completes on its own
+/// must not leave `stop()` waiting on it forever, and must not still be
+/// running after `stop()` has already returned either. Both require the
+/// same pairing `stop()` gives pumps: cancel, then await.
+@Test func stopCancelsAndAwaitsAnInFlightBackfillPoll() async throws {
+    let store = try emptyStore()
+    let fake = FakeStreamClient()
+    await fake.enqueueThenHang([.event(try Fixtures.decode(Fixtures.openEvent))])
+    // Never finishes on its own — only cancellation ends it, the same
+    // technique `aSatisfiedNetworkPathReconnectsEveryConnection` and others
+    // in `ConnectionCoordinatorTests.swift` use to prove a stall is actually
+    // being interrupted, not merely outrun by a fast, cleanly-ending script.
+    await fake.enqueueHang()
+    let coordinator = makeCoordinator(store, client: fake)
+
+    let id = try await store.addServer(
+        name: "Home Lab", baseURL: URL(string: "https://example.invalid")!,
+        authKindRaw: "none")
+    try await store.addTopic("alerts", toServer: id)
+    await coordinator.start()
+
+    // Confirms the backfill's poll has actually reached `client.stream()`
+    // and is now hung — not merely scheduled — before `stop()` is called,
+    // so this exercises cancelling in-flight work, not just skipping work
+    // that had not started yet.
+    #expect(await waitUntil { await fake.requestCount >= 2 })
+
+    // If `stop()` failed to cancel the hanging backfill task, this call
+    // would never return — the test would hang rather than fail with a
+    // clean assertion, the same tradeoff
+    // `stoppingCancelsTheMonitorAndEveryConnection` already accepts
+    // elsewhere in this suite for the equivalent pump-hang case.
+    await coordinator.stop()
+    #expect(await coordinator.connectionCount == 0)
+}

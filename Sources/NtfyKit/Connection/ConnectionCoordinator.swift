@@ -79,11 +79,27 @@ public actor ConnectionCoordinator {
     private let ingest: Ingest
 
     private var live: [UUID: Live] = [:]
+    /// Every in-flight `Backfill.run` this coordinator has started, held so
+    /// `stop()` can cancel and await them — not fired detached and
+    /// forgotten. `stop()`'s whole contract is that once it returns, this
+    /// coordinator has stopped cleanly and nothing is still writing; a
+    /// forgotten backfill task still mid-`store.insert` when the app quits
+    /// or the store tears down right after `stop()` returns would race
+    /// exactly that, the same class of bug the review found in
+    /// `pathMonitor.cancel()` not cancelling an in-flight reconnect `Task`.
+    /// An array, not a literal `Set` — order doesn't matter and `Task`'s
+    /// `Hashable` conformance isn't needed, but the two-pass cancel-then-
+    /// await shape mirrors `stop()`'s own `entries` snapshot below.
+    private var backfillTasks: [Task<Void, Never>] = []
     /// Set for the whole of `stop()`. `open` and `sync` check it so a
     /// reconnect that lands mid-teardown cannot resurrect a connection that
     /// `stop()` has already walked past — which previously left a socket
     /// streaming with no pump and no owner, and could make `stop()` await a
-    /// pump that was never cancelled and so never returns.
+    /// pump that was never cancelled and so never returns. `open` also
+    /// checks it a second time, just before starting a backfill, to close
+    /// the same reentrancy window for backfill tasks: `open`'s own several
+    /// `await`s between its first check and reaching that point give
+    /// `stop()` room to land in between.
     private var isStopping = false
 
     public init(store: MessageStore, keychain: KeychainStore,
@@ -218,8 +234,9 @@ public actor ConnectionCoordinator {
             credential = .unauthenticated
         }
 
+        let endpoint = NtfyEndpoint(baseURL: snapshot.baseURL, credential: credential)
         let connection = ServerConnection(
-            endpoint: NtfyEndpoint(baseURL: snapshot.baseURL, credential: credential),
+            endpoint: endpoint,
             watermarks: snapshot.watermarks,
             caughtUpTo: snapshot.caughtUpTo,
             client: client,
@@ -228,6 +245,64 @@ public actor ConnectionCoordinator {
         let pump = await ingest.attach(connection, serverID: snapshot.id)
         await connection.start()
         live[snapshot.id] = Live(connection: connection, pump: pump, topics: snapshot.topics)
+
+        backfillUnsyncedTopics(in: snapshot, endpoint: endpoint)
+    }
+
+    /// Backfills every topic in `snapshot` the shared stream will never
+    /// retroactively fill in on its own — `TopicWatermark.lastMessageTime
+    /// == nil`, spec §5, is exactly the condition `Backfill`'s own doc
+    /// comment names: a nil-watermark topic is deliberately excluded from
+    /// `WatermarkResolver`'s shared resume point, precisely so it cannot
+    /// drag every other topic's replay back to the epoch — which also
+    /// means nothing else ever fills in its history unless this does.
+    ///
+    /// Reuses `endpoint` (and its already-loaded credential) rather than
+    /// reloading the Keychain a second time — `open` just built it for
+    /// exactly this server. Runs after `connection.start()`, not before:
+    /// the live stream and the one-shot backfill poll race deliberately —
+    /// `store.insert`'s dedup (by `uniqueKey`) makes that race safe, and
+    /// waiting for backfill to finish first would delay every other
+    /// topic's connection on this server for however long the poll takes
+    /// (up to `Backfill`'s 30s timeout).
+    ///
+    /// A topic backfilled to genuinely zero messages stays nil-watermarked
+    /// — `advanceWatermarks` has nothing to advance from — so a later
+    /// `open` for the same server (another topic changing, a credential
+    /// restart) backfills it again. Accepted rather than tracked and
+    /// suppressed: a topic with real server-cached history only ever
+    /// backfills once, and one more bounded, cheap poll for a topic that
+    /// turns out to be genuinely empty is not worth the bookkeeping to
+    /// avoid.
+    private func backfillUnsyncedTopics(in snapshot: ServerRecordSnapshot, endpoint: NtfyEndpoint) {
+        // Re-checked here, not just at `open`'s own entry: `open` suspends
+        // multiple times (the Keychain load, `ingest.attach`,
+        // `connection.start()`) before reaching this point, and `stop()`
+        // could land in any of those gaps. Nothing between this check and
+        // `backfillTasks.append` below awaits, so — like every other
+        // `isStopping` check in this actor — it is atomic with respect to
+        // a concurrent `stop()`.
+        guard !isStopping else { return }
+        let unsyncedTopics = snapshot.watermarks.filter { $0.lastMessageTime == nil }.map(\.topic)
+        guard !unsyncedTopics.isEmpty else { return }
+
+        let backfill = Backfill(endpoint: endpoint, client: client, store: store)
+        let serverID = snapshot.id
+        for topic in unsyncedTopics {
+            let task = Task {
+                do {
+                    try await backfill.run(topic: topic, serverID: serverID)
+                } catch {
+                    // Domain/code, not `error.localizedDescription` or the
+                    // topic name itself — both are, or can embed, content
+                    // that ultimately traces back to the server (`Log.swift`'s
+                    // doc comment), matching every other `catch` in this file.
+                    let ns = error as NSError
+                    Log.connection.error("backfill failed: \(ns.domain, privacy: .public) \(ns.code, privacy: .public)")
+                }
+            }
+            backfillTasks.append(task)
+        }
     }
 
     /// Called on wake from sleep and when the network path becomes satisfied.
@@ -285,6 +360,26 @@ public actor ConnectionCoordinator {
     public func stop() async {
         isStopping = true
         pathMonitor.cancel()
+
+        // Same cancel-then-await shape as the pumps below, and the same
+        // reason: `Backfill.run` honors external cancellation by design
+        // (throwing `CancellationError` and inserting nothing — see its
+        // own doc comment), but `cancel()` only REQUESTS that; awaiting
+        // `.value` afterward is what actually guarantees none of them is
+        // still mid-`store.insert` by the time `stop()` returns. Snapshotted
+        // and cleared before either pass, mirroring `entries` below, so a
+        // backfill `open` starts after this point (closed by `isStopping`,
+        // checked again just before `backfillTasks.append`) is never
+        // half-included in one pass but not the other.
+        let pendingBackfills = backfillTasks
+        backfillTasks.removeAll()
+        for task in pendingBackfills {
+            task.cancel()
+        }
+        for task in pendingBackfills {
+            await task.value
+        }
+
         // Snapshotted before the first pass. Each `await` below suspends this
         // actor, and an entry added during one of those suspensions would be
         // missed by the first pass but reached by the second — leaving `stop()`
