@@ -23,11 +23,21 @@ struct SettingsServersTab: View {
     var body: some View {
         VStack(spacing: 0) {
             if model.servers.isEmpty {
+                // `Form(.formStyle(.grouped))` paints its own ground on
+                // every other tab; this is the one state in Settings that
+                // isn't a `Form`, so without this it paints none at all —
+                // fine today only because the window behind it happens to
+                // be the same colour, the same shape of thing as the three
+                // "forgot to paint a ground" bugs this wave's snapshot
+                // review caught elsewhere. Matches explicitly rather than
+                // relying on that coincidence.
                 ContentUnavailableView {
                     Label("No Servers", systemImage: "server.rack")
                 } description: {
                     Text("Add a server to start following topics.")
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(Color(nsColor: .windowBackgroundColor))
             } else {
                 List {
                     ForEach(model.servers) { server in

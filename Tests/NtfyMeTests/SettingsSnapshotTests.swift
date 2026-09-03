@@ -21,12 +21,13 @@ import NtfyKit
 /// (as this file's first version was) cannot fail on a surface that drew
 /// nothing at all, which is exactly the regression this suite exists to
 /// catch. A blank render has 1-2 distinct colours regardless of size or
-/// display scale; a real tab has dozens. And the two states that must
-/// specifically look *dark*, not just *different*, are compared by
-/// `meanLuminance` rather than colour count or byte size — a dark-mode view
-/// that forgot to recolour its text would still differ from its light
-/// counterpart in colour count and byte size while being unreadable
-/// white-on-white, which only a luminance comparison catches.
+/// display scale; a real tab has dozens. (`distinctColorCount` composites
+/// onto opaque white before counting — an earlier version did not, and read
+/// `ContentUnavailableView`'s black-text-at-alpha as a single colour despite
+/// rendering correctly; fixed upstream in `SnapshotSupport.swift`.) The
+/// light/dark Servers pair is deliberately *not* compared against each
+/// other — see `renderServersTabPopulatedLightAndDark`'s doc comment for
+/// why a divergence check of any kind is the wrong tool there.
 ///
 /// Every fixture below uses placeholder content only — this repository is
 /// public: "ntfy.sh" (the real public service, safe to name), "Home Lab" and
@@ -117,17 +118,7 @@ private func path(_ filename: String) -> String { "/tmp/ntfyshots/\(filename)" }
         SettingsServersTab(model: emptyModel), size: settingsSize, to: emptyFile)
 
     #expect(try distinctColorCount(ofPNGAt: path(populatedFile)) > minPlausibleColorCount)
-
-    // Not `distinctColorCount` for the empty state: reproduced and isolated
-    // to `ContentUnavailableView` specifically (reported to the SnapshotSupport
-    // owner) — `colorAt(x:y:)` reads back exactly 1 colour for a render that
-    // is visually correct and 31,427 bytes, well past a blank render's
-    // measured 18,960. `distinctColorCount` on a bare `ContentUnavailableView`
-    // with no other content around it reproduces the same 1, so this is not
-    // about this file's layout. Falls back to the byte floor that count was
-    // meant to replace, using the *measured* blank size (not a guessed one)
-    // as its baseline, and only for this one state until the helper's fixed.
-    #expect(emptyBytes > 20_000)
+    #expect(try distinctColorCount(ofPNGAt: path(emptyFile)) > minPlausibleColorCount)
 
     // Three server rows vs. a `ContentUnavailableView` must not coincide.
     #expect(populatedBytes != emptyBytes)
