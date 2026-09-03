@@ -7,8 +7,8 @@
 # Forks should change it before their first build, or not at all.
 PRODUCT_NAME="NtfyMe"
 PRODUCT_BUNDLE_ID="dev.aloi.NtfyMe"
-MARKETING_VERSION="0.1.0"
-BUILD_VERSION="1"
+MARKETING_VERSION="0.1.1"
+BUILD_VERSION=3
 MINIMUM_MACOS="26.0"
 
 # Override in Scripts/local.sh (gitignored) or the environment.
@@ -24,6 +24,18 @@ MINIMUM_MACOS="26.0"
 SIGN_IDENTITY="${SIGN_IDENTITY:-Apple Development}"
 NOTARIZE="${NOTARIZE:-0}"
 NOTARY_PROFILE="${NOTARY_PROFILE:-}"
+
+# Auto-update (Sparkle) configuration. The feed is the appcast XML the
+# release script publishes (default: the repository's own raw URL); the
+# EdDSA public key is the *public half* generated once by Sparkle's
+# `generate_keys` (the private half lives in the macOS Keychain and must
+# never leave it). When the key is empty the app simply never starts its
+# updater — dev builds that will never check for updates. Overridable via
+# Scripts/local.sh or the environment.
+UPDATE_FEED_URL="${UPDATE_FEED_URL:-https://raw.githubusercontent.com/ctaloi/ntfyme/main/appcast.xml}"
+SPARKLE_ED_PUBLIC_KEY="${SPARKLE_ED_PUBLIC_KEY:-}"
+# Where release artifacts publish (GitHub Releases) and the appcast lives.
+GITHUB_REPO="${GITHUB_REPO:-ctaloi/ntfyme}"
 
 # `if` (not `[ -f x ] && . x`) so the absence of local.sh — the normal
 # case, since it's gitignored — doesn't trip `set -e` in the sourcing
