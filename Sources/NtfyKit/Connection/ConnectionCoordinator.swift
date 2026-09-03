@@ -286,7 +286,11 @@ public actor ConnectionCoordinator {
         let unsyncedTopics = snapshot.watermarks.filter { $0.lastMessageTime == nil }.map(\.topic)
         guard !unsyncedTopics.isEmpty else { return }
 
-        let backfill = Backfill(endpoint: endpoint, client: client, store: store)
+        // `ingest.onStored` — the same hook a live-stream flush calls — so a
+        // backfilled row reaches the app layer's attachment fetcher and
+        // badge refresh too, not just the store. See `Ingest.StoredSource`.
+        let backfill = Backfill(endpoint: endpoint, client: client, store: store,
+                                onStored: ingest.onStored)
         let serverID = snapshot.id
         for topic in unsyncedTopics {
             let task = Task {

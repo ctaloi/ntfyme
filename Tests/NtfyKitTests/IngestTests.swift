@@ -436,7 +436,7 @@ private actor StoredEventRecorder {
         watermarks: [TopicWatermark(topic: "alerts", lastMessageTime: nil)],
         client: fake, sleeper: ManualSleeper())
 
-    let ingest = Ingest(store: store) { batch, id in
+    let ingest = Ingest(store: store) { batch, id, _ in
         await recorder.record(batch, serverID: id)
     }
     let pump = await ingest.attach(connection, serverID: serverID)
@@ -448,5 +448,40 @@ private actor StoredEventRecorder {
     // assertion below cannot pass merely by being early.
     #expect(await waitUntil { await recorder.events.map(\.id) == ["brand-new"] })
     #expect(await recorder.serverIDs == [serverID])
+    await connection.stop()
+}
+
+private actor SourceRecorder {
+    private(set) var sources: [Ingest.StoredSource] = []
+    func record(_ source: Ingest.StoredSource) { sources.append(source) }
+}
+
+/// The counterpart to `Backfill`'s own `backfillCallsOnStoredWithTheBackfill
+/// Source` (`BackfillTests.swift`): a live-stream flush must tag its call
+/// `.stream`, not merely "not `.backfill`" by omission — the app layer
+/// branches on this value to decide whether to raise a notification, and a
+/// mislabeled source would either suppress a real-time alert or raise one
+/// for a backfilled topic's entire history.
+///
+/// Mutation-verified: hardcoding `.backfill` in `performFlush`'s call
+/// instead of `.stream` makes this FAIL as expected.
+@Test func theStoredHookTagsALiveStreamFlushAsStream() async throws {
+    let (_, store, serverID) = try makeServer()
+    let recorder = SourceRecorder()
+    let fake = FakeStreamClient()
+    await fake.enqueue([.event(bufferEvent("a", time: 100))])
+
+    let connection = ServerConnection(
+        endpoint: NtfyEndpoint(baseURL: URL(string: "https://ntfy.example.com")!,
+                               credential: .unauthenticated),
+        watermarks: [TopicWatermark(topic: "alerts", lastMessageTime: nil)],
+        client: fake, sleeper: ManualSleeper())
+
+    let ingest = Ingest(store: store) { _, _, source in await recorder.record(source) }
+    let pump = await ingest.attach(connection, serverID: serverID)
+    defer { pump.cancel() }
+
+    await connection.start()
+    #expect(await waitUntil { await recorder.sources == [.stream] })
     await connection.stop()
 }

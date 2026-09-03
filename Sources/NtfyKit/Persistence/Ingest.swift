@@ -18,20 +18,44 @@ import Foundation
 ///   has seen lines covering events still sitting in this actor's buffer or
 ///   in the stream's. Deriving from the batch removes the read entirely.
 public actor Ingest {
-    /// Called with the messages a flush **actually stored**, and the server
-    /// they belong to. This is the seam the app target notifies from.
+    /// Where a batch handed to `StoredHandler` came from — the live stream's
+    /// own flush, or `Backfill`'s one-shot poll for a newly added topic.
+    ///
+    /// Exists because the two need different app-layer treatment even
+    /// though both are, correctly, "stored": a `.stream` batch is exactly
+    /// what a user expects a notification banner for. A `.backfill` batch
+    /// is a topic's entire retained history arriving at once — the same
+    /// treatment there would be a banner storm for messages the user is
+    /// seeing for the first time specifically because they are OLD, not
+    /// because something just happened. Attachment downloads and the
+    /// unread badge have no such distinction: both sources wrote rows a
+    /// user can open, so both need their files fetched and the badge kept
+    /// current regardless of source.
+    public enum StoredSource: Sendable, Equatable {
+        case stream
+        case backfill
+    }
+
+    /// Called with the messages a flush **actually stored**, the server they
+    /// belong to, and where they came from. This is the seam the app target
+    /// notifies from.
     ///
     /// `[NtfyEvent]`, not `[MessageSnapshot]`: the events are already in
     /// hand here, and `NotificationDecision` is written against the wire
     /// event, so handing over rows would mean a second read of what was just
     /// written and a lossy round trip through `Message` (actions survive only
     /// as JSON).
-    public typealias StoredHandler = @Sendable ([NtfyEvent], UUID) async -> Void
+    public typealias StoredHandler = @Sendable ([NtfyEvent], UUID, StoredSource) async -> Void
 
     private let store: MessageStore
     private let batchWindow: Duration
     /// Runs inside the flush that stored the batch — see `performFlush`.
-    private let onStored: StoredHandler?
+    /// Not `private`: `ConnectionCoordinator` reads it to hand the same
+    /// hook to every `Backfill` it constructs, so a batch stored by either
+    /// path reaches the same app-layer seam. Still module-private — this
+    /// is an implementation seam between two `NtfyKit` types, not part of
+    /// `Ingest`'s public API.
+    let onStored: StoredHandler?
     public private(set) var insertedCount = 0
 
     /// Serializes flushes rather than letting a concurrent one skip. `flush`
@@ -287,7 +311,7 @@ public actor Ingest {
         // so a handler must stay bounded (the app target's is one
         // `UNUserNotificationCenter.add` per stored message).
         if let onStored, !result.stored.isEmpty {
-            await onStored(result.stored, serverID)
+            await onStored(result.stored, serverID, .stream)
         }
 
         // Reached only past a successful insert, which is what makes the mark

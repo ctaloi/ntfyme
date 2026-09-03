@@ -109,6 +109,66 @@ private func message(_ id: String, topic: String, time: Int) -> NtfyEvent {
     #expect(mark.lastMessageTime == nil)
 }
 
+// MARK: - onStored
+
+private actor StoredCallRecorder {
+    private(set) var calls: [(events: [NtfyEvent], serverID: UUID, source: Ingest.StoredSource)] = []
+    func record(_ events: [NtfyEvent], _ serverID: UUID, _ source: Ingest.StoredSource) {
+        calls.append((events, serverID, source))
+    }
+}
+
+/// A backfilled batch must reach the same app-layer seam a live-stream batch
+/// does — `Ingest`'s hook drives the attachment fetcher and the badge
+/// refresh, and a message a user can open needs both regardless of which
+/// path wrote its row. Tagged `.backfill`, not `.stream`: the app layer
+/// (not this type) is what decides to skip a notification banner for it —
+/// see `Ingest.StoredSource`'s doc comment for why.
+@Test func backfillCallsOnStoredWithTheBackfillSource() async throws {
+    let (_, store, serverID) = try makeStore(topics: ["newtopic"])
+    let fake = FakeStreamClient()
+    await fake.enqueue([.event(message("h1", topic: "newtopic", time: 100))])
+    let recorder = StoredCallRecorder()
+
+    let backfill = Backfill(
+        endpoint: NtfyEndpoint(baseURL: URL(string: "https://ntfy.example.com")!,
+                               credential: .unauthenticated),
+        client: fake, store: store,
+        onStored: { events, id, source in await recorder.record(events, id, source) })
+    _ = try await backfill.run(topic: "newtopic", serverID: serverID)
+
+    let calls = await recorder.calls
+    #expect(calls.count == 1)
+    #expect(calls.first?.events.map(\.id) == ["h1"])
+    #expect(calls.first?.serverID == serverID)
+    #expect(calls.first?.source == .backfill)
+}
+
+/// Same "only if non-empty" guard `Ingest.performFlush` applies to its own
+/// call of this hook: a backfill that found nothing new has nothing for the
+/// attachment fetcher or the badge to act on, so firing the hook with an
+/// empty batch would just be noise every app-layer listener has to filter
+/// out itself.
+///
+/// Mutation-verified: removing the `!result.stored.isEmpty` guard (calling
+/// `onStored` unconditionally) makes this FAIL as expected — `calls.count`
+/// comes back `1` instead of `0`.
+@Test func backfillDoesNotCallOnStoredWhenNothingWasFound() async throws {
+    let (_, store, serverID) = try makeStore(topics: ["newtopic"])
+    let fake = FakeStreamClient()
+    await fake.enqueue([])
+    let recorder = StoredCallRecorder()
+
+    let backfill = Backfill(
+        endpoint: NtfyEndpoint(baseURL: URL(string: "https://ntfy.example.com")!,
+                               credential: .unauthenticated),
+        client: fake, store: store,
+        onStored: { events, id, source in await recorder.record(events, id, source) })
+    _ = try await backfill.run(topic: "newtopic", serverID: serverID)
+
+    #expect(await recorder.calls.isEmpty)
+}
+
 /// A server that accepts the connection and then never responds — no data,
 /// no close — must not hang backfill forever. Unlike a subscription's shared
 /// stream, a poll has no keepalives to prove it's merely quiet, so this bound

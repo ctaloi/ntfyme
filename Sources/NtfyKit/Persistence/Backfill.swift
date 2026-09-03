@@ -19,11 +19,21 @@ public struct Backfill: Sendable {
     private let endpoint: NtfyEndpoint
     private let client: any StreamClient
     private let store: MessageStore
+    /// Same hook `Ingest` calls after its own flush, so a backfilled batch
+    /// reaches the same app-layer seam a live-stream batch does — the
+    /// attachment fetcher and the unread badge must not care which path
+    /// wrote a row. Called with `.backfill`, not `.stream`: see
+    /// `Ingest.StoredSource`'s doc comment for why the app layer is
+    /// expected to skip a notification banner for this source specifically
+    /// while still acting on everything else.
+    private let onStored: Ingest.StoredHandler?
 
-    public init(endpoint: NtfyEndpoint, client: any StreamClient, store: MessageStore) {
+    public init(endpoint: NtfyEndpoint, client: any StreamClient, store: MessageStore,
+                onStored: Ingest.StoredHandler? = nil) {
         self.endpoint = endpoint
         self.client = client
         self.store = store
+        self.onStored = onStored
     }
 
     /// Fetches and stores the topic's server-cached history. Returns the number
@@ -75,6 +85,13 @@ public struct Backfill: Sendable {
         try Task.checkCancellation()
         let result = try await store.insert(events, serverID: serverID)
         Log.store.info("backfilled \(result.inserted, privacy: .public) messages for a new topic")
+
+        // Same "only if non-empty" guard `Ingest.performFlush` applies to its
+        // own call of this hook — a backfill that found nothing new has
+        // nothing for the attachment fetcher or the badge to act on either.
+        if let onStored, !result.stored.isEmpty {
+            await onStored(result.stored, serverID, .backfill)
+        }
         return result.inserted
     }
 

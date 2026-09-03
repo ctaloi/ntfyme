@@ -73,6 +73,21 @@ final class AppGraph {
     }
 
     func start() async {
+        // Assigned before the coordinator exists, let alone starts — not
+        // merely as a matter of style. `coordinator.start()` opens
+        // connections (and, for any never-synced topic, fires `Backfill`)
+        // as background work that can flush a stored batch and invoke the
+        // hook below before `start()`'s own remaining statements would
+        // otherwise have run. `self.attachments` being nil at that moment
+        // is silent — `self?.attachments?.fetchAttachments` on a nil
+        // optional is simply a no-op, no error, nothing logged — so a
+        // batch arriving in that window would permanently skip its
+        // attachment download with no trace of why. Assigning first closes
+        // the window rather than narrowing it.
+        if let directory = Self.attachmentsDirectory() {
+            attachments = AttachmentFetcher(store: store, directory: directory)
+        }
+
         let router = self.router
         let coordinator = ConnectionCoordinator(
             store: store,
@@ -80,9 +95,17 @@ final class AppGraph {
             client: NtfyStreamClient(),
             pathMonitor: SystemPathMonitor(),
             // The hook fires inside the flush that stored the batch, with the
-            // rows that flush actually wrote. See `Ingest.performFlush`.
-            ingest: Ingest(store: store) { [weak self] events, serverID in
-                await router.handleStored(events, serverID: serverID)
+            // rows that flush actually wrote — from `Ingest.performFlush` for
+            // a live-stream batch, or from `Backfill.run` for a newly added
+            // topic's history. `source` distinguishes them: a notification
+            // banner belongs only to `.stream` — a `.backfill` batch is a
+            // topic's entire retained history arriving at once, not "just
+            // happened" — but the attachment download and the badge refresh
+            // apply to both, since either source wrote rows a user can open.
+            ingest: Ingest(store: store) { [weak self] events, serverID, source in
+                if source == .stream {
+                    await router.handleStored(events, serverID: serverID)
+                }
                 // The badge and unread count are pull-only — there is no store
                 // change stream — so without this they are only ever as fresh
                 // as the refresh timer, and a message could sit in the archive
@@ -102,10 +125,6 @@ final class AppGraph {
         // is on disk *at that time*, not the value that happened to be
         // current at launch — see `RetentionScheduler`'s `policyProvider`
         // doc comment.
-        if let directory = Self.attachmentsDirectory() {
-            attachments = AttachmentFetcher(store: store, directory: directory)
-        }
-
         let scheduler = RetentionScheduler(store: store, policyProvider: { [preferences] in
             preferences.load().retention
         })
