@@ -127,7 +127,7 @@ struct SettingsGeneralTab: View {
             .padding(24)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .background(Color(nsColor: .windowBackgroundColor))
+        .settingsBackground()
         .onAppear(perform: syncRetentionFields)
         .onChange(of: model.prefs.retention) { _, _ in syncRetentionFields() }
         .confirmationDialog(

@@ -37,7 +37,7 @@ struct SettingsServersTab: View {
                     Text("Add a server to start following topics.")
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(Color(nsColor: .windowBackgroundColor))
+                .settingsBackground()
             } else {
                 List {
                     ForEach(model.servers) { server in
@@ -86,7 +86,7 @@ struct SettingsServersTab: View {
         // window grew tall enough to leave visible space below the rows,
         // the same "forgot to paint a ground" shape already fixed twice
         // elsewhere in this file.
-        .background(Color(nsColor: .windowBackgroundColor))
+        .settingsBackground()
         .sheet(isPresented: $isPresentingAddServer) {
             SettingsServerEditor(model: model, mode: .add, onDismiss: { isPresentingAddServer = false })
         }
@@ -117,6 +117,21 @@ struct SettingsServersTab: View {
 /// One server's row: identity, credential kind, and its topics — each with a
 /// mute toggle, a minimum-alert-priority stepper, and a remove button — plus
 /// an inline field to add another topic.
+///
+/// **A plain disclosure, not `DisclosureGroup`.** Two problems traced to it:
+/// its automatic indicator was clipped at the row's leading edge (visible as
+/// a stray sliver next to the server name), and — going back to this wave's
+/// very first snapshot review — its `isExpanded` state never visibly took
+/// effect in a headless capture no matter what was tried (an extra
+/// layout/display pass, disabling its implicit animation, ordering the
+/// window front). That capture gap was real but harmless as long as nobody
+/// could tell the difference between "collapsed in the screenshot" and
+/// "collapsed for real" — until a review read the always-collapsed
+/// screenshots as the topics being gone from the tab. A plain `Button`
+/// toggling `isExpanded` plus an `if isExpanded` block owns its own chevron
+/// (no clipping) and its own conditional content (no dependency on
+/// `DisclosureGroup`'s internal animation machinery), so both the row and
+/// what a screenshot of it shows are correct.
 private struct ServerRow: View {
     let server: ServerRecordSnapshot
     let topics: [TopicSummary]
@@ -132,57 +147,87 @@ private struct ServerRow: View {
     // reason to make every one of them a click to see.
     @State private var isExpanded = true
 
+    private var credentialKind: SettingsCredentialKind {
+        SettingsCredentialKind(rawValue: server.authKindRaw) ?? .unauthenticated
+    }
+
     var body: some View {
-        DisclosureGroup(isExpanded: $isExpanded) {
-            VStack(alignment: .leading, spacing: 10) {
-                ForEach(topics) { topic in
-                    topicRow(topic)
-                }
+        VStack(alignment: .leading, spacing: 0) {
+            Button {
+                isExpanded.toggle()
+            } label: {
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                        .frame(width: 12, height: 20)
+                        .accessibilityHidden(true)
 
-                HStack {
-                    TextField("New topic name", text: $newTopic)
-                        .textFieldStyle(.roundedBorder)
-                        .onSubmit(submitTopic)
-                        .accessibilityLabel("New topic name")
-                    Button("Add", action: submitTopic)
-                        .disabled(newTopic.trimmingCharacters(in: .whitespaces).isEmpty)
-                }
+                    // Auth kind moved off the trailing edge and onto this
+                    // metadata line, dot-separated after the address —
+                    // matching the main window's own row convention
+                    // ("alerts · Home Lab · Today at 7:45 PM") — because at
+                    // this window's width a trailing-aligned label ended up
+                    // roughly a thousand pixels from the name it described.
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(server.name)
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundStyle(.primary)
+                        HStack(spacing: 5) {
+                            Text(server.baseURL.absoluteString)
+                            Text("\u{00b7}").foregroundStyle(.tertiary)
+                            Text(credentialKind.displayName)
+                        }
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                    }
 
-                // Spec §9: a topic name is effectively a password on public
-                // ntfy.sh. Stated here, at the point a topic is actually
-                // added, not only in the onboarding pane or a help page.
-                Text("On public ntfy.sh, anyone who knows a topic's name can read and publish to it \u{2014} treat it like a password.")
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
+                    Spacer()
+
+                    Button("Edit\u{2026}", action: onEdit)
+                        .buttonStyle(.borderless)
+                        .accessibilityLabel("Edit credential for \(server.name)")
+
+                    Button(role: .destructive, action: onRemove) {
+                        Image(systemName: "trash")
+                    }
+                    .buttonStyle(.borderless)
+                    .accessibilityLabel("Remove server \(server.name)")
+                }
+                .padding(.vertical, 6)
+                .contentShape(Rectangle())
             }
-            .padding(.top, 4)
-        } label: {
-            HStack {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(server.name)
-                        .font(.system(size: 15, weight: .semibold))
-                    Text(server.baseURL.absoluteString)
+            .buttonStyle(.plain)
+            .accessibilityLabel("\(server.name), \(isExpanded ? "expanded" : "collapsed")")
+            .accessibilityAddTraits(.isButton)
+
+            if isExpanded {
+                VStack(alignment: .leading, spacing: 10) {
+                    ForEach(topics) { topic in
+                        topicRow(topic)
+                    }
+
+                    HStack {
+                        TextField("New topic name", text: $newTopic)
+                            .textFieldStyle(.roundedBorder)
+                            .onSubmit(submitTopic)
+                            .accessibilityLabel("New topic name")
+                        Button("Add", action: submitTopic)
+                            .disabled(newTopic.trimmingCharacters(in: .whitespaces).isEmpty)
+                    }
+
+                    // Spec §9: a topic name is effectively a password on
+                    // public ntfy.sh. Stated here, at the point a topic is
+                    // actually added, not only in the onboarding pane or a
+                    // help page.
+                    Text("On public ntfy.sh, anyone who knows a topic's name can read and publish to it \u{2014} treat it like a password.")
                         .font(.system(size: 12))
                         .foregroundStyle(.secondary)
                 }
-
-                Spacer()
-
-                Text((SettingsCredentialKind(rawValue: server.authKindRaw) ?? .unauthenticated).displayName)
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-
-                Button("Edit\u{2026}", action: onEdit)
-                    .buttonStyle(.borderless)
-                    .accessibilityLabel("Edit credential for \(server.name)")
-
-                Button(role: .destructive, action: onRemove) {
-                    Image(systemName: "trash")
-                }
-                .buttonStyle(.borderless)
-                .accessibilityLabel("Remove server \(server.name)")
+                .padding(.leading, 20)
+                .padding(.bottom, 10)
             }
-            .padding(.vertical, 2)
         }
     }
 
@@ -355,7 +400,7 @@ struct SettingsServerEditor: View {
         // that header area painted none of its own — the same "forgot to
         // paint a ground" shape this wave's snapshot review already caught
         // twice elsewhere (`meanAlpha` is what caught it here too).
-        .background(Color(nsColor: .windowBackgroundColor))
+        .settingsBackground()
         .toolbar {
             ToolbarItem(placement: .cancellationAction) {
                 Button("Cancel", action: onDismiss)

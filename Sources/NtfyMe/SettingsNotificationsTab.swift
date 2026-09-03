@@ -66,7 +66,7 @@ struct SettingsNotificationsTab: View {
             .padding(24)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .background(Color(nsColor: .windowBackgroundColor))
+        .settingsBackground()
         .onAppear {
             Task { await model.refreshNotificationAuthorization() }
         }

@@ -61,3 +61,18 @@ struct SettingsRow<Content: View>: View {
         }
     }
 }
+
+extension View {
+    /// The one place every Settings root paints its own ground, rather than
+    /// each view remembering to add `.background(Color(nsColor:
+    /// .windowBackgroundColor))` itself. This project has now found four
+    /// separate un-painted-ground bugs by eye — General's empty state, two
+    /// spots in the server editor sheet, and the Servers tab's footer bar —
+    /// each only visible once something (dark mode, a taller window) left
+    /// visible empty space for the gap to show through. A single named
+    /// modifier, applied at every Settings view's root, is cheaper than
+    /// finding a fifth one.
+    func settingsBackground() -> some View {
+        background(Color(nsColor: .windowBackgroundColor))
+    }
+}
