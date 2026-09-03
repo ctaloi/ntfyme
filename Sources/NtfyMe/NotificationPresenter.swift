@@ -54,6 +54,29 @@ final class NotificationPresenter: NSObject, UNUserNotificationCenterDelegate {
         }
     }
 
+    /// The system's current answer, for the Notifications tab's "is this
+    /// actually working" question — distinct from `requestAuthorization`,
+    /// which asks; this only reads. Can change any time System Settings is
+    /// open, so callers should re-read it rather than cache it across a
+    /// window staying open.
+    ///
+    /// Returns `SettingsNotificationAuthorization`, not `UNAuthorizationStatus`
+    /// directly — the mapping happens here, the one place this app already
+    /// imports `UserNotifications`, so `SettingsNotificationsTab.swift` never
+    /// has to. `.provisional`/`.ephemeral` collapse into `.authorized`:
+    /// notifications still show either way, and this app never requests
+    /// either mode itself, so a user could only be in one of those states by
+    /// some other app or a future change granting it, and this app's UI
+    /// should read that the same as full authorization.
+    func authorizationStatus() async -> SettingsNotificationAuthorization {
+        switch await center.notificationSettings().authorizationStatus {
+        case .authorized, .provisional, .ephemeral: .authorized
+        case .denied: .denied
+        case .notDetermined: .notDetermined
+        @unknown default: .notDetermined
+        }
+    }
+
     /// Shows the banner even when NtfyMe is the active app.
     ///
     /// Without this delegate method, macOS silently swallows a notification

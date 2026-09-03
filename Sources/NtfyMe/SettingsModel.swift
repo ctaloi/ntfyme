@@ -54,6 +54,17 @@ final class SettingsModel {
     /// Support couldn't be resolved), not an error — see that function's
     /// doc comment.
     private let attachmentsDirectory: @Sendable () -> URL?
+    /// Reads `NotificationPresenter.authorizationStatus()`. Not a value read
+    /// once at init: it can change any time System Settings is open (see
+    /// `refreshNotificationAuthorization`), so this stays a closure the
+    /// Notifications tab re-invokes on every appearance.
+    private let notificationAuthorizationStatus: @Sendable () async -> SettingsNotificationAuthorization
+    /// Reads `NotificationPresenter.requestAuthorization()` — the same
+    /// closure shape and the same underlying call `OnboardingView` uses, so
+    /// the Notifications tab's "ask now" path for a not-yet-determined
+    /// status goes through the identical, single request path rather than a
+    /// second one this file invents.
+    private let requestNotificationAuthorization: @Sendable () async -> Bool
 
     private(set) var prefs: Preferences = .default
     /// Read fresh from `SMAppService` rather than derived from
@@ -71,6 +82,13 @@ final class SettingsModel {
 
     private(set) var messageCount = 0
 
+    /// What the Notifications tab actually shows — see
+    /// `refreshNotificationAuthorization`. Starts `.notDetermined` rather
+    /// than a made-up "unknown" case: that is the honest default before the
+    /// first read completes, and it is also a real status this type has to
+    /// represent regardless.
+    private(set) var notificationAuthorization: SettingsNotificationAuthorization = .notDetermined
+
     /// The one error channel every mutator below writes to. Set, never
     /// silently dropped — an alert bound to this in `SettingsView` is the
     /// user-visible half of "no silent failures" (spec §10); `Log.app` calls
@@ -84,7 +102,9 @@ final class SettingsModel {
          restartConnection: @escaping @Sendable (UUID) async -> Void = { _ in },
          closeConnection: @escaping @Sendable (UUID) async -> Void = { _ in },
          defaults: UserDefaults = .standard,
-         attachmentsDirectory: @escaping @Sendable () -> URL? = { nil }) {
+         attachmentsDirectory: @escaping @Sendable () -> URL? = { nil },
+         notificationAuthorizationStatus: @escaping @Sendable () async -> SettingsNotificationAuthorization = { .notDetermined },
+         requestNotificationAuthorization: @escaping @Sendable () async -> Bool = { false }) {
         self.store = store
         self.preferences = preferences
         self.keychain = keychain
@@ -93,6 +113,8 @@ final class SettingsModel {
         self.closeConnection = closeConnection
         self.defaults = defaults
         self.attachmentsDirectory = attachmentsDirectory
+        self.notificationAuthorizationStatus = notificationAuthorizationStatus
+        self.requestNotificationAuthorization = requestNotificationAuthorization
     }
 
     func refresh() async {
@@ -106,6 +128,26 @@ final class SettingsModel {
     func refreshPreferences() {
         prefs = preferences.load()
         loginItemStatus = SMAppService.mainApp.status
+    }
+
+    // MARK: - Notification authorization
+
+    /// Re-reads the system's current answer. Not read once and cached: the
+    /// user can flip it in System Settings while this window is open, so
+    /// `SettingsNotificationsTab` calls this on every appearance rather than
+    /// once at construction.
+    func refreshNotificationAuthorization() async {
+        notificationAuthorization = await notificationAuthorizationStatus()
+    }
+
+    /// The Notifications tab's "ask now" action for a `.notDetermined`
+    /// status — offering to request permission directly rather than sending
+    /// the user to System Settings for a prompt the app has not made yet.
+    /// Re-reads the status afterward so the tab reflects the system's
+    /// answer immediately instead of waiting for the next appearance.
+    func enableNotifications() async {
+        _ = await requestNotificationAuthorization()
+        await refreshNotificationAuthorization()
     }
 
     /// Reload-mutate-save, see the type's doc comment for why every write

@@ -145,6 +145,22 @@ enum SettingsRetentionValidation {
     }
 }
 
+// MARK: - Notification authorization
+
+/// This app's own mirror of the three `UNAuthorizationStatus` cases a user
+/// can actually act on (`.provisional`/`.ephemeral` collapse into
+/// `.authorized` — notifications still show either way, and this app never
+/// requests them itself). Kept as a local enum, not `UNAuthorizationStatus`
+/// directly, so `SettingsNotificationsTab.swift` never has to import
+/// `UserNotifications` — the mapping happens once, in
+/// `NotificationPresenter` via the wiring pass, the one place this app
+/// already talks to `UNUserNotificationCenter`.
+enum SettingsNotificationAuthorization: Equatable, Sendable {
+    case authorized
+    case denied
+    case notDetermined
+}
+
 // MARK: - JSON export
 
 /// A dependency-free mirror of `MessageSnapshot` shaped for JSON export.

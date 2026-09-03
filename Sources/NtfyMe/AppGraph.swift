@@ -255,7 +255,16 @@ final class AppGraph {
             },
             // The one definition of this path, not recomputed here — see
             // `Self.attachmentsDirectory`'s doc comment.
-            attachmentsDirectory: Self.attachmentsDirectory)
+            attachmentsDirectory: Self.attachmentsDirectory,
+            // `presenter` is `let` and outlives this graph regardless (see
+            // its own doc comment), so a plain capture is fine here — unlike
+            // `coordinator`, there is no "not started yet" state to guard.
+            notificationAuthorizationStatus: { [presenter] in
+                await presenter.authorizationStatus()
+            },
+            requestNotificationAuthorization: { [presenter] in
+                await presenter.requestAuthorization()
+            })
     }
 
 

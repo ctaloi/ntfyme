@@ -126,3 +126,57 @@ private func makeModel() throws -> (store: MessageStore, model: SettingsModel) {
 
     #expect(try await store.servers().count == 1)
 }
+
+// MARK: - Notification authorization
+
+@MainActor @Test func refreshNotificationAuthorizationReadsTheSuppliedStatus() async throws {
+    let container = try ModelContainer(
+        for: Server.self, Subscription.self, Message.self, Attachment.self,
+        configurations: ModelConfiguration(isStoredInMemoryOnly: true))
+    let store = MessageStore(modelContainer: container)
+    let defaults = UserDefaults(suiteName: "dev.aloi.NtfyMe.modelTests.\(UUID().uuidString)")!
+    let model = SettingsModel(
+        store: store, preferences: PreferencesStore(defaults: defaults),
+        keychain: KeychainStore(service: "dev.aloi.NtfyMe.modelTests.\(UUID().uuidString)"),
+        defaults: defaults,
+        notificationAuthorizationStatus: { .denied })
+
+    #expect(model.notificationAuthorization == .notDetermined)
+    await model.refreshNotificationAuthorization()
+    #expect(model.notificationAuthorization == .denied)
+}
+
+/// `enableNotifications()` is the Notifications tab's "ask now" action for a
+/// not-yet-determined status — it must both call the request closure and
+/// leave the model holding whatever the system answered, not the stale
+/// pre-request status.
+@MainActor @Test func enableNotificationsRequestsAndThenRefreshes() async throws {
+    let container = try ModelContainer(
+        for: Server.self, Subscription.self, Message.self, Attachment.self,
+        configurations: ModelConfiguration(isStoredInMemoryOnly: true))
+    let store = MessageStore(modelContainer: container)
+    let defaults = UserDefaults(suiteName: "dev.aloi.NtfyMe.modelTests.\(UUID().uuidString)")!
+    // `nonisolated(unsafe)`: both closures below are `@Sendable` by type,
+    // but `enableNotifications()` only ever awaits one and then the other
+    // on this same `@MainActor` test — never concurrently — so there is no
+    // actual data race, just a capture the compiler cannot see is safe
+    // without this.
+    nonisolated(unsafe) var didRequest = false
+    // The request "grants" access; the status closure reflects that only
+    // after the request happened, the same way the real system would only
+    // report .authorized once the user has actually answered the prompt.
+    let model = SettingsModel(
+        store: store, preferences: PreferencesStore(defaults: defaults),
+        keychain: KeychainStore(service: "dev.aloi.NtfyMe.modelTests.\(UUID().uuidString)"),
+        defaults: defaults,
+        notificationAuthorizationStatus: { didRequest ? .authorized : .notDetermined },
+        requestNotificationAuthorization: {
+            didRequest = true
+            return true
+        })
+
+    await model.enableNotifications()
+
+    #expect(didRequest)
+    #expect(model.notificationAuthorization == .authorized)
+}

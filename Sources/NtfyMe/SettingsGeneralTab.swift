@@ -1,8 +1,24 @@
 import SwiftUI
+import AppKit
 import ServiceManagement
+import UniformTypeIdentifiers
+import NtfyKit
 
 /// Spec §7: "launch at login (`SMAppService.mainApp`), retention window,
-/// badge behavior."
+/// badge behavior" — plus, since the Advanced tab was folded in here,
+/// "export history to JSON, clear data."
+///
+/// **Why Advanced's export/clear moved here rather than staying a fourth
+/// tab.** With the log-level control removed (see `SettingsAdvancedTab`'s
+/// former doc comment — that type no longer exists), Advanced held exactly
+/// one group, titled "History" — the same title as this tab's retention
+/// group. Two tabs with a "History" heading, one holding limits and the
+/// other holding export/clear, is exactly the kind of split that makes
+/// people hunt for a setting they can see is somewhere. A tab holding one
+/// thin group was not earning its place in the tab bar, so its content
+/// joins this section instead of getting a new, different heading to stay
+/// distinguishable — one "History" section, holding everything about the
+/// archive, is the simpler shape.
 struct SettingsGeneralTab: View {
     let model: SettingsModel
 
@@ -16,6 +32,10 @@ struct SettingsGeneralTab: View {
 
     @State private var retentionDaysText = ""
     @State private var maxPerTopicText = ""
+    @State private var isExporting = false
+    @State private var isClearing = false
+    @State private var isPresentingClearConfirm = false
+    @State private var exportStatus: String?
 
     var body: some View {
         Form {
@@ -65,6 +85,28 @@ struct SettingsGeneralTab: View {
                 Text("Whichever limit is reached first applies. Changes take effect on the next retention pass.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+
+                LabeledContent("Stored messages", value: "\(model.messageCount)")
+
+                Button {
+                    Task { await exportHistory() }
+                } label: {
+                    Label(isExporting ? "Exporting\u{2026}" : "Export History to JSON\u{2026}", systemImage: "square.and.arrow.up")
+                }
+                .disabled(isExporting || model.messageCount == 0)
+
+                if let exportStatus {
+                    Text(exportStatus)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Button(role: .destructive) {
+                    isPresentingClearConfirm = true
+                } label: {
+                    Label(isClearing ? "Clearing\u{2026}" : "Clear All Message History\u{2026}", systemImage: "trash")
+                }
+                .disabled(isClearing || model.messageCount == 0)
             }
 
             Section("Menu Bar") {
@@ -74,6 +116,18 @@ struct SettingsGeneralTab: View {
         .formStyle(.grouped)
         .onAppear(perform: syncRetentionFields)
         .onChange(of: model.prefs.retention) { _, _ in syncRetentionFields() }
+        .confirmationDialog(
+            "Clear all message history?",
+            isPresented: $isPresentingClearConfirm,
+            titleVisibility: .visible
+        ) {
+            Button("Clear History", role: .destructive) {
+                Task { await clearHistory() }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This deletes every stored message on every server. Servers and their saved credentials are kept. This cannot be undone.")
+        }
     }
 
     private var launchAtLoginBinding: Binding<Bool> {
@@ -95,5 +149,59 @@ struct SettingsGeneralTab: View {
             return
         }
         model.setRetention(days: days, maxMessagesPerTopic: maxPerTopic)
+    }
+
+    /// Fetches the whole archive off the main thread's blocking path
+    /// (`model.fetchAllMessages()` runs on `MessageStore`'s own actor), then
+    /// encodes it in a detached task rather than inline here —
+    /// `[MessageSnapshot]` is `Sendable`, so handing it to
+    /// `Task.detached` is safe, and it is exactly the step spec §7 warns
+    /// must not block the main thread for a large archive. Only after both
+    /// finish does this touch AppKit, on the main actor, for the save panel.
+    private func exportHistory() async {
+        isExporting = true
+        exportStatus = nil
+        defer { isExporting = false }
+
+        let snapshots: [MessageSnapshot]
+        do {
+            snapshots = try await model.fetchAllMessages()
+        } catch {
+            exportStatus = "Export failed while reading history."
+            return
+        }
+
+        let data: Data
+        do {
+            data = try await Task.detached(priority: .utility) {
+                try SettingsHistoryExport.encode(snapshots)
+            }.value
+        } catch {
+            exportStatus = "Export failed while encoding JSON."
+            return
+        }
+
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = "NtfyMe-history.json"
+        panel.allowedContentTypes = [.json]
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+
+        do {
+            try data.write(to: url, options: .atomic)
+            exportStatus = "Exported \(snapshots.count) message\(snapshots.count == 1 ? "" : "s")."
+        } catch {
+            // Never interpolates `error` or `url`: a file-write failure's
+            // description embeds the destination path, which is a
+            // user-chosen filesystem location outside anything Log.swift's
+            // carve-outs cover. The panel already told the user where they
+            // asked to save; this just reports that it didn't work.
+            exportStatus = "Couldn't write the export file."
+        }
+    }
+
+    private func clearHistory() async {
+        isClearing = true
+        defer { isClearing = false }
+        await model.clearAllMessages()
     }
 }

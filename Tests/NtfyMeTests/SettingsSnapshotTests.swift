@@ -45,7 +45,9 @@ import NtfyKit
 /// the same per-run isolation pattern `KeychainStoreTests`/`PreferencesTests`
 /// already use, so this never reads or writes anything real.
 @MainActor
-private func makeStoreAndModel() throws -> (store: MessageStore, model: SettingsModel) {
+private func makeStoreAndModel(
+    notificationAuthorization: SettingsNotificationAuthorization = .notDetermined
+) throws -> (store: MessageStore, model: SettingsModel) {
     let container = try ModelContainer(
         for: Server.self, Subscription.self, Message.self, Attachment.self,
         configurations: ModelConfiguration(isStoredInMemoryOnly: true))
@@ -59,7 +61,8 @@ private func makeStoreAndModel() throws -> (store: MessageStore, model: Settings
     // `UserDefaults.standard`, the same isolation every other fixture here
     // already gets.
     let model = SettingsModel(store: store, preferences: preferences, keychain: keychain,
-                              defaults: defaults)
+                              defaults: defaults,
+                              notificationAuthorizationStatus: { notificationAuthorization })
     return (store, model)
 }
 
@@ -113,9 +116,13 @@ private let minPlausibleAlpha = 0.85
 
 private func path(_ filename: String) -> String { "/tmp/ntfyshots/\(filename)" }
 
+/// Covers the merged Advanced content too (export/clear, stored-message
+/// count) — that tab no longer exists as its own type; its former render
+/// test's job is now this one, since the content moved here.
 @MainActor @Test(requiresSnapshotRendering) func renderGeneralTab() async throws {
     let (_, model) = try makeStoreAndModel()
     model.refreshPreferences()
+    await model.refreshMessageCount()
     let filename = "settings-general.png"
     _ = try renderSnapshot(SettingsGeneralTab(model: model), size: settingsSize, to: filename)
     #expect(try distinctColorCount(ofPNGAt: path(filename)) > minPlausibleColorCount)
@@ -147,20 +154,38 @@ private func path(_ filename: String) -> String { "/tmp/ntfyshots/\(filename)" }
     #expect(populatedBytes != emptyBytes)
 }
 
-@MainActor @Test(requiresSnapshotRendering) func renderNotificationsTab() async throws {
-    let (_, model) = try makeStoreAndModel()
+/// Three renders, one per `SettingsNotificationAuthorization` case — the
+/// tab's whole job is answering "why isn't this alerting", so its three
+/// distinct states (`.onAppear`'s refresh is called manually here rather
+/// than relied on, matching every other fixture in this file: it doesn't
+/// reliably fire under this offscreen capture technique) are each worth a
+/// look, not just the default.
+@MainActor @Test(requiresSnapshotRendering) func renderNotificationsTabNotDetermined() async throws {
+    let (_, model) = try makeStoreAndModel(notificationAuthorization: .notDetermined)
     model.refreshPreferences()
-    let filename = "settings-notifications.png"
+    await model.refreshNotificationAuthorization()
+    let filename = "settings-notifications-not-determined.png"
     _ = try renderSnapshot(SettingsNotificationsTab(model: model), size: settingsSize, to: filename)
     #expect(try distinctColorCount(ofPNGAt: path(filename)) > minPlausibleColorCount)
     #expect(try meanAlpha(ofPNGAt: path(filename)) > minPlausibleAlpha)
 }
 
-@MainActor @Test(requiresSnapshotRendering) func renderAdvancedTab() async throws {
-    let (_, model) = try makeStoreAndModel()
-    await model.refreshMessageCount()
-    let filename = "settings-advanced.png"
-    _ = try renderSnapshot(SettingsAdvancedTab(model: model), size: settingsSize, to: filename)
+@MainActor @Test(requiresSnapshotRendering) func renderNotificationsTabAuthorized() async throws {
+    let (_, model) = try makeStoreAndModel(notificationAuthorization: .authorized)
+    model.refreshPreferences()
+    await model.refreshNotificationAuthorization()
+    let filename = "settings-notifications-authorized.png"
+    _ = try renderSnapshot(SettingsNotificationsTab(model: model), size: settingsSize, to: filename)
+    #expect(try distinctColorCount(ofPNGAt: path(filename)) > minPlausibleColorCount)
+    #expect(try meanAlpha(ofPNGAt: path(filename)) > minPlausibleAlpha)
+}
+
+@MainActor @Test(requiresSnapshotRendering) func renderNotificationsTabDenied() async throws {
+    let (_, model) = try makeStoreAndModel(notificationAuthorization: .denied)
+    model.refreshPreferences()
+    await model.refreshNotificationAuthorization()
+    let filename = "settings-notifications-denied.png"
+    _ = try renderSnapshot(SettingsNotificationsTab(model: model), size: settingsSize, to: filename)
     #expect(try distinctColorCount(ofPNGAt: path(filename)) > minPlausibleColorCount)
     #expect(try meanAlpha(ofPNGAt: path(filename)) > minPlausibleAlpha)
 }
