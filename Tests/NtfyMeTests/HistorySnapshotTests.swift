@@ -194,6 +194,18 @@ private enum HistorySnapshotFixtures {
 /// case) and comfortably above the measured broken value.
 private let minimumDistinctColors = 25
 
+/// The floor every render's `meanAlpha` is checked against. This is the
+/// instrument that catches a forgotten background directly, rather than as
+/// a side effect: an unpainted root measures ~0.05 opaque, a painted one
+/// ~1.0 — the property that actually differs, where byte counts and
+/// colour-count/luminance comparisons between renders do not reliably. On
+/// this surface `history-populated` measures 0.944, not 1.0: the missing
+/// 5.6% is exactly the blank `NavigationSplitView` sidebar column (the
+/// confirmed-separate harness artifact, not a paint bug), so 0.85 clears
+/// every real composite here with room while still failing a broken render
+/// by roughly an order of magnitude.
+private let minimumMeanAlpha = 0.85
+
 @MainActor
 @Test func historyPopulatedThreeColumns() async throws {
     let fixture = try HistorySnapshotFixtures.makePopulated()
@@ -211,6 +223,8 @@ private let minimumDistinctColors = 25
     // actually separates "drew real content" from "drew nothing".
     let colors = try distinctColorCount(ofPNGAt: "/tmp/ntfyshots/history-populated.png")
     #expect(colors > minimumDistinctColors)
+    let alpha = try meanAlpha(ofPNGAt: "/tmp/ntfyshots/history-populated.png")
+    #expect(alpha > minimumMeanAlpha)
 }
 
 /// The detail pane alone, tall enough that nothing in it is clipped by a
@@ -230,6 +244,8 @@ private let minimumDistinctColors = 25
                            size: CGSize(width: 420, height: 900), to: "history-detail-rich.png")
     let colors = try distinctColorCount(ofPNGAt: "/tmp/ntfyshots/history-detail-rich.png")
     #expect(colors > minimumDistinctColors)
+    let alpha = try meanAlpha(ofPNGAt: "/tmp/ntfyshots/history-detail-rich.png")
+    #expect(alpha > minimumMeanAlpha)
 }
 
 /// Same fixture as `historyDetailRichContent`, in dark mode — this is the
@@ -269,6 +285,9 @@ private let minimumDistinctColors = 25
 
     let darkLuminance = try meanLuminance(ofPNGAt: "/tmp/ntfyshots/history-detail-rich-dark.png")
     #expect(darkLuminance < 0.5)
+
+    let alpha = try meanAlpha(ofPNGAt: "/tmp/ntfyshots/history-detail-rich-dark.png")
+    #expect(alpha > minimumMeanAlpha)
 }
 
 @MainActor
@@ -286,6 +305,8 @@ private let minimumDistinctColors = 25
     // render's 1 while not fighting genuinely thin content.
     let colors = try distinctColorCount(ofPNGAt: "/tmp/ntfyshots/history-empty.png")
     #expect(colors > 12)
+    let alpha = try meanAlpha(ofPNGAt: "/tmp/ntfyshots/history-empty.png")
+    #expect(alpha > minimumMeanAlpha)
 }
 
 @MainActor
@@ -302,6 +323,8 @@ private let minimumDistinctColors = 25
                            size: CGSize(width: 900, height: 560), to: "history-no-selection.png")
     let colors = try distinctColorCount(ofPNGAt: "/tmp/ntfyshots/history-no-selection.png")
     #expect(colors > minimumDistinctColors)
+    let alpha = try meanAlpha(ofPNGAt: "/tmp/ntfyshots/history-no-selection.png")
+    #expect(alpha > minimumMeanAlpha)
 }
 
 /// Sidebar alone, at a size that fits it without the list/detail columns
@@ -325,6 +348,8 @@ private let minimumDistinctColors = 25
                            size: CGSize(width: 240, height: 420), to: "history-sidebar-status.png")
     let colors = try distinctColorCount(ofPNGAt: "/tmp/ntfyshots/history-sidebar-status.png")
     #expect(colors > minimumDistinctColors)
+    let alpha = try meanAlpha(ofPNGAt: "/tmp/ntfyshots/history-sidebar-status.png")
+    #expect(alpha > minimumMeanAlpha)
 }
 
 /// The composite dark render. Byte-count divergence used to be the guard
@@ -354,6 +379,8 @@ private let minimumDistinctColors = 25
                            colorScheme: .dark, to: "history-populated-dark.png")
     let colors = try distinctColorCount(ofPNGAt: "/tmp/ntfyshots/history-populated-dark.png")
     #expect(colors > minimumDistinctColors)
+    let alpha = try meanAlpha(ofPNGAt: "/tmp/ntfyshots/history-populated-dark.png")
+    #expect(alpha > minimumMeanAlpha)
 }
 
 @MainActor
@@ -370,4 +397,6 @@ private let minimumDistinctColors = 25
                            size: CGSize(width: 900, height: 560), to: "history-long-content.png")
     let colors = try distinctColorCount(ofPNGAt: "/tmp/ntfyshots/history-long-content.png")
     #expect(colors > minimumDistinctColors)
+    let alpha = try meanAlpha(ofPNGAt: "/tmp/ntfyshots/history-long-content.png")
+    #expect(alpha > minimumMeanAlpha)
 }

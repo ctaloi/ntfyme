@@ -29,6 +29,17 @@ struct HistoryListView: View {
             }
             mainContent
         }
+        // `List` (the `list` branch of `mainContent`) paints its own opaque
+        // background, so this was never visible there — but the
+        // loading/error/empty branches are a small centered
+        // `HistoryStatusView` with nothing behind it. Same bug as
+        // `HistoryDetailView`'s empty-selection state, found the same way:
+        // `meanAlpha` on `history-empty.png` measured 0.35 against a 0.85
+        // floor. `maxWidth`/`maxHeight: .infinity` first, so the background
+        // actually covers the full column regardless of which branch is
+        // showing, not just the centered placeholder's own small size.
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(nsColor: .windowBackgroundColor))
     }
 
     /// A mutation failing (mark read, delete, …) must not blank a list of

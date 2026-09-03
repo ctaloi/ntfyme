@@ -20,7 +20,17 @@ struct HistoryDetailView: View {
                 MultiSelectionSummary(snapshots: selected, viewModel: viewModel)
             }
         }
-        .frame(minWidth: 320)
+        // `maxWidth`/`maxHeight: .infinity` matter here, not just `minWidth`:
+        // the empty-selection and multi-selection branches are small,
+        // centered content that does not itself ask for the full column —
+        // without forcing the `Group` to fill the column before the
+        // background below is applied, that background only paints behind
+        // the small centered block and leaves the rest of the column
+        // transparent. Found via `meanAlpha` on `history-no-selection.png`
+        // measuring 0.64 against a 0.85 floor — a second unpainted region,
+        // same bug class as the one below, in the branch that background
+        // fix did not actually reach.
+        .frame(minWidth: 320, maxWidth: .infinity, maxHeight: .infinity)
         // `NavigationSplitView`'s detail column normally gets its background
         // from the window automatically — but every color used below
         // (`.primary`, `.secondary`, the priority/tag colors) is dynamic and
