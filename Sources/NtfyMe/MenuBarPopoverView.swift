@@ -25,7 +25,26 @@ struct MenuBarPopoverView: View {
     /// this ever feels too broad, not something this surface needs now.
     let onRetryConnection: () -> Void
 
-    static let size = CGSize(width: 360, height: 440)
+    /// Widened from the original 360 and the type scale raised throughout
+    /// (title 13pt, body 12pt, nothing below 11pt anywhere) after the
+    /// user's own complaint that the popover was "too small, hard to read"
+    /// — correct, and mine to own: the first pass was reviewed for
+    /// information design and never once checked whether the type was
+    /// comfortable at a glance. 400 gives a two-line body and a trailing
+    /// timestamp room without either fighting the other; 480 gives the
+    /// taller rows that come with the bigger type somewhere to go without
+    /// the list feeling cramped immediately.
+    static let size = CGSize(width: 400, height: 480)
+
+    /// Local sizes rather than SwiftUI's named text styles
+    /// (`.caption`/`.caption2`/`.footnote` are all 10pt on macOS): the type
+    /// scale here is a specific, deliberate floor, not "whatever the
+    /// closest built-in style happens to be".
+    private enum TextSize {
+        static let title: CGFloat = 13
+        static let body: CGFloat = 12
+        static let metadata: CGFloat = 11
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -49,8 +68,9 @@ struct MenuBarPopoverView: View {
         // equally dynamic background behind it, dark mode has light text
         // over whatever backing happens to be there, which in an offscreen
         // render (`MenuBarSnapshotTests`) is nothing at all — confirmed by
-        // rendering without this line first: the whole popover but for the
-        // priority dots and the accent-colored link went invisible.
+        // rendering without this line first: the whole popover but for its
+        // few fixed-color elements (priority markers, the accent-colored
+        // link) went invisible.
         .background(Color(nsColor: .windowBackgroundColor))
         .task { await viewModel.refresh() }
     }
@@ -62,20 +82,20 @@ struct MenuBarPopoverView: View {
             Image(systemName: "bell")
                 .foregroundStyle(.secondary)
             Text("NtfyMe")
-                .font(.headline)
+                .font(.system(size: 15, weight: .semibold))
             Spacer()
             if viewModel.unreadCount > 0 {
                 Text("\(viewModel.unreadCount) unread")
-                    .font(.caption)
+                    .font(.system(size: TextSize.metadata))
                     .foregroundStyle(.secondary)
                 Button("Mark All Read") { viewModel.markAllAsRead() }
                     .buttonStyle(.plain)
-                    .font(.caption)
+                    .font(.system(size: TextSize.metadata))
                     .foregroundStyle(Color.accentColor)
                     .accessibilityLabel("Mark all messages read")
             }
         }
-        .padding(EdgeInsets(top: 10, leading: 12, bottom: 8, trailing: 12))
+        .padding(EdgeInsets(top: 12, leading: 14, bottom: 10, trailing: 14))
     }
 
     // MARK: - Connection status
@@ -91,23 +111,23 @@ struct MenuBarPopoverView: View {
     /// matters most.
     private var connectionRow: some View {
         let problems = viewModel.problemServers
-        return VStack(alignment: .leading, spacing: 4) {
+        return VStack(alignment: .leading, spacing: 5) {
             HStack(spacing: 6) {
                 Circle()
                     .fill(summaryColor)
                     .frame(width: 8, height: 8)
                 Text(viewModel.connectivity.statusText)
-                    .font(.caption)
+                    .font(.system(size: TextSize.body))
                 if problems.isEmpty, viewModel.serverStatuses.count > 1 {
                     Text("· \(viewModel.serverStatuses.count) servers")
-                        .font(.caption2)
+                        .font(.system(size: TextSize.metadata))
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
                 if viewModel.canRetryConnection {
                     Button("Retry") { onRetryConnection() }
                         .buttonStyle(.plain)
-                        .font(.caption)
+                        .font(.system(size: TextSize.body))
                         .foregroundStyle(Color.accentColor)
                         .accessibilityLabel("Retry connecting now")
                 }
@@ -118,11 +138,11 @@ struct MenuBarPopoverView: View {
                         .fill(dotColor(for: status.state))
                         .frame(width: 6, height: 6)
                     Text(status.name)
-                        .font(.caption2)
+                        .font(.system(size: TextSize.metadata))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                     Text(status.state.problemLabel ?? "")
-                        .font(.caption2)
+                        .font(.system(size: TextSize.metadata))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                         .truncationMode(.tail)
@@ -130,8 +150,8 @@ struct MenuBarPopoverView: View {
                 .padding(.leading, 14)
             }
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 6)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(connectionAccessibilityLabel(problems: problems))
     }
@@ -173,6 +193,7 @@ struct MenuBarPopoverView: View {
                 .foregroundStyle(.secondary)
             TextField("Search recent messages", text: $viewModel.searchText)
                 .textFieldStyle(.plain)
+                .font(.system(size: TextSize.title))
                 .accessibilityLabel("Search recent messages")
             if !viewModel.searchText.isEmpty {
                 Button { viewModel.searchText = "" } label: {
@@ -183,9 +204,9 @@ struct MenuBarPopoverView: View {
                 .accessibilityLabel("Clear search")
             }
         }
-        .padding(6)
-        .background(.quaternary, in: RoundedRectangle(cornerRadius: 6))
-        .padding(EdgeInsets(top: 6, leading: 12, bottom: 6, trailing: 12))
+        .padding(8)
+        .background(.quaternary, in: RoundedRectangle(cornerRadius: 7))
+        .padding(EdgeInsets(top: 8, leading: 14, bottom: 8, trailing: 14))
     }
 
     /// A subtle inset ground, not just floating text between the search
@@ -193,12 +214,12 @@ struct MenuBarPopoverView: View {
     /// rather than a banner (seen directly in the rendered popover).
     private func errorBanner(_ message: String) -> some View {
         Label(message, systemImage: "exclamationmark.triangle")
-            .font(.caption)
+            .font(.system(size: TextSize.body))
             .foregroundStyle(.secondary)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(8)
-            .background(.quaternary, in: RoundedRectangle(cornerRadius: 6))
-            .padding(EdgeInsets(top: 0, leading: 12, bottom: 6, trailing: 12))
+            .background(.quaternary, in: RoundedRectangle(cornerRadius: 7))
+            .padding(EdgeInsets(top: 0, leading: 14, bottom: 8, trailing: 14))
     }
 
     // MARK: - Messages
@@ -209,12 +230,12 @@ struct MenuBarPopoverView: View {
                 emptyState
             } else {
                 ScrollView(.vertical) {
-                    LazyVStack(alignment: .leading, spacing: 10) {
+                    LazyVStack(alignment: .leading, spacing: 14) {
                         ForEach(viewModel.filteredGroups) { group in
                             topicSection(group)
                         }
                     }
-                    .padding(.vertical, 4)
+                    .padding(.vertical, 6)
                 }
             }
         }
@@ -230,13 +251,13 @@ struct MenuBarPopoverView: View {
             Text(viewModel.searchText.isEmpty
                  ? "No messages yet"
                  : "No messages match \u{201C}\(viewModel.searchText)\u{201D}")
-                .font(.callout)
+                .font(.system(size: TextSize.title))
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 24)
             if viewModel.searchText.isEmpty {
                 Text("New messages appear here as they arrive.")
-                    .font(.caption)
+                    .font(.system(size: TextSize.body))
                     .foregroundStyle(.secondary)
             }
             Spacer()
@@ -245,12 +266,11 @@ struct MenuBarPopoverView: View {
     }
 
     private func topicSection(_ group: MenuBarTopicGroup) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
+        VStack(alignment: .leading, spacing: 4) {
             Text(viewModel.serverName(for: group.serverID).map { "\(group.topic) — \($0)" } ?? group.topic)
-                .font(.caption)
-                .fontWeight(.semibold)
+                .font(.system(size: TextSize.metadata, weight: .semibold))
                 .foregroundStyle(.secondary)
-                .padding(.horizontal, 12)
+                .padding(.horizontal, 14)
                 .lineLimit(1)
                 .truncationMode(.tail)
             ForEach(group.messages) { message in
@@ -275,22 +295,16 @@ struct MenuBarPopoverView: View {
             viewModel.markRead(message)
             onOpenMessage(message.id)
         } label: {
-            HStack(alignment: .top, spacing: 6) {
-                priorityDot(message.resolvedPriority)
-                    .padding(.top, 5)
-                VStack(alignment: .leading, spacing: 1) {
+            HStack(alignment: .top, spacing: 8) {
+                unreadMarker(isRead: message.isRead)
+                    .padding(.top, 6)
+                VStack(alignment: .leading, spacing: 3) {
                     if let title = message.title, !title.isEmpty {
-                        Text(title)
-                            .font(.subheadline)
-                            .fontWeight(message.isRead ? .regular : .semibold)
-                            .foregroundStyle(receded(message.resolvedPriority) ? .secondary : .primary)
-                            .lineLimit(1)
-                            .truncationMode(.tail)
+                        titleText(title, message: message)
                         Text(message.body)
-                            .font(.caption)
+                            .font(.system(size: TextSize.body))
                             .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                            .truncationMode(.tail)
+                            .lineLimit(2)
                     } else {
                         // No title: repeating the topic name here would just
                         // duplicate the group header immediately above this
@@ -298,26 +312,51 @@ struct MenuBarPopoverView: View {
                         // "alerts" row under the "alerts — Home Lab"
                         // header). The body becomes the one primary line
                         // instead, at the weight a title would have used.
-                        Text(message.body)
-                            .font(.subheadline)
-                            .fontWeight(message.isRead ? .regular : .semibold)
-                            .foregroundStyle(receded(message.resolvedPriority) ? .secondary : .primary)
-                            .lineLimit(1)
-                            .truncationMode(.tail)
+                        titleText(message.body, message: message)
                     }
                 }
                 Spacer(minLength: 4)
                 Text(relativeTime(message.time))
-                    .font(.caption2)
+                    .font(.system(size: TextSize.metadata))
                     .foregroundStyle(.secondary)
                     .fixedSize()
             }
             .contentShape(Rectangle())
-            .padding(.horizontal, 12)
-            .padding(.vertical, 3)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 7)
         }
         .buttonStyle(.plain)
         .accessibilityLabel(accessibilityLabel(for: message))
+    }
+
+    /// The title line, with an inline priority marker ("‼", the same glyph
+    /// the main window uses) appended for priority 4-5 — never a separate
+    /// row, so a message with no elevated priority costs nothing extra.
+    /// Built via `Text` interpolation (`Text("\(base) \(marker)")`) rather
+    /// than the `+` concatenation operator, which macOS 26 deprecates in
+    /// favor of exactly this — interpolating an already-styled `Text` keeps
+    /// its own font/color, the same as `+` did. That per-segment styling
+    /// only survives modifiers applied to `base`/`markerText` *before* the
+    /// interpolation, though: `.font`/`.lineLimit` below are safe since
+    /// `Text` has no per-character concept of either, but a
+    /// `.foregroundStyle` added to `combined` after this point would paint
+    /// both the title and the "‼" marker the same color, the same trap `+`
+    /// had.
+    private func titleText(_ text: String, message: MessageSnapshot) -> some View {
+        let weight: Font.Weight = message.isRead ? .regular : .semibold
+        let color: Color = receded(message.resolvedPriority) ? .secondary : .primary
+        let base = Text(text).foregroundStyle(color)
+        let combined: Text
+        if let marker = priorityMarker(message.resolvedPriority) {
+            let markerText = Text(marker.text).foregroundStyle(marker.color)
+            combined = Text("\(base) \(markerText)")
+        } else {
+            combined = base
+        }
+        return combined
+            .font(.system(size: TextSize.title, weight: weight))
+            .lineLimit(1)
+            .truncationMode(.tail)
     }
 
     /// `Text(_:style:.relative)` was tried first and rejected: in a row this
@@ -356,17 +395,30 @@ struct MenuBarPopoverView: View {
         priority == .min || priority == .low
     }
 
-    private func priorityDot(_ priority: NtfyPriority) -> some View {
+    /// Gutter marker: an accent-colored dot for an unread row, matching the
+    /// main window's own unread treatment — priority used to live here as a
+    /// colored dot, but that put two different signals (read state,
+    /// priority) on the same mark. `titleText` carries priority now, as its
+    /// own inline "‼" glyph, the same split the main window uses. `.clear`
+    /// rather than omitting the view entirely: every row keeps the same
+    /// leading inset whether or not it draws anything, so titles don't
+    /// shift left when a row is read.
+    private func unreadMarker(isRead: Bool) -> some View {
         Circle()
-            .fill(priorityColor(priority))
-            .frame(width: 6, height: 6)
+            .fill(isRead ? Color.clear : Color.accentColor)
+            .frame(width: 8, height: 8)
     }
 
-    private func priorityColor(_ priority: NtfyPriority) -> Color {
+    /// `nil` below priority 4 — most messages carry no marker at all, the
+    /// same as the main window. High and max both use "‼" (matching the
+    /// main window's own glyph); the color still separates them, since nothing
+    /// forces "the same marker" to mean "the same color" and the distinction
+    /// is useful.
+    private func priorityMarker(_ priority: NtfyPriority) -> (text: String, color: Color)? {
         switch priority {
-        case .min, .low, .default: .secondary
-        case .high: .orange
-        case .max: .red
+        case .min, .low, .default: nil
+        case .high: ("‼", .orange)
+        case .max: ("‼", .red)
         }
     }
 
@@ -396,7 +448,7 @@ struct MenuBarPopoverView: View {
         }
         .buttonStyle(.borderless)
         .labelStyle(.titleAndIcon)
-        .font(.callout)
-        .padding(EdgeInsets(top: 6, leading: 10, bottom: 10, trailing: 10))
+        .font(.system(size: TextSize.body))
+        .padding(EdgeInsets(top: 8, leading: 12, bottom: 12, trailing: 12))
     }
 }
