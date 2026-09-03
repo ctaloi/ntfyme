@@ -80,6 +80,18 @@ struct OnboardingView: View {
         }
         .padding(32)
         .frame(width: 460)
+        // Required, not cosmetic. This view is hosted directly in an
+        // `NSHostingView` (see `AppDelegate.presentOnboardingIfNeeded`), so
+        // nothing behind it paints a surface. Every colour it uses is dynamic,
+        // so in dark mode the text resolves to near-white and renders against
+        // an unpainted white window — the entire pane except the tinted bell
+        // becomes invisible. This is the first thing a new user ever sees.
+        //
+        // Third occurrence of this bug in this app, after the menu bar popover
+        // and the History detail pane. Any SwiftUI root hosted in an
+        // `NSHostingView` must paint its own background;
+        // `darkRendersAreActuallyDark` in the snapshot tests enforces it.
+        .background(Color(nsColor: .windowBackgroundColor))
     }
 
     private func requestAuthorization() async {

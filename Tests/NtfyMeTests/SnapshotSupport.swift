@@ -66,3 +66,33 @@ enum SnapshotError: Error {
     case couldNotAllocateBitmap
     case couldNotEncodePNG
 }
+
+/// Mean luminance of a rendered PNG, 0 (black) to 1 (white).
+///
+/// **Why byte counts are not enough.** A dark-mode render of a view that
+/// forgot its background differs from its light counterpart — the text
+/// antialiasing changes — so a byte-count divergence check passes while every
+/// word on the screen is white-on-white and unreadable. That exact bug shipped
+/// past a divergence assertion three times in this app. Luminance catches it:
+/// a dark render of a correct view is dark.
+@MainActor
+func meanLuminance(ofPNGAt path: String) throws -> Double {
+    guard let image = NSImage(contentsOfFile: path),
+          let tiff = image.tiffRepresentation,
+          let rep = NSBitmapImageRep(data: tiff) else {
+        throw SnapshotError.couldNotAllocateBitmap
+    }
+    var total = 0.0
+    var samples = 0
+    // Every 4th pixel on both axes: 16x fewer samples, same answer to well
+    // beyond the precision this assertion needs.
+    for y in stride(from: 0, to: rep.pixelsHigh, by: 4) {
+        for x in stride(from: 0, to: rep.pixelsWide, by: 4) {
+            guard let c = rep.colorAt(x: x, y: y) else { continue }
+            total += 0.2126 * c.redComponent + 0.7152 * c.greenComponent + 0.0722 * c.blueComponent
+            samples += 1
+        }
+    }
+    guard samples > 0 else { throw SnapshotError.couldNotAllocateBitmap }
+    return total / Double(samples)
+}
