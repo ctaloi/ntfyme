@@ -65,6 +65,22 @@ final class HistoryWindowController {
         window?.close()
     }
 
+    /// Reloads the sidebar's servers/topics/unread counts from the store —
+    /// the entry point for another surface (Settings, so far, via a topic
+    /// mute/priority change) to tell an already-open window "something
+    /// changed, catch up" rather than it silently going stale until its
+    /// next full `show()`. `HistoryViewModel.loadSidebar()` already does
+    /// the work; this only exposes it past `viewModel`'s own privacy.
+    ///
+    /// Safe with no window open at all — it only refreshes `viewModel`'s
+    /// own state, not `window`, so there is nothing to be a no-op *about*:
+    /// refreshing state nobody is currently displaying is inert, and means
+    /// a later `show()` starts from data that is already current instead
+    /// of a stale flash while it loads.
+    func refreshSidebar() async {
+        await viewModel.loadSidebar()
+    }
+
     /// Creates the window on first call, brings an existing one forward
     /// otherwise. Returns whether this call created it, so a caller can
     /// decide what else a *fresh* window still needs (the sidebar's initial
