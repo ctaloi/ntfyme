@@ -139,12 +139,35 @@ final class MenuBarController: NSObject {
             .store(in: &cancellables)
     }
 
+    /// `SettingsGeneralTab`'s "Badge the menu bar icon with the unread
+    /// count" toggle — that view owns the `@AppStorage` binding, this reads
+    /// the same key from the `UserDefaults` it actually lands in. Not
+    /// modeled in `Preferences` (see that tab's own doc comment on the
+    /// property), so there is no store method to call instead.
+    private static let badgeMenuBarIconKey = "settings.general.badgeMenuBarIcon"
+
+    /// `UserDefaults.bool(forKey:)` alone would return `false` — "off" —
+    /// for a key nobody has written yet, which is every install that has
+    /// never opened Settings. `@AppStorage`'s own default is `true`, so an
+    /// absent key has to mean the same thing here, not the opposite.
+    private func badgingEnabled() -> Bool {
+        guard UserDefaults.standard.object(forKey: Self.badgeMenuBarIconKey) != nil else {
+            return true
+        }
+        return UserDefaults.standard.bool(forKey: Self.badgeMenuBarIconKey)
+    }
+
     private func updateIcon(unreadCount: Int, statuses: [MenuBarServerStatus]) {
         let connectivity = MenuBarConnectivity.summarize(statuses)
         let needsAttention = connectivity == .disconnected || connectivity == .needsAttention
-        let symbolName = needsAttention ? "bell.slash" : (unreadCount > 0 ? "bell.badge" : "bell")
+        let showBadge = unreadCount > 0 && badgingEnabled()
+        let symbolName = needsAttention ? "bell.slash" : (showBadge ? "bell.badge" : "bell")
         setSymbol(symbolName)
 
+        // The accessibility label always states the real unread count,
+        // independent of the badge preference: that toggle is about the
+        // glyph shown on screen, not about withholding state from
+        // VoiceOver.
         let unreadText = unreadCount > 0 ? "\(unreadCount) unread. " : ""
         statusItem.button?.setAccessibilityLabel("NtfyMe. \(unreadText)\(connectivity.statusText).")
     }
