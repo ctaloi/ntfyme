@@ -5,7 +5,9 @@ subscriptions, delivers native notifications, and keeps a searchable local
 archive of every message it has seen.
 
 This project is under active development. Publishing messages, attachment
-upload, and notarized distribution are not built yet; everything below is.
+handling, and notarized distribution are not built yet; everything below is.
+Attachment metadata arrives and is modelled, but files are not yet downloaded,
+so the History window's Quick Look preview is inert for now.
 
 ## What works
 
@@ -17,7 +19,6 @@ upload, and notarized distribution are not built yet; everything below is.
 - **A History window** — a three-column browser with a per-server/per-topic
   sidebar showing live connection state, a message list, and a detail pane
   that renders markdown bodies, tags, and the message's own action buttons.
-  Attachments preview through Quick Look.
 - **Native notifications** with ntfy's priority levels mapped to macOS
   interruption levels, per-topic mute and priority thresholds, a global
   "record only, never alert" switch, and working action buttons. Clicking a
