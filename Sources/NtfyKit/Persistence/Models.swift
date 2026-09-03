@@ -184,8 +184,11 @@ public final class Message {
 }
 
 /// Attachment metadata. The FILE lives outside the database under
-/// Application Support, so pruning reclaims real disk. Downloading is not
-/// implemented in this plan.
+/// Application Support, so pruning reclaims real disk. `localFilename` is
+/// `nil` until `AttachmentDownloader` actually downloads it and
+/// `MessageStore.setAttachmentLocalFilename` records the result — a row
+/// with attachment metadata but no local file is the normal state for a
+/// message that arrived but was never (or not yet) downloaded.
 @Model
 public final class Attachment {
     public var name: String

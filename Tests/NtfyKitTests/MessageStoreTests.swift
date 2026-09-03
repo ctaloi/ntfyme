@@ -10,6 +10,18 @@ private func event(_ id: String, topic: String = "alerts", time: Int, body: Stri
     return try! JSONDecoder().decode(NtfyEvent.self, from: Data(json.utf8))
 }
 
+private func eventWithAttachment(_ id: String, topic: String = "alerts", time: Int, body: String,
+                                 name: String = "graph.png", url: String = "https://example.com/graph.png",
+                                 type: String? = "image/png", size: Int? = 1024) -> NtfyEvent {
+    let typeJSON = type.map { "\"\($0)\"" } ?? "null"
+    let sizeJSON = size.map(String.init) ?? "null"
+    let json = """
+    {"id":"\(id)","time":\(time),"event":"message","topic":"\(topic)","message":"\(body)",
+     "attachment":{"name":"\(name)","url":"\(url)","type":\(typeJSON),"size":\(sizeJSON)}}
+    """
+    return try! JSONDecoder().decode(NtfyEvent.self, from: Data(json.utf8))
+}
+
 private struct CommandFailed: Error, CustomStringConvertible {
     let executable: String
     let arguments: [String]
@@ -128,6 +140,36 @@ private func makeStore() throws -> (MessageStore, UUID) {
     #expect(result.inserted == 2)
     #expect(result.duplicatesSkipped == 0)
     #expect(try await store.messageCount() == 2)
+}
+
+/// `event.attachment` was previously dropped at the door — nothing
+/// downstream (`AttachmentDownloader`, Quick Look, `prune`'s file cleanup)
+/// could ever run because nothing was ever persisted. This pins that the
+/// metadata now survives the round trip, with `localFilename` starting
+/// `nil` — nothing has downloaded anything yet at insert time.
+@Test func insertingPersistsAttachmentMetadata() async throws {
+    let (store, serverID) = try makeStore()
+    _ = try await store.insert(
+        [eventWithAttachment("a", time: 100, body: "one", name: "graph.png",
+                             url: "https://example.com/graph.png", type: "image/png", size: 2048)],
+        serverID: serverID)
+
+    let messages = try await store.messages(forServer: serverID, topic: nil, limit: 10)
+    let attachment = messages.first?.attachment
+    #expect(attachment?.name == "graph.png")
+    #expect(attachment?.type == "image/png")
+    #expect(attachment?.size == 2048)
+    #expect(attachment?.localFilename == nil)
+}
+
+/// The contrast case: an event with no `attachment` field must not somehow
+/// acquire one — proves the test above is pinning something that varies,
+/// not something that is always present regardless.
+@Test func insertingWithoutAttachmentLeavesAttachmentNil() async throws {
+    let (store, serverID) = try makeStore()
+    _ = try await store.insert([event("a", time: 100, body: "one")], serverID: serverID)
+    let messages = try await store.messages(forServer: serverID, topic: nil, limit: 10)
+    #expect(messages.first?.attachment == nil)
 }
 
 /// The invariant the whole reconnect design rests on: an overlapping replay
@@ -847,6 +889,66 @@ private func makeSearchStore() throws -> (MessageStore, ModelContext, UUID) {
     try await store.deleteMessages([key])
     #expect(try await store.messageCount() == 0)
     #expect(FileManager.default.fileExists(atPath: file.path) == true)
+}
+
+// MARK: - setAttachmentLocalFilename
+
+@Test func setAttachmentLocalFilenameRecordsTheDownloadedFile() async throws {
+    let (store, context, serverID) = try makeSearchStore()
+    let message = Message(serverID: serverID, topic: "alerts", messageID: "a",
+                          time: Date(timeIntervalSince1970: 1), body: "m",
+                          attachment: Attachment(name: "graph.png",
+                                                 urlString: "https://example.com/graph.png"))
+    context.insert(message)
+    try context.save()
+    let key = Message.uniqueKey(serverID: serverID, topic: "alerts", messageID: "a")
+
+    let before = try await store.messages(forServer: serverID, topic: nil, limit: 10)
+    #expect(before.first?.attachment?.localFilename == nil)
+
+    try await store.setAttachmentLocalFilename("a1b2c3.png", forMessage: key)
+    let after = try await store.messages(forServer: serverID, topic: nil, limit: 10)
+    #expect(after.first?.attachment?.localFilename == "a1b2c3.png")
+}
+
+/// A download can race a concurrent deletion or a message that never had
+/// an attachment to begin with — neither is a caller bug, and both must be
+/// a silent no-op rather than throwing for a result nobody can act on
+/// anymore.
+///
+/// Not mutation-verified: the only way to break this specific guard is a
+/// force-unwrap, which would crash the whole test PROCESS rather than fail
+/// this one test — the same process-wide-blast-radius problem that ruled
+/// out `RLIMIT_FSIZE` elsewhere in this file, but worse, since a crash
+/// (unlike a failing assertion) would also take down any other test
+/// running concurrently in this same parallel test process. Reasoned
+/// instead: `try modelContext.fetch(descriptor).first` on a key naming no
+/// row is `nil`, `nil?.attachment` is `nil`, and the `guard let ... else`
+/// returns before anything is mutated or saved — there is no `save()` at
+/// all in that path for a crash-free mutation to corrupt.
+@Test func setAttachmentLocalFilenameIsANoOpWhenTheMessageDoesNotExist() async throws {
+    let (store, serverID) = try makeStore()
+    let key = Message.uniqueKey(serverID: serverID, topic: "alerts", messageID: "nope")
+    try await store.setAttachmentLocalFilename("a1b2c3.png", forMessage: key)
+    // No throw is the assertion; nothing else to check against an empty store.
+}
+
+/// Mutation-verified: replacing the guard's `?? nil` effect with a
+/// fallback that creates and inserts a placeholder `Attachment` when the
+/// message has none (`?? Attachment(name: "x", urlString: "y")`, saved
+/// unconditionally) makes the final assertion FAIL as expected —
+/// `attachment` comes back non-nil. This is the crash-free way to
+/// perturb this guard; see the doc comment on the sibling test above for
+/// why the "message does not exist" case isn't mutated the same way.
+@Test func setAttachmentLocalFilenameIsANoOpWhenTheMessageHasNoAttachment() async throws {
+    let (store, context, serverID) = try makeSearchStore()
+    insertMessage(context, serverID: serverID, id: "a", time: 100, body: "a")
+    try context.save()
+    let key = Message.uniqueKey(serverID: serverID, topic: "alerts", messageID: "a")
+
+    try await store.setAttachmentLocalFilename("a1b2c3.png", forMessage: key)
+    let messages = try await store.messages(forServer: serverID, topic: nil, limit: 10)
+    #expect(messages.first?.attachment == nil)
 }
 
 // MARK: - addServer / removeServer

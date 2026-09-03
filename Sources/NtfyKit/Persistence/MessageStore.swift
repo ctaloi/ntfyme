@@ -84,7 +84,19 @@ public actor MessageStore {
                 // `Bool?`, or `[String: String]?` — none of JSONEncoder's
                 // failure modes (non-finite floating point, non-string
                 // dictionary keys) apply, so this cannot throw.
-                actionsJSON: event.actions.flatMap { try? JSONEncoder().encode($0) }
+                actionsJSON: event.actions.flatMap { try? JSONEncoder().encode($0) },
+                // `urlString` is stored verbatim, unparsed and unvalidated —
+                // it is attacker-controlled wire content (spec §9), and the
+                // only code that ever acts on it, `AttachmentDownloader`,
+                // does its own scheme allow-listing and sanitizing at the
+                // point of use. `localFilename` starts `nil`: nothing has
+                // downloaded anything yet at insert time, so there is no
+                // local file to name. It is filled in later, if ever, by
+                // `setAttachmentLocalFilename` once a download succeeds.
+                attachment: event.attachment.map {
+                    Attachment(name: $0.name, urlString: $0.url, type: $0.type, size: $0.size,
+                              expires: $0.expires.map { Date(timeIntervalSince1970: TimeInterval($0)) })
+                }
             ))
             stored.append(event)
 
@@ -564,6 +576,25 @@ extension MessageStore {
             }))
         guard !messages.isEmpty else { return }
         for message in messages { message.isRead = true }
+        do {
+            try modelContext.save()
+        } catch {
+            modelContext.rollback()
+            throw error
+        }
+    }
+
+    /// Records `filename` as the attachment's downloaded local file, once
+    /// `AttachmentDownloader.download` has actually written it to disk. A
+    /// no-op — not an error — when the message is gone or never had an
+    /// attachment: either means a download raced a concurrent deletion or
+    /// edit, not a caller bug, and there is nowhere left to record the
+    /// result.
+    public func setAttachmentLocalFilename(_ filename: String, forMessage uniqueKey: String) throws {
+        var descriptor = FetchDescriptor<Message>(predicate: #Predicate { $0.uniqueKey == uniqueKey })
+        descriptor.fetchLimit = 1
+        guard let attachment = try modelContext.fetch(descriptor).first?.attachment else { return }
+        attachment.localFilename = filename
         do {
             try modelContext.save()
         } catch {
