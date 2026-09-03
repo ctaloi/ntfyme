@@ -21,6 +21,16 @@ struct HistoryDetailView: View {
             }
         }
         .frame(minWidth: 320)
+        // `NavigationSplitView`'s detail column normally gets its background
+        // from the window automatically — but every color used below
+        // (`.primary`, `.secondary`, the priority/tag colors) is dynamic and
+        // resolves to a *light* value under `.dark`, same as the menu bar
+        // popover's fix (`MenuBarPopoverView.swift`). Without this, dark
+        // mode is light text over whatever backing happens to be there,
+        // which in this app's offscreen snapshot tests was nothing at all:
+        // confirmed by `history-populated-dark.png` rendering the entire
+        // detail column invisible before this line existed.
+        .background(Color(nsColor: .windowBackgroundColor))
     }
 }
 
@@ -115,19 +125,49 @@ private struct MessageDetailContent: View {
     /// Walking the runs and inserting a newline wherever the enclosing block
     /// changes — compared by the *whole* intent chain, not just its `Kind`,
     /// since two consecutive paragraphs both have kind `.paragraph` but never
-    /// share an `identity` — is what actually separates them.
+    /// share an `identity` — is what actually separates them. A list item
+    /// also gets its marker restored here (`listPrefix(for:)`): without it, a
+    /// markdown list renders as unmarked plain lines indistinguishable from
+    /// prose, which loses real structure for exactly the kind of alert body
+    /// (exit codes, durations, checklists) ntfy messages tend to use lists
+    /// for.
     private static func separatingBlocks(_ attributed: AttributedString) -> AttributedString {
         var result = AttributedString()
         var previousBlock: PresentationIntent?
         for run in attributed.runs {
             let block = run.presentationIntent
-            if let previousBlock, block != previousBlock {
-                result += AttributedString("\n")
+            if block != previousBlock {
+                if previousBlock != nil {
+                    result += AttributedString("\n")
+                }
+                if let prefix = listPrefix(for: block) {
+                    result += AttributedString(prefix)
+                }
             }
             result += attributed[run.range]
             previousBlock = block
         }
         return result
+    }
+
+    /// `nil` unless `block`'s intent chain includes a `.listItem` — a list
+    /// item's own text carries no bullet or number of its own, only this
+    /// metadata. Ordered vs. unordered is read off the chain too (a
+    /// `.listItem` is always paired with an enclosing `.orderedList` or
+    /// `.unorderedList` component), not guessed from the ordinal alone.
+    private static func listPrefix(for block: PresentationIntent?) -> String? {
+        guard let components = block?.components,
+              let listItem = components.first(where: {
+                  if case .listItem = $0.kind { return true }
+                  return false
+              }),
+              case .listItem(let ordinal) = listItem.kind
+        else { return nil }
+        let isOrdered = components.contains {
+            if case .orderedList = $0.kind { return true }
+            return false
+        }
+        return isOrdered ? "\(ordinal). " : "• "
     }
 
     private var tagRow: some View {

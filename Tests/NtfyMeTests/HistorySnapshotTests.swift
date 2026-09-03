@@ -70,10 +70,10 @@ private enum HistorySnapshotFixtures {
 
         let a1 = Message(serverID: homeLab.id, topic: "alerts", messageID: "a1", time: minutesAgo(5),
                          title: "Disk space critical", body: "`/var` is at 96% on **db-01**.",
-                         priority: 5, tags: ["rotating_light"], isRead: false)
+                         priority: 5, tags: ["rotating_light"], contentType: "text/markdown", isRead: false)
         let a2 = Message(serverID: homeLab.id, topic: "alerts", messageID: "a2", time: minutesAgo(60),
                          title: "Service recovered", body: "**api-gateway** back to healthy.",
-                         priority: 3, tags: ["white_check_mark"], isRead: true)
+                         priority: 3, tags: ["white_check_mark"], contentType: "text/markdown", isRead: true)
         let a3 = Message(serverID: homeLab.id, topic: "alerts", messageID: "a3", time: minutesAgo(180),
                          title: nil, body: "Latency spike detected on edge-02",
                          priority: 4, tags: ["warning", "edge"], isRead: false)
@@ -186,7 +186,10 @@ private enum HistorySnapshotFixtures {
 
     let bytes = try renderSnapshot(HistoryView(viewModel: viewModel),
                                    size: CGSize(width: 900, height: 560), to: "history-populated.png")
-    #expect(bytes > 1000)
+    // A three-column render with real list rows measures in six figures of
+    // PNG bytes; a bare-chrome or blank render (the failure mode this
+    // surface actually hit once) does not clear even a fifth of that.
+    #expect(bytes > 30_000)
 }
 
 /// The detail pane alone, tall enough that nothing in it is clipped by a
@@ -202,9 +205,34 @@ private enum HistorySnapshotFixtures {
     await viewModel.refreshMessages()
     viewModel.selection = [fixture.deployFailedID]
 
-    let bytes = try renderSnapshot(HistoryDetailView(viewModel: viewModel),
-                                   size: CGSize(width: 420, height: 900), to: "history-detail-rich.png")
-    #expect(bytes > 1000)
+    let lightBytes = try renderSnapshot(HistoryDetailView(viewModel: viewModel),
+                                        size: CGSize(width: 420, height: 900), to: "history-detail-rich.png")
+    #expect(lightBytes > 1000)
+}
+
+/// Same fixture as `historyDetailRichContent`, in dark mode — this is the
+/// exact view (`ScrollView`-based, no `List` chrome of its own) that came
+/// back with invisible text under `.dark` before `HistoryDetailView` grew an
+/// explicit `.background(Color(nsColor: .windowBackgroundColor))`. Asserting
+/// this against a fresh light render of the same fixture, not just against a
+/// byte floor, is what would have caught that regression on its own.
+@MainActor
+@Test func historyDetailRichContentDarkMode() async throws {
+    let fixture = try HistorySnapshotFixtures.makePopulated()
+    let viewModel = HistoryViewModel(store: fixture.store, attachmentsDirectory: FileManager.default.temporaryDirectory)
+    await viewModel.loadSidebar()
+    viewModel.scope = .topic(serverID: fixture.homeLabID, topic: "deploys")
+    await viewModel.refreshMessages()
+    viewModel.selection = [fixture.deployFailedID]
+
+    let lightBytes = try renderSnapshot(HistoryDetailView(viewModel: viewModel),
+                                        size: CGSize(width: 420, height: 900),
+                                        to: "history-detail-rich-light-reference.png")
+    let darkBytes = try renderSnapshot(HistoryDetailView(viewModel: viewModel),
+                                       size: CGSize(width: 420, height: 900),
+                                       colorScheme: .dark, to: "history-detail-rich-dark.png")
+    #expect(darkBytes > 1000)
+    #expect(abs(darkBytes - lightBytes) > 1000)
 }
 
 @MainActor
@@ -216,7 +244,7 @@ private enum HistorySnapshotFixtures {
 
     let bytes = try renderSnapshot(HistoryView(viewModel: viewModel),
                                    size: CGSize(width: 900, height: 560), to: "history-empty.png")
-    #expect(bytes > 1000)
+    #expect(bytes > 20_000)
 }
 
 @MainActor
@@ -231,7 +259,7 @@ private enum HistorySnapshotFixtures {
 
     let bytes = try renderSnapshot(HistoryView(viewModel: viewModel),
                                    size: CGSize(width: 900, height: 560), to: "history-no-selection.png")
-    #expect(bytes > 1000)
+    #expect(bytes > 30_000)
 }
 
 /// Sidebar alone, at a size that fits it without the list/detail columns
@@ -253,9 +281,18 @@ private enum HistorySnapshotFixtures {
 
     let bytes = try renderSnapshot(HistorySidebarView(viewModel: viewModel),
                                    size: CGSize(width: 240, height: 420), to: "history-sidebar-status.png")
-    #expect(bytes > 1000)
+    #expect(bytes > 10_000)
 }
 
+/// Renders both appearances of the same view and requires the two files to
+/// differ by a real margin, not just individually exceed a byte floor. A
+/// dark render that is byte-identical (or suspiciously close) to its light
+/// counterpart is exactly the failure this project already hit once —
+/// `MenuBarPopoverView` had no explicit background, so `.dark` rendered
+/// light text over nothing and still "looked like" a successful render by
+/// file size alone. This is what would have caught that class of bug
+/// without a human looking at a picture. The light half is written to a
+/// clearly-named reference file, not one of the seven requested filenames.
 @MainActor
 @Test func historyPopulatedDarkMode() async throws {
     let fixture = try HistorySnapshotFixtures.makePopulated()
@@ -265,9 +302,13 @@ private enum HistorySnapshotFixtures {
     await viewModel.refreshMessages()
     viewModel.selection = [fixture.alertsFirstUnreadID]
 
-    let bytes = try renderSnapshot(HistoryView(viewModel: viewModel), size: CGSize(width: 900, height: 560),
-                                   colorScheme: .dark, to: "history-populated-dark.png")
-    #expect(bytes > 1000)
+    let lightBytes = try renderSnapshot(HistoryView(viewModel: viewModel),
+                                        size: CGSize(width: 900, height: 560),
+                                        to: "history-populated-light-reference.png")
+    let darkBytes = try renderSnapshot(HistoryView(viewModel: viewModel), size: CGSize(width: 900, height: 560),
+                                       colorScheme: .dark, to: "history-populated-dark.png")
+    #expect(darkBytes > 1000)
+    #expect(abs(darkBytes - lightBytes) > 1000)
 }
 
 @MainActor
@@ -282,5 +323,5 @@ private enum HistorySnapshotFixtures {
 
     let bytes = try renderSnapshot(HistoryView(viewModel: viewModel),
                                    size: CGSize(width: 900, height: 560), to: "history-long-content.png")
-    #expect(bytes > 1000)
+    #expect(bytes > 50_000)
 }
