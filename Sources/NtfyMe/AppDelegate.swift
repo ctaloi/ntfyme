@@ -122,8 +122,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
 
     /// Opens Settings in a window this app owns — see
     /// `SettingsWindowController` for why the standard `Settings` scene could
-    /// not be used from a menu-bar accessory.
-    private func openSettings() {
+    /// not be used from a menu-bar accessory. Not `private`: `NtfyMeApp`'s
+    /// `CommandGroup(replacing: .appSettings)` calls this directly for ⌘, —
+    /// the scene's own auto-wired `showSettingsWindow:` has the same
+    /// no-key-window problem this method exists to route around, so ⌘, has
+    /// to reach this exact method rather than the scene, and there is
+    /// deliberately only this one path to a Settings window.
+    func openSettings() {
         settings?.show()
         activationPolicy.update()
     }

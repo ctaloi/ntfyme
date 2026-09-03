@@ -53,7 +53,13 @@ private func makeStoreAndModel() throws -> (store: MessageStore, model: Settings
     let defaults = UserDefaults(suiteName: "dev.aloi.NtfyMe.snapshotTests.\(UUID().uuidString)")!
     let preferences = PreferencesStore(defaults: defaults)
     let keychain = KeychainStore(service: "dev.aloi.NtfyMe.snapshotTests.\(UUID().uuidString)")
-    let model = SettingsModel(store: store, preferences: preferences, keychain: keychain)
+    // Same isolated suite as `preferences` above — different key namespace,
+    // no collision — so `seedDefaultServerIfNeeded`'s flag (and
+    // `defaultMinAlertPriority`'s read) never touch the real
+    // `UserDefaults.standard`, the same isolation every other fixture here
+    // already gets.
+    let model = SettingsModel(store: store, preferences: preferences, keychain: keychain,
+                              defaults: defaults)
     return (store, model)
 }
 

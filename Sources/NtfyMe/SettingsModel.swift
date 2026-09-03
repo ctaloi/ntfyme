@@ -36,6 +36,13 @@ final class SettingsModel {
     /// server before its row (and every message row keyed to it) is purged.
     /// See `removeServer`'s doc comment for why the ordering matters.
     private let closeConnection: @Sendable (UUID) async -> Void
+    /// Backs `SettingsDefaultsKey`-keyed reads/writes that aren't part of
+    /// `Preferences` (that struct and its store are `NtfyKit`, out of this
+    /// surface's ownership). Injectable rather than always `.standard` so a
+    /// test never reads or writes the real domain — the same isolation
+    /// `PreferencesStore(defaults:)` and `KeychainStore(service:)` already
+    /// get in every fixture in this file's test target.
+    private let defaults: UserDefaults
 
     private(set) var prefs: Preferences = .default
     /// Read fresh from `SMAppService` rather than derived from
@@ -64,13 +71,15 @@ final class SettingsModel {
     init(store: MessageStore, preferences: PreferencesStore, keychain: KeychainStore,
          syncConnections: @escaping @Sendable () async -> Void = {},
          restartConnection: @escaping @Sendable (UUID) async -> Void = { _ in },
-         closeConnection: @escaping @Sendable (UUID) async -> Void = { _ in }) {
+         closeConnection: @escaping @Sendable (UUID) async -> Void = { _ in },
+         defaults: UserDefaults = .standard) {
         self.store = store
         self.preferences = preferences
         self.keychain = keychain
         self.syncConnections = syncConnections
         self.restartConnection = restartConnection
         self.closeConnection = closeConnection
+        self.defaults = defaults
     }
 
     func refresh() async {
@@ -146,6 +155,44 @@ final class SettingsModel {
 
     func topics(for serverID: UUID) -> [TopicSummary] {
         topicSummaries.filter { $0.serverID == serverID }
+    }
+
+    /// Seeds `https://ntfy.sh` — ntfy's own public instance — as a starting
+    /// point on a genuinely new install, so a new user does not need to
+    /// already know the public server's address before Settings → Servers
+    /// has anything to click on.
+    ///
+    /// Added with **no topics**, which is the load-bearing half: a server
+    /// with no topics opens no connection at all
+    /// (`ConnectionCoordinator.sync`'s `wanted` set filters on
+    /// `!topics.isEmpty`), so this subscribes the user to nothing and starts
+    /// no network activity — it only removes the "what do I type here" step.
+    /// `syncConnections()` is deliberately not called here for the same
+    /// reason: there is nothing for it to do.
+    ///
+    /// Gated on `SettingsDefaultsKey.hasSeededDefaultServer` (see its doc
+    /// comment for why that flag, not an empty server list) rather than
+    /// firing unconditionally — called from `SettingsView`'s `.task`, so it
+    /// runs once per Settings-window open, and the flag is what keeps that
+    /// from re-adding a server the user deliberately removed.
+    func seedDefaultServerIfNeeded() async {
+        guard !defaults.bool(forKey: SettingsDefaultsKey.hasSeededDefaultServer) else { return }
+
+        do {
+            _ = try await store.addServer(
+                name: "ntfy.sh", baseURL: URL(string: "https://ntfy.sh")!,
+                authKindRaw: SettingsCredentialKind.unauthenticated.rawValue)
+        } catch {
+            // Not marked seeded: a transient failure here (e.g. the store
+            // was briefly unavailable) should retry on the next launch
+            // rather than being recorded as permanently done.
+            let ns = error as NSError
+            Log.app.error("seeding default server failed: \(ns.domain, privacy: .public) \(ns.code, privacy: .public)")
+            return
+        }
+
+        defaults.set(true, forKey: SettingsDefaultsKey.hasSeededDefaultServer)
+        await loadServers()
     }
 
     /// Adds a server and its credential together. If the credential fails to
@@ -306,7 +353,7 @@ final class SettingsModel {
     /// valid `NtfyPriority`) has to be mapped back to the same
     /// `NtfyPriority.default` the picker starts on.
     private func defaultMinAlertPriority() -> Int {
-        let stored = UserDefaults.standard.integer(forKey: SettingsDefaultsKey.defaultMinPriority)
+        let stored = defaults.integer(forKey: SettingsDefaultsKey.defaultMinPriority)
         return NtfyPriority(rawValue: stored)?.rawValue ?? NtfyPriority.default.rawValue
     }
 

@@ -12,6 +12,15 @@ enum SettingsDefaultsKey {
     /// rather than through `@AppStorage`, so the fallback for an absent key
     /// must be applied explicitly — see `SettingsModel.defaultMinAlertPriority`.
     static let defaultMinPriority = "settings.notifications.defaultMinPriority"
+
+    /// Gates the `ntfy.sh` default-server seed (`SettingsModel
+    /// .seedDefaultServerIfNeeded`) to a genuine first run. Deliberately not
+    /// derived from "the server list is empty": a user who deletes the
+    /// seeded server must see it stay deleted, not have it reappear because
+    /// the list emptied out again. Set only once the seed attempt actually
+    /// succeeds, so a transient failure on one launch is retried on the next
+    /// rather than being recorded as done.
+    static let hasSeededDefaultServer = "settings.hasSeededDefaultServer"
 }
 
 // MARK: - Credential kind

@@ -28,7 +28,16 @@ struct SettingsView: View {
                 .tabItem { Label("Advanced", systemImage: "wrench.and.screwdriver") }
         }
         .frame(width: 520, height: 440)
-        .task { await model.refresh() }
+        .task {
+            // Seed before refresh, not after: so a genuinely first-run
+            // window shows the seeded ntfy.sh server on its very first
+            // paint rather than an empty state that fills in a moment
+            // later. See `SettingsModel.seedDefaultServerIfNeeded`'s doc
+            // comment for why this is safe to call every time Settings
+            // opens (it is a one-shot, flag-gated no-op after the first).
+            await model.seedDefaultServerIfNeeded()
+            await model.refresh()
+        }
         .alert("Settings", isPresented: errorPresented) {
             Button("OK", role: .cancel) {}
         } message: {
