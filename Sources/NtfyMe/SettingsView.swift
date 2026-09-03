@@ -29,7 +29,7 @@ struct SettingsView: View {
             SettingsNotificationsTab(model: model)
                 .tabItem { Label("Notifications", systemImage: "bell.badge") }
         }
-        .frame(width: 520, height: 440)
+        .frame(width: 640, height: 560)
         .task {
             // Seed before refresh, not after: so a genuinely first-run
             // window shows the seeded ntfy.sh server on its very first

@@ -36,29 +36,37 @@ struct SettingsNotificationsTab: View {
     @State private var isRequestingAuthorization = false
 
     var body: some View {
-        Form {
-            Section("Alerts") {
-                Toggle("Record only \u{2014} never alert", isOn: recordOnlyBinding)
-                    .help("Every message is still saved to history; nothing raises a notification.")
-            }
-
-            Section {
-                Picker("Minimum priority", selection: $defaultMinPriority) {
-                    ForEach(NtfyPriority.allCases, id: \.rawValue) { priority in
-                        Text(priorityLabel(priority)).tag(priority.rawValue)
-                    }
+        ScrollView {
+            VStack(alignment: .leading, spacing: 28) {
+                SettingsSection(title: "Alerts") {
+                    Toggle("Record only \u{2014} never alert", isOn: recordOnlyBinding)
+                        .font(.system(size: 13))
+                        .help("Every message is still saved to history; nothing raises a notification.")
                 }
-            } header: {
-                Text("Defaults for New Topics")
-            } footer: {
-                Text("Applies when a topic is added. Each topic's own mute and priority can still be changed in Settings \u{2192} Servers.")
-            }
 
-            Section("System Permission") {
-                permissionStatusView
+                SettingsSection(title: "Defaults for New Topics") {
+                    SettingsRow(label: "Minimum priority") {
+                        Picker("", selection: $defaultMinPriority) {
+                            ForEach(NtfyPriority.allCases, id: \.rawValue) { priority in
+                                Text(priorityLabel(priority)).tag(priority.rawValue)
+                            }
+                        }
+                        .labelsHidden()
+                        .pickerStyle(.menu)
+                        .frame(width: 140)
+                        .accessibilityLabel("Minimum priority")
+                    }
+                    SettingsFootnote("Applies when a topic is added. Each topic's own mute and priority can still be changed in Settings \u{2192} Servers.")
+                }
+
+                SettingsSection(title: "System Permission") {
+                    permissionStatusView
+                }
             }
+            .padding(24)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .formStyle(.grouped)
+        .background(Color(nsColor: .windowBackgroundColor))
         .onAppear {
             Task { await model.refreshNotificationAuthorization() }
         }
@@ -69,11 +77,13 @@ struct SettingsNotificationsTab: View {
         switch model.notificationAuthorization {
         case .authorized:
             Label("Notifications are allowed.", systemImage: "checkmark.circle.fill")
+                .font(.system(size: 13))
                 .foregroundStyle(.secondary)
                 .accessibilityLabel("Notifications are allowed")
 
         case .denied:
             Label("Notifications are turned off for NtfyMe in System Settings \u{2014} this is why nothing is alerting.", systemImage: "exclamationmark.triangle.fill")
+                .font(.system(size: 13))
                 .foregroundStyle(.orange)
                 .accessibilityLabel("Notifications are denied")
             Button {
@@ -84,6 +94,7 @@ struct SettingsNotificationsTab: View {
 
         case .notDetermined:
             Text("NtfyMe hasn't asked for notification permission yet.")
+                .font(.system(size: 13))
                 .foregroundStyle(.secondary)
             Button {
                 Task { await enableNotifications() }

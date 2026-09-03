@@ -95,7 +95,7 @@ private func seedServers(store: MessageStore, model: SettingsModel) async throws
 /// Real sizes — the ones the app actually hosts these views at
 /// (`SettingsView`'s `.frame`, and `AppDelegate.presentOnboardingIfNeeded`'s
 /// `NSWindow`) — not invented ones.
-private let settingsSize = CGSize(width: 520, height: 440)
+private let settingsSize = CGSize(width: 640, height: 560)
 private let onboardingSize = CGSize(width: 420, height: 340)
 
 /// A blank render measures 1-2 distinct colours regardless of size or
@@ -292,7 +292,7 @@ private func path(_ filename: String) -> String { "/tmp/ntfyshots/\(filename)" }
     let filename = "settings-edit-server.png"
     _ = try renderSnapshot(
         SettingsServerEditor(model: model, mode: .editCredential(server), onDismiss: {}),
-        size: CGSize(width: 420, height: 440), to: filename)
+        size: CGSize(width: 460, height: 480), to: filename)
     #expect(try distinctColorCount(ofPNGAt: path(filename)) > minPlausibleColorCount)
     #expect(try meanAlpha(ofPNGAt: path(filename)) > minPlausibleAlpha)
 }

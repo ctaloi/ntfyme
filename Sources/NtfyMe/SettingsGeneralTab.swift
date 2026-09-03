@@ -19,6 +19,10 @@ import NtfyKit
 /// joins this section instead of getting a new, different heading to stay
 /// distinguishable — one "History" section, holding everything about the
 /// archive, is the simpler shape.
+///
+/// **No `Form` here.** See `SettingsSection`'s doc comment for why: neither
+/// `Form` style read as part of the same application as the native-first
+/// redesign. Plain `VStack`s at this file's own type scale instead.
 struct SettingsGeneralTab: View {
     let model: SettingsModel
 
@@ -38,82 +42,92 @@ struct SettingsGeneralTab: View {
     @State private var exportStatus: String?
 
     var body: some View {
-        Form {
-            Section("Startup") {
-                Toggle("Launch NtfyMe at login", isOn: launchAtLoginBinding)
-                    .accessibilityHint(Text("Registers NtfyMe as a login item using Service Management."))
+        ScrollView {
+            VStack(alignment: .leading, spacing: 28) {
+                SettingsSection(title: "Startup") {
+                    Toggle("Launch NtfyMe at login", isOn: launchAtLoginBinding)
+                        .font(.system(size: 13))
+                        .accessibilityHint(Text("Registers NtfyMe as a login item using Service Management."))
 
-                if model.loginItemStatus == .requiresApproval {
-                    Label(
-                        "Needs approval in System Settings \u{2192} General \u{2192} Login Items.",
-                        systemImage: "exclamationmark.triangle.fill"
-                    )
-                    .font(.caption)
-                    .foregroundStyle(.orange)
-                }
-            }
-
-            Section("History") {
-                // Empty title, not "Days"/"Messages": on macOS a `Form`
-                // shows a `TextField`'s title as a persistent inline label,
-                // not an empty-state placeholder the way it would on iOS —
-                // with a title here it rendered as a second, wrapped label
-                // stacked next to the value instead of standing in for it.
-                // The visible label is `LabeledContent`'s own title plus the
-                // trailing unit `Text`; `.accessibilityLabel` still names
-                // the field for VoiceOver.
-                LabeledContent("Keep messages for") {
-                    HStack {
-                        TextField("", text: $retentionDaysText)
-                            .frame(width: 56)
-                            .multilineTextAlignment(.trailing)
-                            .onSubmit(applyRetention)
-                            .accessibilityLabel("Retention window, in days")
-                        Text("days").foregroundStyle(.secondary)
+                    if model.loginItemStatus == .requiresApproval {
+                        Label(
+                            "Needs approval in System Settings \u{2192} General \u{2192} Login Items.",
+                            systemImage: "exclamationmark.triangle.fill"
+                        )
+                        .font(.system(size: 12))
+                        .foregroundStyle(.orange)
                     }
                 }
-                LabeledContent("Keep up to") {
-                    HStack {
-                        TextField("", text: $maxPerTopicText)
-                            .frame(width: 72)
-                            .multilineTextAlignment(.trailing)
-                            .onSubmit(applyRetention)
-                            .accessibilityLabel("Maximum stored messages per topic")
-                        Text("messages per topic").foregroundStyle(.secondary)
+
+                SettingsSection(title: "History") {
+                    SettingsRow(label: "Keep messages for") {
+                        HStack(spacing: 6) {
+                            TextField("", text: $retentionDaysText)
+                                .textFieldStyle(.roundedBorder)
+                                .frame(width: 52)
+                                .multilineTextAlignment(.trailing)
+                                .onSubmit(applyRetention)
+                                .accessibilityLabel("Retention window, in days")
+                            Text("days")
+                                .font(.system(size: 13))
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    SettingsRow(label: "Keep up to") {
+                        HStack(spacing: 6) {
+                            TextField("", text: $maxPerTopicText)
+                                .textFieldStyle(.roundedBorder)
+                                .frame(width: 68)
+                                .multilineTextAlignment(.trailing)
+                                .onSubmit(applyRetention)
+                                .accessibilityLabel("Maximum stored messages per topic")
+                            Text("messages per topic")
+                                .font(.system(size: 13))
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    SettingsFootnote("Whichever limit is reached first applies. Changes take effect on the next retention pass.")
+
+                    Divider()
+                        .padding(.vertical, 4)
+
+                    SettingsRow(label: "Stored messages") {
+                        Text("\(model.messageCount)")
+                            .font(.system(size: 13))
+                            .foregroundStyle(.secondary)
+                    }
+
+                    HStack(spacing: 10) {
+                        Button {
+                            Task { await exportHistory() }
+                        } label: {
+                            Label(isExporting ? "Exporting\u{2026}" : "Export History to JSON\u{2026}", systemImage: "square.and.arrow.up")
+                        }
+                        .disabled(isExporting || model.messageCount == 0)
+
+                        Button(role: .destructive) {
+                            isPresentingClearConfirm = true
+                        } label: {
+                            Label(isClearing ? "Clearing\u{2026}" : "Clear All Message History\u{2026}", systemImage: "trash")
+                        }
+                        .disabled(isClearing || model.messageCount == 0)
+                    }
+                    .controlSize(.regular)
+
+                    if let exportStatus {
+                        SettingsFootnote(exportStatus)
                     }
                 }
-                Text("Whichever limit is reached first applies. Changes take effect on the next retention pass.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
 
-                LabeledContent("Stored messages", value: "\(model.messageCount)")
-
-                Button {
-                    Task { await exportHistory() }
-                } label: {
-                    Label(isExporting ? "Exporting\u{2026}" : "Export History to JSON\u{2026}", systemImage: "square.and.arrow.up")
+                SettingsSection(title: "Menu Bar") {
+                    Toggle("Badge the menu bar icon with the unread count", isOn: $badgeEnabled)
+                        .font(.system(size: 13))
                 }
-                .disabled(isExporting || model.messageCount == 0)
-
-                if let exportStatus {
-                    Text(exportStatus)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-
-                Button(role: .destructive) {
-                    isPresentingClearConfirm = true
-                } label: {
-                    Label(isClearing ? "Clearing\u{2026}" : "Clear All Message History\u{2026}", systemImage: "trash")
-                }
-                .disabled(isClearing || model.messageCount == 0)
             }
-
-            Section("Menu Bar") {
-                Toggle("Badge the menu bar icon with the unread count", isOn: $badgeEnabled)
-            }
+            .padding(24)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .formStyle(.grouped)
+        .background(Color(nsColor: .windowBackgroundColor))
         .onAppear(perform: syncRetentionFields)
         .onChange(of: model.prefs.retention) { _, _ in syncRetentionFields() }
         .confirmationDialog(

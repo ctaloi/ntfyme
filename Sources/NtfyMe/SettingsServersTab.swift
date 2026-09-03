@@ -79,6 +79,14 @@ struct SettingsServersTab: View {
             }
             .padding(12)
         }
+        // `List` paints its own ground; the footer bar below it (`Divider`
+        // plus the `Add Server` `HStack`) is plain content sitting outside
+        // the `List` in this same `VStack`, so without this it painted
+        // none of its own — invisible in dark-mode captures once the
+        // window grew tall enough to leave visible space below the rows,
+        // the same "forgot to paint a ground" shape already fixed twice
+        // elsewhere in this file.
+        .background(Color(nsColor: .windowBackgroundColor))
         .sheet(isPresented: $isPresentingAddServer) {
             SettingsServerEditor(model: model, mode: .add, onDismiss: { isPresentingAddServer = false })
         }
@@ -144,23 +152,24 @@ private struct ServerRow: View {
                 // ntfy.sh. Stated here, at the point a topic is actually
                 // added, not only in the onboarding pane or a help page.
                 Text("On public ntfy.sh, anyone who knows a topic's name can read and publish to it \u{2014} treat it like a password.")
-                    .font(.caption)
+                    .font(.system(size: 12))
                     .foregroundStyle(.secondary)
             }
             .padding(.top, 4)
         } label: {
             HStack {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(server.name).font(.headline)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(server.name)
+                        .font(.system(size: 15, weight: .semibold))
                     Text(server.baseURL.absoluteString)
-                        .font(.caption)
+                        .font(.system(size: 12))
                         .foregroundStyle(.secondary)
                 }
 
                 Spacer()
 
                 Text((SettingsCredentialKind(rawValue: server.authKindRaw) ?? .unauthenticated).displayName)
-                    .font(.caption)
+                    .font(.system(size: 12))
                     .foregroundStyle(.secondary)
 
                 Button("Edit\u{2026}", action: onEdit)
@@ -173,6 +182,7 @@ private struct ServerRow: View {
                 .buttonStyle(.borderless)
                 .accessibilityLabel("Remove server \(server.name)")
             }
+            .padding(.vertical, 2)
         }
     }
 
@@ -180,6 +190,7 @@ private struct ServerRow: View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
                 Text(topic.topic)
+                    .font(.system(size: 13))
                 Spacer()
                 Toggle("Muted", isOn: Binding(
                     get: { topic.muted },
@@ -205,7 +216,7 @@ private struct ServerRow: View {
                 in: 1...5
             ) {
                 Text("Minimum alert priority: \(topic.minAlertPriority)")
-                    .font(.caption)
+                    .font(.system(size: 12))
                     .foregroundStyle(.secondary)
             }
         }
@@ -257,12 +268,12 @@ struct SettingsServerEditor: View {
             if case .editCredential(let server) = mode {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(server.name)
-                        .font(.title3.bold())
+                        .font(.system(size: 17, weight: .semibold))
                     Text(server.baseURL.absoluteString)
-                        .font(.caption)
+                        .font(.system(size: 12))
                         .foregroundStyle(.secondary)
                     Text("Renaming a server or changing its address isn't supported yet \u{2014} remove and re-add the server to change either.")
-                        .font(.caption)
+                        .font(.system(size: 12))
                         .foregroundStyle(.secondary)
                         .padding(.top, 2)
                 }
@@ -272,68 +283,73 @@ struct SettingsServerEditor: View {
                 Divider()
             }
 
-            Form {
-                if case .add = mode {
-                    Section {
-                        TextField("Name", text: $name)
-                            .accessibilityLabel("Server name")
-                        TextField("https://ntfy.example.com", text: $baseURLString)
-                            .accessibilityLabel("Server address")
-                    } header: {
-                        Text("Server")
-                    } footer: {
-                        // Spec §9, stated at the point a server is configured,
-                        // ahead of the first topic this server will carry.
-                        Text("On public ntfy.sh, a topic name works like a password \u{2014} anyone who knows it can read and publish to it.")
-                    }
-                }
-
-                Section("Credential") {
-                    Picker("Type", selection: $kind) {
-                        ForEach(SettingsCredentialKind.allCases) { kind in
-                            Text(kind.displayName).tag(kind)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 24) {
+                    if case .add = mode {
+                        SettingsSection(title: "Server") {
+                            TextField("Name", text: $name)
+                                .textFieldStyle(.roundedBorder)
+                                .accessibilityLabel("Server name")
+                            TextField("https://ntfy.example.com", text: $baseURLString)
+                                .textFieldStyle(.roundedBorder)
+                                .accessibilityLabel("Server address")
+                            // Spec §9, stated at the point a server is
+                            // configured, ahead of the first topic this
+                            // server will carry.
+                            SettingsFootnote("On public ntfy.sh, a topic name works like a password \u{2014} anyone who knows it can read and publish to it.")
                         }
                     }
-                    .accessibilityLabel("Credential type")
 
-                    switch kind {
-                    case .unauthenticated:
-                        EmptyView()
-                    case .bearer:
-                        SecureField("Token", text: $token)
-                            .accessibilityLabel("Bearer token")
-                    case .basic:
-                        TextField("Username", text: $username)
-                            .accessibilityLabel("Username")
-                        SecureField("Password", text: $password)
-                            .accessibilityLabel("Password")
+                    SettingsSection(title: "Credential") {
+                        Picker("Type", selection: $kind) {
+                            ForEach(SettingsCredentialKind.allCases) { kind in
+                                Text(kind.displayName).tag(kind)
+                            }
+                        }
+                        .pickerStyle(.menu)
+                        .accessibilityLabel("Credential type")
+
+                        switch kind {
+                        case .unauthenticated:
+                            EmptyView()
+                        case .bearer:
+                            SecureField("Token", text: $token)
+                                .textFieldStyle(.roundedBorder)
+                                .accessibilityLabel("Bearer token")
+                        case .basic:
+                            TextField("Username", text: $username)
+                                .textFieldStyle(.roundedBorder)
+                                .accessibilityLabel("Username")
+                            SecureField("Password", text: $password)
+                                .textFieldStyle(.roundedBorder)
+                                .accessibilityLabel("Password")
+                        }
+                    }
+
+                    if let validationError {
+                        Text(validationError)
+                            .font(.system(size: 12))
+                            .foregroundStyle(.red)
+                    }
+
+                    SettingsSection(title: "Connection") {
+                        Button {
+                            Task { await runConnectionTest() }
+                        } label: {
+                            Label(isTesting ? "Testing\u{2026}" : "Test Connection", systemImage: "network")
+                        }
+                        .disabled(isTesting)
+
+                        if let testResult {
+                            SettingsFootnote(testResult)
+                        }
                     }
                 }
-
-                if let validationError {
-                    Text(validationError)
-                        .font(.caption)
-                        .foregroundStyle(.red)
-                }
-
-                Section {
-                    Button {
-                        Task { await runConnectionTest() }
-                    } label: {
-                        Label(isTesting ? "Testing\u{2026}" : "Test Connection", systemImage: "network")
-                    }
-                    .disabled(isTesting)
-
-                    if let testResult {
-                        Text(testResult)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
+                .padding(20)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .formStyle(.grouped)
         }
-        .frame(width: 420, height: 440)
+        .frame(width: 460, height: 480)
         // The header added for `.editCredential` sits outside the `Form`,
         // which paints its own ground, so without this explicit background
         // that header area painted none of its own — the same "forgot to

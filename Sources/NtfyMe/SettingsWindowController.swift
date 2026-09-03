@@ -36,7 +36,12 @@ final class SettingsWindowController {
         }
 
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 520, height: 440),
+            // Matches SettingsView's own `.frame` — widened from the
+            // original 520x440 as part of the native-first redesign pass:
+            // the previous size was tight enough to make longer labels
+            // (and `.formStyle(.columns)`'s label column, tried and
+            // reverted) crowd or overflow.
+            contentRect: NSRect(x: 0, y: 0, width: 640, height: 560),
             styleMask: [.titled, .closable, .miniaturizable],
             backing: .buffered,
             defer: false)
