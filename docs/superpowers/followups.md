@@ -10,6 +10,15 @@ the user.
 
 ## App layer
 
+**⌘, does not open Settings.** Settings is now hosted by
+`SettingsWindowController` rather than the SwiftUI `Settings` scene, because
+that scene could not be opened from a menu-bar accessory at all (see that
+file's doc comment). The scene is still declared, so the app compiles and has
+a scene, but nothing routes the standard shortcut to the real window —
+verified in the running app: ⌘, opens nothing. Route the scene, or install a
+menu item, so the platform-standard shortcut works once the app is `.regular`.
+
+
 **Seed ntfy.sh as a default server on first run.** A new user currently
 arrives at an empty Servers tab and has to know that `https://ntfy.sh` is the
 public instance before anything can happen. Pre-seeding it — with no topics,
