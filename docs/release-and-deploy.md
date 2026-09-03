@@ -10,7 +10,7 @@ deployed, how Sparkle updates are cut, and what is safe to commit.
 - **Visibility:** public
 - **License:** MIT (`LICENSE`)
 - **Website:** `https://ntfyme.aloi.dev`
-- **GitHub homepage / About:** kept in sync by `.github/workflows/repo-about.yml`
+- **GitHub homepage / About:** set manually (one `gh repo edit` command; see below)
 - **Website deploy:** GitHub Pages via `.github/workflows/pages.yml`
 - **DNS:** Cloudflare zone `aloi.dev`, record `ntfyme.aloi.dev -> ctaloi.github.io` (`DNS only`)
 - **App updates:** Sparkle 2, appcast at repo root `appcast.xml`
@@ -23,14 +23,16 @@ deployed, how Sparkle updates are cut, and what is safe to commit.
   - `swift build -v`
   - `swift test -v`
 
-- `.github/workflows/repo-about.yml`
-  - updates the GitHub repo description and homepage URL
-
 - `.github/workflows/pages.yml`
   - redeploys `site/` to GitHub Pages on **every push to `main`**
 
 That means the website does not need a special deploy step once the commit is
 on `main`.
+
+**Repo About metadata is not automated**: GitHub rejected the secretless workflow
+for updating repository description/homepage on push. The settings are already
+correct, and changes stay a one-line manual `gh repo edit` so the repo can
+remain public without adding a privileged PAT secret.
 
 ## Website hosting
 
@@ -161,8 +163,7 @@ Current desired state:
 - **Homepage:** `https://ntfyme.aloi.dev`
 - **Topics:** `macos`, `swift`, `ntfy`, `notifications`, `menubar`, `sparkle`
 
-The workflow keeps description/homepage current on push. If you need to set it
-manually:
+Description/homepage are currently set correctly. If you need to change them:
 
 ```bash
 gh repo edit ctaloi/ntfyme \
