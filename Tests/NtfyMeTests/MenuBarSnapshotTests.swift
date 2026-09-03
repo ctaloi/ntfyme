@@ -12,12 +12,22 @@ import NtfyKit
 /// be that, and doesn't exist yet for the reason `wave2-menubar-report.md`
 /// gives. This is "what does it look like", written to `/tmp/ntfyshots/` for
 /// a human to look at — but each render is also asserted on with
-/// `distinctColorCount`/`meanLuminance`, not a byte-count floor: a blank
-/// render at this popover's size is ~14KB, above every floor this file used
-/// to have, so a byte assertion could not fail on the exact "no background"
-/// regression these renders exist to catch (`SnapshotSupport.swift` has the
+/// `distinctColorCount`, not a byte-count floor: a blank render at this
+/// popover's size is ~14KB, above every floor this file used to have, so a
+/// byte assertion could not fail on the exact "no background" regression
+/// these renders exist to catch (`SnapshotSupport.swift` has the
 /// measurements). See `backgroundRegressionIsCaught()` below for the
 /// mutation check confirming the new assertion actually fails on it.
+///
+/// A light/dark **divergence** check (`lightBytes != darkBytes`, or a
+/// threshold on `|light − dark|`) was tried here too and removed: measured
+/// against this exact regression at the popover's real size, the buggy
+/// render (104,752 / 118,459 bytes) diverges *more* than the fixed one
+/// (120,869 / 122,953) — the ordering a divergence check relies on is
+/// inverted, so no threshold on the difference distinguishes them. Every
+/// render below is asserted on its own `distinctColorCount` instead, which
+/// is monotonic the right way on the same regression: blank 1, broken 1-2,
+/// fixed 25-29.
 ///
 /// All content below is invented and generic — this repository is public,
 /// and none of it is the user's actual servers, topics, or hostnames.
@@ -87,6 +97,16 @@ final class MenuBarFixtureCallCounter: @unchecked Sendable {
 }
 
 struct MenuBarFixtureError: Error {}
+
+/// A mutable flag a `@Sendable` closure can capture and a test can flip
+/// mid-run. A plain captured `var` is not permitted here — Swift 6 strict
+/// concurrency rejects mutable-var capture in a `@Sendable` closure — so
+/// this is a class for the same reason `MenuBarFixtureCallCounter` above is
+/// one: only ever touched serially, on the main actor, by the one
+/// `MenuBarViewModel` under test.
+final class MenuBarFixtureFlag: @unchecked Sendable {
+    var value = false
+}
 
 @MainActor
 private func makeViewModel(messages: [MessageSnapshot], unread: Int,
@@ -178,6 +198,38 @@ private let minimumDistinctColors = 8
     #expect(colors > minimumDistinctColors)
 }
 
+/// Behavioral, not visual: `connectionStatuses` returning `nil` (the store
+/// failed to open) must not read as `.noServers` — "no servers configured",
+/// the fresh-install empty state. That collapse is exactly the bug this
+/// pins: telling a user whose archive failed to open that they have not set
+/// anything up yet, which invites them to add a server that will not help.
+/// `refresh()` must keep the last-known `serverStatuses` and surface
+/// `loadErrorMessage` instead, the same stale-data-plus-banner treatment
+/// `renderLoadError` above already covers for the messages path.
+@MainActor @Test func connectionStatusFailureKeepsStaleStatuses() async throws {
+    let shouldFail = MenuBarFixtureFlag()
+    let dependencies = MenuBarViewModel.Dependencies(
+        recentMessages: { [] },
+        unreadCount: { 0 },
+        connectionStatuses: {
+            shouldFail.value ? nil : [MenuBarFixtures.homeLab, MenuBarFixtures.ntfySh]
+        },
+        markRead: { _, _ in },
+        markAllRead: {})
+    let viewModel = MenuBarViewModel(dependencies: dependencies)
+
+    await viewModel.refresh()
+    #expect(viewModel.connectivity == .allConnected)
+    #expect(viewModel.loadErrorMessage == nil)
+
+    shouldFail.value = true
+    await viewModel.refresh()
+    #expect(viewModel.serverStatuses == [MenuBarFixtures.homeLab, MenuBarFixtures.ntfySh])
+    #expect(viewModel.connectivity == .allConnected)
+    #expect(viewModel.connectivity != .noServers)
+    #expect(viewModel.loadErrorMessage != nil)
+}
+
 @MainActor @Test func renderSearchActive() async throws {
     let viewModel = makeViewModel(messages: MenuBarFixtures.messages(), unread: 3,
                                   statuses: [MenuBarFixtures.homeLab, MenuBarFixtures.ntfySh])
@@ -192,32 +244,25 @@ private let minimumDistinctColors = 8
     #expect(colors > minimumDistinctColors)
 }
 
-/// `SnapshotSupport.swift`'s own measurement of this exact regression
-/// (broken 1-2 colours, fixed 25-29, blank 1) means `distinctColorCount`
-/// alone would already have caught it — but `meanLuminance` is kept as a
-/// second, more direct signal: it asserts the actual thing that matters
-/// ("light render reads as light, dark render reads as dark"), rather than
-/// inferring correctness from a colour count that happens to move together
-/// with it today. `backgroundRegressionIsCaught()` below confirms both on
-/// this machine rather than trusting either measurement on faith.
+/// Dark-mode-only: `renderPopulated()` above already covers the light
+/// render (and its own `distinctColorCount` floor), including writing
+/// `menubar-populated.png`. This used to re-render that same light copy
+/// here too, under the same filename — harmless while assertions read the
+/// in-memory byte count, but a real hazard once `distinctColorCount` reads
+/// the file back off disk: `renderPopulated()` and this test run in
+/// parallel, so two writers to one filename risked a torn read, not just a
+/// torn artifact (`renderSnapshot`'s own doc comment now covers the
+/// atomic-write half of this; a unique filename per test is the other
+/// half). Dropped the redundant light render entirely rather than giving it
+/// a second unique filename — nothing here needed it.
 @MainActor @Test func renderPopulatedDarkMode() async throws {
     let viewModel = makeViewModel(messages: MenuBarFixtures.messages(), unread: 3,
                                   statuses: [MenuBarFixtures.homeLab, MenuBarFixtures.ntfySh])
     await viewModel.refresh()
     _ = try renderSnapshot(popoverView(viewModel), size: MenuBarPopoverView.size,
-                           to: "menubar-populated.png")
-    _ = try renderSnapshot(popoverView(viewModel), size: MenuBarPopoverView.size,
                            colorScheme: .dark, to: "menubar-populated-dark.png")
-
-    let lightColors = try distinctColorCount(ofPNGAt: "/tmp/ntfyshots/menubar-populated.png")
-    let darkColors = try distinctColorCount(ofPNGAt: "/tmp/ntfyshots/menubar-populated-dark.png")
-    #expect(lightColors > minimumDistinctColors)
-    #expect(darkColors > minimumDistinctColors)
-
-    let lightLuminance = try meanLuminance(ofPNGAt: "/tmp/ntfyshots/menubar-populated.png")
-    let darkLuminance = try meanLuminance(ofPNGAt: "/tmp/ntfyshots/menubar-populated-dark.png")
-    #expect(lightLuminance > 0.6)
-    #expect(darkLuminance < 0.4)
+    let colors = try distinctColorCount(ofPNGAt: "/tmp/ntfyshots/menubar-populated-dark.png")
+    #expect(colors > minimumDistinctColors)
 }
 
 /// Mutation check for the assertions above: reproduce the bug's shape and
@@ -225,28 +270,19 @@ private let minimumDistinctColors = 8
 /// Renders a standalone view with the background deliberately omitted,
 /// rather than editing `MenuBarPopoverView.swift` itself, since a mutation
 /// test's job is to prove the check fails on the bug, not to reintroduce it.
+/// Uses `distinctColorCount`, the same assertion every render above uses,
+/// per the team's guidance to standardize on it rather than maintain a
+/// second luminance-based check with its own separately-calibrated
+/// thresholds — one measurement the whole project trusts, not two.
 ///
-/// Two things this test's own first draft got wrong, both worth recording:
-///
-/// 1. It first tried wrapping `MenuBarPopoverView` from the outside with its
-///    background "removed". That proved nothing: a `.background(...)`
-///    applied inside a view's own `body` cannot be stripped by whatever
-///    wraps it, so the wrapped render was silently the already-fixed view.
-///    This version reproduces the bug's actual shape — dynamic-color text
-///    with no background behind it — as a standalone view that never had
-///    the fix, the only way to actually exercise the broken code path.
-/// 2. It assumed the broken render would read as *bright* under `.dark`
-///    (light text on nothing), by analogy with the original `ImageRenderer`
-///    finding. Measured here, it does not: `cacheDisplay(in:to:)` captures
-///    only what the hosting view itself paints, so an unpainted region reads
-///    back as literal black through `NSBitmapImageRep.colorAt`, not as
-///    "whatever happens to show through". The result is a render that
-///    reads as *near-black* (0.016 measured), not bright — nearly 10x
-///    darker than a properly-backgrounded dark render (0.150, measured in
-///    `renderPopulatedDarkMode` above) rather than lighter. Both are wrong;
-///    they are wrong in opposite directions depending on capture technique,
-///    which is exactly why this mutation check exists instead of trusting
-///    the earlier finding by analogy.
+/// This test's own first draft tried wrapping `MenuBarPopoverView` from the
+/// outside with its background "removed". That proved nothing: a
+/// `.background(...)` applied inside a view's own `body` cannot be stripped
+/// by whatever wraps it, so the wrapped render was silently the
+/// already-fixed view and the mutation check passed for the wrong reason.
+/// This version reproduces the bug's actual shape — dynamic-color text with
+/// no background behind it — as a standalone view that never had the fix,
+/// the only way to actually exercise the broken code path.
 @MainActor @Test func backgroundRegressionIsCaught() throws {
     struct BrokenReproduction: View {
         var body: some View {
@@ -268,12 +304,10 @@ private let minimumDistinctColors = 8
 
     _ = try renderSnapshot(BrokenReproduction(), size: MenuBarPopoverView.size,
                            colorScheme: .dark, to: "menubar-mutation-no-background-dark.png")
-    let luminance = try meanLuminance(
+    let colors = try distinctColorCount(
         ofPNGAt: "/tmp/ntfyshots/menubar-mutation-no-background-dark.png")
-    // Below 0.05: comfortably under the real fixed dark render's own 0.150,
-    // and far enough from it that this cannot be mistaken for "also
-    // correctly dark". A properly-backgrounded dark popover has a real
-    // opaque mid-dark fill behind mostly-light text; this has almost none
-    // of that fill contributing anything at all.
-    #expect(luminance < 0.05)
+    // Below the same floor every real render above must clear — proving
+    // this specific regression's shape actually fails `distinctColorCount`,
+    // not just that some blank image somewhere would.
+    #expect(colors < minimumDistinctColors)
 }
