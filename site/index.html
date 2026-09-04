@@ -4,11 +4,11 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>NtfyMe — ntfy notifications, done natively for macOS</title>
-<meta name="description" content="A native macOS client for ntfy: real notifications, a searchable archive of every message, and a proper compose window. Open source, signed, auto-updating.">
+<meta name="description" content="A native macOS client for ntfy: real notifications, a searchable archive of every message, and a proper compose window. Open source, notarized, auto-updating.">
 <link rel="icon" type="image/png" href="assets/icon-128.png">
 <link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
 <meta property="og:title" content="NtfyMe — ntfy notifications, done natively for macOS">
-<meta property="og:description" content="Real macOS notifications for your ntfy topics, a searchable archive, and a compose window. Open source, signed, auto-updating.">
+<meta property="og:description" content="Real macOS notifications for your ntfy topics, a searchable archive, and a compose window. Open source, notarized, auto-updating.">
 <meta property="og:image" content="assets/main-window-top.webp">
 <!--
   DIRECTION CONTRACT — "the page is a Mac window"
@@ -318,7 +318,7 @@
           View source
         </a>
       </div>
-      <p class="meta">Works with <a href="https://ntfy.sh">ntfy.sh</a> or your own server · macOS 26+ · Apple Silicon · signed, with automatic updates</p>
+      <p class="meta">Works with <a href="https://ntfy.sh">ntfy.sh</a> or your own server · macOS 26+ · Apple Silicon · signed and notarized, with automatic updates</p>
     </div>
 
     <div class="hero-visual" aria-label="The NtfyMe app window with the message popover floating above it.">
@@ -359,11 +359,12 @@
 
 <section class="oss">
   <div class="wrap">
-    <h2>Open source, signed, self-updating</h2>
+    <h2>Open source, notarized, self-updating</h2>
     <p class="lede-2">The whole app — Swift, SwiftUI, and a little stubbornness
-    — is on GitHub under the MIT license. Releases are signed, and the app
-    updates itself through Sparkle, with every update verified against a key
-    only the project controls.</p>
+    — is on GitHub under the MIT license. Releases are signed with a
+    Developer ID certificate and notarized by Apple, so they open without a
+    security warning, and the app updates itself through Sparkle, with every
+    update verified against a key only the project controls.</p>
     <div class="row">
       <a class="btn" href="https://github.com/ctaloi/ntfyme/releases/latest">Download the latest release</a>
       <a class="btn-ghost" href="https://github.com/ctaloi/ntfyme">

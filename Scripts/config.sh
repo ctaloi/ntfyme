@@ -7,8 +7,8 @@
 # Forks should change it before their first build, or not at all.
 PRODUCT_NAME="NtfyMe"
 PRODUCT_BUNDLE_ID="dev.aloi.NtfyMe"
-MARKETING_VERSION="0.1.1"
-BUILD_VERSION=3
+MARKETING_VERSION="0.1.2"
+BUILD_VERSION=4
 MINIMUM_MACOS="26.0"
 
 # Override in Scripts/local.sh (gitignored) or the environment.
