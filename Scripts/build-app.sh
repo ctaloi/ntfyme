@@ -127,7 +127,18 @@ if [ "$NOTARIZE" = "1" ]; then
     [ -n "$NOTARY_PROFILE" ] || { echo "NOTARY_PROFILE required when NOTARIZE=1" >&2; exit 1; }
     echo "==> notarizing"
     ZIP="$ROOT/build/$PRODUCT_NAME.zip"
-    ditto -c -k --keepParent "$APP" "$ZIP"
+    # `--noextattr --norsrc` is load-bearing, not tidiness. Copying the framework
+    # into the bundle makes macOS stamp com.apple.provenance on every path,
+    # symlinks included, and that attribute is kernel-managed — `xattr -c` does
+    # not remove it. Plain `ditto -c -k` then encodes those attributes into the
+    # archive as AppleDouble "._name" entries. `ditto -x -k` restores them as
+    # real attributes, but Archive Utility (what Safari and Finder use) and
+    # unzip cannot attach an attribute to a symlink, so they write the sidecars
+    # out as ordinary files. In a framework's root directory those are unsealed
+    # content, and Gatekeeper rejects the app:
+    #     unsealed contents present in the root directory of an embedded framework
+    # Excluding the attributes from the archive removes the sidecars at source.
+    ditto -c -k --noextattr --norsrc --keepParent "$APP" "$ZIP"
     xcrun notarytool submit "$ZIP" --keychain-profile "$NOTARY_PROFILE" --wait
     rm -f "$ZIP"
     xcrun stapler staple "$APP"

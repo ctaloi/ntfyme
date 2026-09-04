@@ -83,7 +83,32 @@ DOWNLOAD_URL="https://github.com/$GITHUB_REPO/releases/download/v$VERSION/$ZIP_N
 xcrun stapler validate "$APP"
 
 echo "==> zipping"
-ditto -c -k --keepParent "$APP" "$ZIP"
+# `--noextattr --norsrc` is load-bearing, not tidiness. Copying the framework
+# into the bundle makes macOS stamp com.apple.provenance on every path,
+# symlinks included, and that attribute is kernel-managed — `xattr -c` does
+# not remove it. Plain `ditto -c -k` then encodes those attributes into the
+# archive as AppleDouble "._name" entries. `ditto -x -k` restores them as
+# real attributes, but Archive Utility (what Safari and Finder use) and
+# unzip cannot attach an attribute to a symlink, so they write the sidecars
+# out as ordinary files. In a framework's root directory those are unsealed
+# content, and Gatekeeper rejects the app:
+#     unsealed contents present in the root directory of an embedded framework
+# Excluding the attributes from the archive removes the sidecars at source.
+ditto -c -k --noextattr --norsrc --keepParent "$APP" "$ZIP"
+
+# Verify the archive the way a user's Mac will open it, not the way this
+# script made it. `ditto -x -k` round-trips its own output faithfully, so a
+# ditto-based check passes on an archive that Gatekeeper rejects once
+# Archive Utility has extracted it. unzip has the same blind spot Archive
+# Utility does, which is exactly why it is the right tool here.
+echo "==> verifying the archive as a user's Mac will extract it"
+VERIFY_DIR="$ROOT/build/.verify-$VERSION"
+rm -rf "$VERIFY_DIR"
+unzip -q "$ZIP" -d "$VERIFY_DIR"
+codesign --verify --deep --strict "$VERIFY_DIR/$PRODUCT_NAME.app"
+spctl --assess --type exec --verbose=4 "$VERIFY_DIR/$PRODUCT_NAME.app"
+xcrun stapler validate "$VERIFY_DIR/$PRODUCT_NAME.app"
+rm -rf "$VERIFY_DIR"
 
 echo "==> signing update for Sparkle"
 # Prints: sparkle:edSignature="<base64>" length="<bytes>"

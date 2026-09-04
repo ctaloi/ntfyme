@@ -150,6 +150,21 @@ open build/NtfyMe.app
 - signs the app bundle under the hardened runtime
 - writes `SUFeedURL` and `SUPublicEDKey` into `Info.plist`
 
+## The archive is part of the signature
+
+Signing and notarizing correctly is not sufficient — the zip has to preserve
+what was signed. `ditto -c -k` alone encodes the bundle's extended
+attributes as AppleDouble `._name` entries, which Archive Utility and unzip
+materialise as real files inside `Sparkle.framework`'s root, where they are
+unsealed content and Gatekeeper rejects the app. 0.1.2 shipped this way and
+was withdrawn. Both `build-app.sh` and `release.sh` archive with
+`--noextattr --norsrc`.
+
+Verify archives with `unzip`, never `ditto`. `ditto -x -k` restores the
+sidecar data as genuine attributes, so a ditto-based check passes on an
+archive that fails for every user. `release.sh` does this automatically
+after zipping and fails the release if the extracted copy is rejected.
+
 A local build is not notarized (`NOTARIZE` defaults to `0`), which is fine for
 running it yourself — Gatekeeper's download check only applies to a bundle
 carrying a quarantine attribute.

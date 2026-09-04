@@ -79,9 +79,9 @@ with no "Open" button; on macOS 15 and later the right-click → Open escape
 hatch no longer applies to that dialog. There is no signing trick that avoids
 it — ad-hoc signing and re-zipping do not help, because the check is for a
 **Developer ID Application** signature plus a notarization ticket. Version
-0.1.1 shipped with an Apple Development signature and was affected; its
-download has been withdrawn. 0.1.2 and later are Developer ID signed and
-notarized.
+0.1.1 shipped with an Apple Development signature and was affected. 0.1.2 was
+signed and notarized correctly but shipped a bad *archive* (see below). Both
+downloads are withdrawn; 0.1.3 and later are the first that actually open.
 
 Setup, once per machine:
 
@@ -98,6 +98,32 @@ Setup, once per machine:
    ```
 
    `ntfyme-notary` is the default `NOTARY_PROFILE` in `Scripts/config.sh`.
+
+### Archiving: why the zip is built with `--noextattr --norsrc`
+
+A correctly signed and notarized app can still be rejected if the archive is
+built carelessly, and 0.1.2 was. Copying `Sparkle.framework` into the bundle
+makes macOS stamp `com.apple.provenance` on every path, symlinks included;
+the attribute is kernel-managed, so `xattr -c` will not remove it. Plain
+`ditto -c -k` encodes those attributes into the zip as AppleDouble `._name`
+entries. `ditto -x -k` restores them as real attributes, but Archive Utility
+— what Safari and Finder use — cannot attach an attribute to a symlink, so
+it writes the sidecars out as ordinary files:
+
+```
+Sparkle.framework/._Sparkle  ._Autoupdate  ._Updater.app  ._XPCServices  ...
+```
+
+Files in a framework's root directory that the signature does not cover are
+unsealed content, and Gatekeeper refuses the app with *"unsealed contents
+present in the root directory of an embedded framework"* — the same
+user-facing dialog as an unsigned app.
+
+`--noextattr --norsrc` keeps the attributes out of the archive at source.
+`Scripts/release.sh` then extracts each archive with `unzip` rather than
+`ditto` and re-runs `spctl` on the result: `ditto` round-trips its own
+output faithfully and therefore cannot see this class of bug, so verifying
+with it proves nothing about what a browser will produce.
 
 Notarization is off for local dev builds — it needs the network and takes
 minutes — and `Scripts/release.sh` forces it on, so a published artifact
