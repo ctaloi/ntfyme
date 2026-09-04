@@ -125,6 +125,17 @@ user-facing dialog as an unsigned app.
 output faithfully and therefore cannot see this class of bug, so verifying
 with it proves nothing about what a browser will produce.
 
+`Scripts/verify-release.sh` checks a build the way a stranger's Mac would —
+archive hygiene, Developer ID authority, hardened runtime, stapled ticket,
+`spctl`, and appcast consistency. `Scripts/release.sh` gates on it and will
+not publish a build it rejects; a GitHub workflow re-runs it against the
+published artifact. Run it by hand on anything you are unsure about:
+
+```bash
+Scripts/verify-release.sh --version 0.1.3      # what is published
+Scripts/verify-release.sh ~/Downloads/Foo.zip  # a file you just downloaded
+```
+
 Notarization is off for local dev builds — it needs the network and takes
 minutes — and `Scripts/release.sh` forces it on, so a published artifact
 cannot ship without a ticket. Set `NOTARIZE=1` to exercise it by hand. On

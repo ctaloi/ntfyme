@@ -1,0 +1,70 @@
+name: Verify release
+
+# A detector, not a gate: this runs after an artifact is already public.
+# Prevention lives in Scripts/release.sh, which refuses to continue when
+# Scripts/verify-release.sh fails. The value here is catching a release cut
+# from a machine where that path was bypassed or has drifted, and doing it
+# on a machine that never built the artifact — the release machine cannot
+# tell you its own toolchain is the reason something passed.
+
+on:
+  release:
+    types: [published]
+  push:
+    branches: [main]
+    paths: [appcast.xml]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to verify end to end, e.g. 0.1.3"
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+
+      # No Swift toolchain is needed — verification uses codesign, spctl,
+      # stapler and unzip, so this deliberately skips ci.yml's Xcode
+      # selection step.
+      - name: Resolve what to verify
+        id: plan
+        env:
+          EVENT: ${{ github.event_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          config_version() { sed -n 's/^MARKETING_VERSION="\(.*\)"/\1/p' Scripts/config.sh; }
+          case "$EVENT" in
+            # The release event fires before the appcast commit is pushed,
+            # so the feed would legitimately be a commit behind.
+            release)           mode=--archive; version="${TAG#v}" ;;
+            push)              mode=--appcast; version="$(config_version)" ;;
+            workflow_dispatch) mode=--version; version="${INPUT_VERSION:-$(config_version)}" ;;
+          esac
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Verifying $version ($mode)"
+
+      - name: Verify
+        env:
+          MODE: ${{ steps.plan.outputs.mode }}
+          VERSION: ${{ steps.plan.outputs.version }}
+        run: |
+          set -uo pipefail
+          # raw.githubusercontent can serve a cached copy of the feed for a
+          # short while after a push, so let the appcast check retry rather
+          # than reporting propagation delay as a bad release. Archive
+          # checks are deterministic and get one attempt.
+          for attempt in 1 2 3 4 5 6; do
+            if Scripts/verify-release.sh "$MODE" "$VERSION"; then exit 0; fi
+            [ "$MODE" = "--appcast" ] || exit 1
+            echo "feed may not have propagated yet; retrying in 20s ($attempt/6)"
+            sleep 20
+          done
+          exit 1

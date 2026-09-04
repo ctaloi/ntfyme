@@ -96,19 +96,14 @@ echo "==> zipping"
 # Excluding the attributes from the archive removes the sidecars at source.
 ditto -c -k --noextattr --norsrc --keepParent "$APP" "$ZIP"
 
-# Verify the archive the way a user's Mac will open it, not the way this
-# script made it. `ditto -x -k` round-trips its own output faithfully, so a
-# ditto-based check passes on an archive that Gatekeeper rejects once
-# Archive Utility has extracted it. unzip has the same blind spot Archive
-# Utility does, which is exactly why it is the right tool here.
-echo "==> verifying the archive as a user's Mac will extract it"
-VERIFY_DIR="$ROOT/build/.verify-$VERSION"
-rm -rf "$VERIFY_DIR"
-unzip -q "$ZIP" -d "$VERIFY_DIR"
-codesign --verify --deep --strict "$VERIFY_DIR/$PRODUCT_NAME.app"
-spctl --assess --type exec --verbose=4 "$VERIFY_DIR/$PRODUCT_NAME.app"
-xcrun stapler validate "$VERIFY_DIR/$PRODUCT_NAME.app"
-rm -rf "$VERIFY_DIR"
+# Gate the release on the verifier, and gate the verifier on a build known
+# to be broken in the way 0.1.2 was. A guard that has only ever been run
+# against good input is decoration; this proves it still detects the
+# regression before it is trusted to clear this build. Both run under
+# `set -e`, so either one failing stops the release before the appcast is
+# touched or anything is published.
+"$HERE/verify-release.sh" --self-test
+"$HERE/verify-release.sh" "$ZIP"
 
 echo "==> signing update for Sparkle"
 # Prints: sparkle:edSignature="<base64>" length="<bytes>"
@@ -116,6 +111,12 @@ SIGN_OUTPUT="$("$SIGN_UPDATE" "$ZIP")"
 echo "    $SIGN_OUTPUT"
 ED_SIGNATURE="$(sed -E 's/.*edSignature="([^"]+)".*/\1/' <<< "$SIGN_OUTPUT")"
 LENGTH="$(sed -E 's/.*length="([^"]+)".*/\1/' <<< "$SIGN_OUTPUT")"
+
+# Round-trip the signature we are about to publish. Sparkle refuses an
+# update whose EdDSA signature does not verify, and the appcast is the only
+# place that pairing is recorded — a mismatch here is silent until a user's
+# update fails.
+"$SIGN_UPDATE" --verify "$ZIP" "$ED_SIGNATURE"
 
 echo "==> updating appcast.xml"
 RFC_DATE="$(LC_ALL=en_US.UTF-8 date -u '+%a, %d %b %Y %H:%M:%S %z')"

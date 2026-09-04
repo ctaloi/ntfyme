@@ -150,6 +150,53 @@ open build/NtfyMe.app
 - signs the app bundle under the hardened runtime
 - writes `SUFeedURL` and `SUPublicEDKey` into `Info.plist`
 
+## Verification
+
+`Scripts/verify-release.sh` answers one question — would a stranger's Mac
+open this download? — and is the single place that knowledge lives.
+
+```bash
+Scripts/verify-release.sh build/NtfyMe-0.1.3.zip   # a local archive
+Scripts/verify-release.sh --version 0.1.3          # what is published, + appcast
+Scripts/verify-release.sh --archive 0.1.3          # published archive only
+Scripts/verify-release.sh --appcast 0.1.3          # feed consistency only
+Scripts/verify-release.sh --self-test              # prove the guard still works
+```
+
+It checks both failure modes that have actually shipped, plus the invariants
+underneath them:
+
+| Check | Catches |
+|---|---|
+| no AppleDouble entries in the archive | the 0.1.2 packaging bug, at source |
+| no `._*` files in the extracted bundle | the same bug, however it arose |
+| `codesign --verify --deep --strict` | unsealed or mis-signed nested code |
+| authority is Developer ID Application | the 0.1.1 wrong-certificate bug |
+| `flags=0x10000(runtime)` | hardened runtime silently lost |
+| `stapler validate` | notarized but unstapled — fails offline |
+| `spctl --assess` accepted | confirmation, in the terms the user sees |
+| every appcast enclosure 200s at its stated length | a feed pointing at a withdrawn asset |
+
+Three layers use it, in decreasing order of authority:
+
+1. **`release.sh` gates on it.** It runs `--self-test` first — synthesising
+   an archive broken the way 0.1.2 was and requiring the verifier to reject
+   it — then verifies the real archive. Under `set -e`, either failing stops
+   the release before the appcast is touched or anything is published. This
+   is the only layer that *prevents* a bad release.
+2. **`.github/workflows/verify-release.yml` detects.** It re-verifies the
+   published artifact on a machine that never built it, so a release cut
+   from a drifted or bypassed local path still gets caught. After the fact,
+   by construction.
+3. **By hand**, on anything you are unsure about, including a file you just
+   downloaded.
+
+The first two invariants lead deliberately. `unzip` was the tool that
+exposed the 0.1.2 bug, but only because it happens to share Archive
+Utility's inability to attach an attribute to a symlink. That is a fact
+about two extractors, not a law. "The archive carries no AppleDouble
+payload" stays true whatever a future extractor does.
+
 ## The archive is part of the signature
 
 Signing and notarizing correctly is not sufficient — the zip has to preserve
