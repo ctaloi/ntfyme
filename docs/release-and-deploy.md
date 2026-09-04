@@ -175,6 +175,8 @@ underneath them:
 | `flags=0x10000(runtime)` | hardened runtime silently lost |
 | `stapler validate` | notarized but unstapled — fails offline |
 | `spctl --assess` accepted | confirmation, in the terms the user sees |
+| every `@rpath` dependency resolves | the 0.1.3 dyld crash — an app macOS allows to launch but that cannot |
+| the app launches and stays up 5s | anything else that kills it on startup (`VERIFY_LAUNCH=1`) |
 | every appcast enclosure 200s at its stated length | a feed pointing at a withdrawn asset |
 
 Three layers use it, in decreasing order of authority:
@@ -190,6 +192,18 @@ Three layers use it, in decreasing order of authority:
    by construction.
 3. **By hand**, on anything you are unsure about, including a file you just
    downloaded.
+
+The last two exist because 0.1.3 passed every other check and still did not
+run. Signature and archive checks answer "would macOS permit this to
+launch"; they are silent on whether it can. `swift build` links the
+executable with only an `@loader_path` rpath, which resolves in `.build`
+where SwiftPM stages Sparkle.framework beside the binary, and not in the
+bundle where the framework is two directories away — so the app died in
+dyld. `build-app.sh` now adds `@executable_path/../Frameworks` before
+signing. The rpath check catches that class statically and runs anywhere;
+the launch check catches the general case and runs only where a real user
+session exists, which is why `release.sh` sets `VERIFY_LAUNCH=1` and CI
+does not.
 
 The first two invariants lead deliberately. `unzip` was the tool that
 exposed the 0.1.2 bug, but only because it happens to share Archive

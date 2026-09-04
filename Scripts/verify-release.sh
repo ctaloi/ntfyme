@@ -27,6 +27,9 @@
 #   Scripts/verify-release.sh --appcast 0.1.3    appcast consistency only
 #   Scripts/verify-release.sh --self-test        prove the verifier still
 #                                                detects the 0.1.2 regression
+#
+# Set VERIFY_LAUNCH=1 to additionally run the app for five seconds and
+# require it to stay up. Scripts/release.sh does this; CI does not.
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -73,6 +76,85 @@ verify_archive() {
         fail "extracted bundle contains $stray '._' files, e.g. $(find "$app" -name '._*' | head -1)"
     fi
 
+    # Every @rpath dependency must actually resolve. 0.1.3 passed every
+    # check above and still died in dyld: `swift build` links the binary
+    # with only an @loader_path rpath, which resolves in .build (SwiftPM
+    # stages Sparkle.framework beside the binary) and not in the bundle,
+    # where the framework sits in Contents/Frameworks. Signature and
+    # archive checks establish that macOS would *permit* the app to launch;
+    # they say nothing about whether it can. This resolves the load
+    # commands the way dyld does, which needs no window server and so runs
+    # anywhere.
+    if linkage="$(python3 - "$app" <<'PY'
+import os, subprocess, sys
+
+bundle = sys.argv[1]
+problems = []
+
+def macho_kind(path):
+    try:
+        out = subprocess.run(["file", "-b", path], capture_output=True, text=True).stdout
+    except Exception:
+        return None
+    if "Mach-O" not in out:
+        return None
+    return "executable" if "executable" in out else "library"
+
+def load_commands(path):
+    out = subprocess.run(["otool", "-l", path], capture_output=True, text=True).stdout
+    rpaths, deps, cmd = [], [], None
+    for line in out.splitlines():
+        line = line.strip()
+        if line.startswith("cmd "):
+            cmd = line.split()[1]
+        elif line.startswith("path ") and cmd == "LC_RPATH":
+            rpaths.append(line.split()[1])
+        elif line.startswith("name ") and cmd in ("LC_LOAD_DYLIB", "LC_LOAD_WEAK_DYLIB"):
+            deps.append(line.split()[1])
+    return rpaths, deps
+
+for root, dirs, files in os.walk(bundle):
+    # Versions/Current duplicates Versions/B through a symlink.
+    if os.path.islink(root):
+        continue
+    for name in files:
+        path = os.path.join(root, name)
+        if os.path.islink(path):
+            continue
+        kind = macho_kind(path)
+        if kind != "executable":
+            continue
+        rpaths, deps = load_commands(path)
+        here = os.path.dirname(path)
+        for dep in deps:
+            if not dep.startswith("@rpath/"):
+                continue
+            suffix = dep[len("@rpath/"):]
+            tried, found = [], False
+            for rp in rpaths:
+                # For a main executable both anchors are its own directory.
+                base = rp.replace("@executable_path", here).replace("@loader_path", here)
+                candidate = os.path.normpath(os.path.join(base, suffix))
+                tried.append(candidate)
+                if os.path.exists(candidate):
+                    found = True
+                    break
+            if not found:
+                rel = os.path.relpath(path, bundle)
+                problems.append("%s needs %s; rpaths %s resolve to nothing" %
+                                (rel, dep, rpaths or "[]"))
+
+for pr in problems:
+    print("    " + pr)
+sys.exit(1 if problems else 0)
+PY
+    )"; then
+        pass "every @rpath dependency resolves inside the bundle"
+    else
+        printf '%s\n' "$linkage"
+        fail "unresolved @rpath dependency — the app will die in dyld at launch"
+    fi
+
     # The check that actually caught 0.1.2. --deep is wrong for signing and
     # right for verifying: it walks into Sparkle's nested code.
     if codesign --verify --deep --strict "$app" 2>/dev/null; then
@@ -114,7 +196,34 @@ verify_archive() {
         *) fail "spctl: $(printf '%s\n' "$assess" | tail -1)" ;;
     esac
 
+    # Opt-in because it runs the real app for a few seconds, and because a
+    # CI runner is a poor place to judge whether a GUI app stays up. The
+    # static checks above cover this bug specifically; this covers the
+    # general case of an app that launches and immediately dies, which is
+    # the only thing that actually proves the download works.
+    [ "${VERIFY_LAUNCH:-0}" = "1" ] && launch_check "$app"
+
     rm -rf "$dir"
+}
+
+# Run it. Every other check establishes that macOS would permit this app to
+# launch; none of them establish that it does. 0.1.3 cleared all of them and
+# then died in dyld.
+launch_check() {
+    app="$1"
+    log="$(mktemp)"
+    "$app/Contents/MacOS/$PRODUCT_NAME" >/dev/null 2>"$log" &
+    pid=$!
+    sleep 5
+    if kill -0 "$pid" 2>/dev/null; then
+        kill "$pid" 2>/dev/null
+        wait "$pid" 2>/dev/null
+        pass "launched and stayed up for 5s"
+    else
+        wait "$pid" 2>/dev/null
+        fail "exited immediately after launch: $(sed -n '1,3p' "$log" | tr '\n' ' ')"
+    fi
+    rm -f "$log"
 }
 
 # Every enclosure the feed advertises must actually be downloadable at the

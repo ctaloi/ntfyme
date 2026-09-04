@@ -59,6 +59,19 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/$PRODUCT_NAME"
 
+# `swift build` links the executable with a single `@loader_path` rpath.
+# That resolves inside .build, where SwiftPM stages Sparkle.framework
+# beside the binary, and stops resolving the moment the binary is copied
+# into Contents/MacOS — the framework is two directories away in
+# Contents/Frameworks. The app then dies in dyld at launch with "Library
+# not loaded: @rpath/Sparkle.framework/Versions/B/Sparkle". Point the
+# binary at the bundle's framework directory.
+#
+# This must precede every codesign call below: install_name_tool rewrites
+# the Mach-O load commands and invalidates any signature already applied.
+install_name_tool -add_rpath "@executable_path/../Frameworks" \
+    "$APP/Contents/MacOS/$PRODUCT_NAME" 2>/dev/null
+
 # The app icon. Generated from Scripts/icon/AppIcon-1024.png — see
 # Tests/NtfyMeTests/IconRender.swift for how that master is drawn.
 cp "$HERE/icon/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"

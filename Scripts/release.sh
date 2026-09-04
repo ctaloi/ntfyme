@@ -103,7 +103,7 @@ ditto -c -k --noextattr --norsrc --keepParent "$APP" "$ZIP"
 # `set -e`, so either one failing stops the release before the appcast is
 # touched or anything is published.
 "$HERE/verify-release.sh" --self-test
-"$HERE/verify-release.sh" "$ZIP"
+VERIFY_LAUNCH=1 "$HERE/verify-release.sh" "$ZIP"
 
 echo "==> signing update for Sparkle"
 # Prints: sparkle:edSignature="<base64>" length="<bytes>"
