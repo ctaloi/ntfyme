@@ -17,14 +17,22 @@ import Testing
 /// slower than a developer machine. An absolute bound on a machine-speed
 /// measurement tests the machine as much as the code.
 ///
-/// A quarter of the timeout keeps the discrimination the test exists for:
-/// the buggy version returns at ~2s, twice the bound and eight times the
-/// worst measurement seen; the fixed version returns in microseconds. What
-/// is being asserted is "returned promptly rather than spinning out the
-/// deadline", and that is a claim about the ratio, so the assertion is now
-/// written as one.
+/// Making the bound a ratio was necessary but not sufficient, and it went on
+/// to fail at 1.02s and 0.61s against a 2s timeout's quarter-bound of 0.5s.
+/// The reason is that the two sides of the ratio do not scale together. On
+/// the cancelled path `waitUntil` breaks out of its loop on the first
+/// `Task.sleep` throw, so what `elapsed` measures is how long the runner
+/// took to schedule and resume the task — a constant of the machine, which
+/// does not shrink when the timeout does. The buggy version, by contrast,
+/// returns at exactly the timeout.
+///
+/// So the timeout is the knob that buys headroom on both sides at once: it
+/// widens the absolute bound while leaving the fixed implementation's
+/// measurement where it was. At 8s the bound is 2s — twice the worst
+/// scheduling latency observed on CI, and a quarter of the 8s a regression
+/// would take. The cost is that a genuine regression takes 8s to fail.
 @Test func waitUntilReturnsPromptlyWhenItsTaskIsCancelledRatherThanSpinningOutTheDeadline() async throws {
-    let timeout = Duration.seconds(2)
+    let timeout = Duration.seconds(8)
     let task = Task {
         await waitUntil(timeout: timeout) { false }
     }
