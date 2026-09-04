@@ -160,7 +160,9 @@ Switching from Apple Development to Developer ID changes the app's code
 signing identity, which Sparkle explicitly permits: an update is accepted if
 "old and new Ed(DSA) public keys are the same and valid (it allows change of
 Code Signing identity)" (`SUUpdateValidator.m`). The EdDSA key in
-`SPARKLE_ED_PUBLIC_KEY` is unchanged, so 0.1.1 installs auto-update normally.
+`SPARKLE_ED_PUBLIC_KEY` is unchanged, so 0.1.1 installs auto-update normally
+(0.1.1 was downloaded once before its asset was withdrawn, so in practice
+there is no install base — but the property is the one to preserve).
 Rotating the EdDSA key *and* the signing identity in the same release would
 strand them.
 

@@ -1,27 +1,18 @@
 <?xml version='1.0' encoding='utf-8'?>
 <rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
   <channel>
-    <item>
-      <title>Version 0.1.2</title>
-      <pubDate>Fri, 04 Sep 2026 14:18:11 +0000</pubDate>
-      <sparkle:version sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">4</sparkle:version>
-      <sparkle:shortVersionString sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">0.1.2</sparkle:shortVersionString>
-      <link>https://github.com/ctaloi/ntfyme/releases/download/v0.1.2/NtfyMe-0.1.2.zip</link>
-      <enclosure url="https://github.com/ctaloi/ntfyme/releases/download/v0.1.2/NtfyMe-0.1.2.zip" sparkle:edSignature="2RcRRO5WBvMIbWTU3qlUi/OqzRT62WQXcRGGoTaqFGwm9UlKjLBgCAUdj9xNIJtTGtHEBdevv1qe6VkG4CPsCw==" length="2993551" type="application/octet-stream" />
-      <sparkle:minimumSystemVersion sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">26.0</sparkle:minimumSystemVersion>
-    </item>
     <title>NtfyMe</title>
     <link>https://github.com/ctaloi/ntfyme</link>
     <description>Auto-update feed.</description>
     <language>en</language>
     <item>
-      <title>Version 0.1.1</title>
-      <pubDate>Thu, 03 Sep 2026 19:09:02 +0000</pubDate>
-      <sparkle:version sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">3</sparkle:version>
-      <sparkle:shortVersionString sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">0.1.1</sparkle:shortVersionString>
-      <link>https://github.com/ctaloi/ntfyme/releases/download/v0.1.1/NtfyMe-0.1.1.zip</link>
-      <enclosure url="https://github.com/ctaloi/ntfyme/releases/download/v0.1.1/NtfyMe-0.1.1.zip" sparkle:edSignature="K1N9SnIhd/zQPCTL3GVfwk1psCrkYI6+k2AqiMjbK8QmX7p5kPtQlmWhkx27yiytTW7BuJanGyXNjhj+ZUiiDg==" length="2976203" type="application/octet-stream" />
-      <sparkle:minimumSystemVersion sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">26.0</sparkle:minimumSystemVersion>
+      <title>Version 0.1.2</title>
+      <pubDate>Fri, 04 Sep 2026 14:18:11 +0000</pubDate>
+      <sparkle:version>4</sparkle:version>
+      <sparkle:shortVersionString>0.1.2</sparkle:shortVersionString>
+      <link>https://github.com/ctaloi/ntfyme/releases/download/v0.1.2/NtfyMe-0.1.2.zip</link>
+      <enclosure url="https://github.com/ctaloi/ntfyme/releases/download/v0.1.2/NtfyMe-0.1.2.zip" sparkle:edSignature="2RcRRO5WBvMIbWTU3qlUi/OqzRT62WQXcRGGoTaqFGwm9UlKjLBgCAUdj9xNIJtTGtHEBdevv1qe6VkG4CPsCw==" length="2993551" type="application/octet-stream" />
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
     </item>
   </channel>
 </rss>

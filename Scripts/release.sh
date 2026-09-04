@@ -100,47 +100,61 @@ import sys, xml.etree.ElementTree as ET
 
 path, version, build, url, sig, length, date, min_macos, product = sys.argv[1:]
 
-ET.register_namespace("sparkle", "http://www.andymatuschak.org/xml-namespaces/sparkle")
-ns = {"sparkle": "http://www.andymatuschak.org/xml-namespaces/sparkle"}
+# Sparkle's elements live in its own namespace. Build them with ElementTree's
+# "{uri}local" form: passing a {prefix: uri} map as SubElement's third
+# argument sets it as *attributes* (that is the attrib parameter), which is
+# how earlier feeds picked up a stray sparkle="http://..." on every element.
+SPARKLE = "http://www.andymatuschak.org/xml-namespaces/sparkle"
+ET.register_namespace("sparkle", SPARKLE)
+
+
+def sparkle(name):
+    return "{%s}%s" % (SPARKLE, name)
+
 
 try:
     tree = ET.parse(path)
     channel = tree.getroot().find("channel")
 except FileNotFoundError:
-    rss = ET.Element("rss", {
-        "xmlns:sparkle": "http://www.andymatuschak.org/xml-namespaces/sparkle",
-        "xmlns:dc": "http://purl.org/dc/elements/1.1/",
-        "version": "2.0"})
+    rss = ET.Element("rss", {"version": "2.0"})
     channel = ET.SubElement(rss, "channel")
     ET.SubElement(channel, "title").text = product
-    ET.SubElement(channel, "link").text = f"https://github.com/ctaloi/ntfyme"
+    ET.SubElement(channel, "link").text = "https://github.com/ctaloi/ntfyme"
     ET.SubElement(channel, "description").text = "Auto-update feed."
     ET.SubElement(channel, "language").text = "en"
     tree = ET.ElementTree(rss)
 
-# Replace any existing item for this version; otherwise append newest-first.
-for item in channel.findall("item"):
-    v = item.find("sparkle:version", ns)
+# Replace any existing item for this build; otherwise it is a new release.
+for existing_item in channel.findall("item"):
+    v = existing_item.find(sparkle("version"))
     if v is not None and v.text == build:
-        channel.remove(item)
+        channel.remove(existing_item)
 
 item = ET.Element("item")
-ET.SubElement(item, "title").text = f"Version {version}"
+ET.SubElement(item, "title").text = "Version %s" % version
 ET.SubElement(item, "pubDate").text = date
-ET.SubElement(item, "sparkle:version", ns).text = build
-ET.SubElement(item, "sparkle:shortVersionString", ns).text = version
+ET.SubElement(item, sparkle("version")).text = build
+ET.SubElement(item, sparkle("shortVersionString")).text = version
 ET.SubElement(item, "link").text = url
 ET.SubElement(item, "enclosure", {
     "url": url,
-    "sparkle:edSignature": sig,
+    sparkle("edSignature"): sig,
     "length": length,
     "type": "application/octet-stream"})
-ET.SubElement(item, "sparkle:minimumSystemVersion", ns).text = min_macos
-channel.insert(0, item) if channel.find("item") is not None else channel.append(item)
+ET.SubElement(item, sparkle("minimumSystemVersion")).text = min_macos
+
+# Newest-first, but after the channel's own metadata: insert ahead of the
+# first existing item rather than at index 0, which would place releases
+# before <title>/<link>/<description>.
+items = channel.findall("item")
+if items:
+    channel.insert(list(channel).index(items[0]), item)
+else:
+    channel.append(item)
 
 ET.indent(tree)
 tree.write(path, encoding="utf-8", xml_declaration=True)
-print(f"    {path} now lists version {version} (build {build}) newest-first")
+print("    %s now lists version %s (build %s) newest-first" % (path, version, build))
 PYEOF
 
 cat <<EOF

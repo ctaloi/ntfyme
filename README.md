@@ -79,8 +79,9 @@ with no "Open" button; on macOS 15 and later the right-click → Open escape
 hatch no longer applies to that dialog. There is no signing trick that avoids
 it — ad-hoc signing and re-zipping do not help, because the check is for a
 **Developer ID Application** signature plus a notarization ticket. Version
-0.1.1 shipped with an Apple Development signature and is affected; 0.1.2 and
-later are Developer ID signed and notarized.
+0.1.1 shipped with an Apple Development signature and was affected; its
+download has been withdrawn. 0.1.2 and later are Developer ID signed and
+notarized.
 
 Setup, once per machine:
 
