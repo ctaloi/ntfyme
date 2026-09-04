@@ -4,8 +4,7 @@ A native macOS app for [ntfy](https://ntfy.sh) — it lives in your Dock, its me
 subscriptions, delivers native notifications, and keeps a searchable local
 archive of every message it has seen.
 
-This project is under active development. Notarized distribution is not
-exercised yet; everything below is.
+This project is under active development.
 
 ## What works
 
@@ -55,19 +54,58 @@ open build/NtfyMe.app
 ```
 
 `Scripts/build-app.sh` builds a release binary with `swift build`, hand-assembles
-`build/NtfyMe.app` (`Info.plist` generated from `Scripts/Info.plist.in`), and
-code-signs it with `Scripts/NtfyMe.entitlements` using the identity named by
-`SIGN_IDENTITY` in `Scripts/config.sh` (default `Apple Development`, resolved
-by prefix). If your keychain has more than one identity sharing that name —
-including two certs with the identical full common name, which can happen
-after a renewal — `codesign` fails with "ambiguous, matches ... and ...".
-Run `security find-identity -v -p codesigning` and set `SIGN_IDENTITY` to the
+`build/NtfyMe.app` (`Info.plist` generated from `Scripts/Info.plist.in`), signs
+the embedded `Sparkle.framework` inside-out, and code-signs the bundle with
+`Scripts/NtfyMe.entitlements` under the hardened runtime, using the identity
+named by `SIGN_IDENTITY` in `Scripts/config.sh` (default
+`Developer ID Application`, resolved by prefix).
+
+If your keychain has more than one identity sharing that name — two certs with
+the identical full common name, which happens after a renewal — `codesign`
+fails with "ambiguous, matches ... and ...". Run
+`security find-identity -v -p codesigning` and set `SIGN_IDENTITY` to the
 specific SHA-1 hash of the identity to use, via `Scripts/local.sh` (gitignored,
 never committed) or the environment.
 
-Set `NOTARIZE=1` and `NOTARY_PROFILE=<profile>` to notarize after signing;
-this requires a Developer ID Application certificate and a paid Apple
-Developer Program membership, and has not been exercised on this machine.
+### Signing identity: why it must be Developer ID
+
+An **Apple Development** certificate signs a bundle that runs only on the
+developer's own registered machines. Anyone else who downloads it gets
+
+> "NtfyMe" Not Opened — Apple could not verify "NtfyMe" is free of malware
+> that may harm your Mac or compromise your privacy.
+
+with no "Open" button; on macOS 15 and later the right-click → Open escape
+hatch no longer applies to that dialog. There is no signing trick that avoids
+it — ad-hoc signing and re-zipping do not help, because the check is for a
+**Developer ID Application** signature plus a notarization ticket. Version
+0.1.1 shipped with an Apple Development signature and is affected; 0.1.2 and
+later are Developer ID signed and notarized.
+
+Setup, once per machine:
+
+1. **Developer ID Application certificate** (needs a paid Apple Developer
+   Program membership): Xcode → Settings → Accounts → select the team →
+   Manage Certificates → **+** → Developer ID Application. Confirm with
+   `security find-identity -v -p codesigning`.
+2. **Notarization credentials**, stored in the Keychain rather than in this
+   repo. Create an app-specific password at appleid.apple.com, then:
+
+   ```bash
+   xcrun notarytool store-credentials ntfyme-notary \
+       --apple-id <your-apple-id> --team-id 4R4AEU924W
+   ```
+
+   `ntfyme-notary` is the default `NOTARY_PROFILE` in `Scripts/config.sh`.
+
+Notarization is off for local dev builds — it needs the network and takes
+minutes — and `Scripts/release.sh` forces it on, so a published artifact
+cannot ship without a ticket. Set `NOTARIZE=1` to exercise it by hand. On
+that path `build-app.sh` refuses to start unless `SIGN_IDENTITY` resolves to
+a Developer ID Application identity, submits the zipped app to
+`xcrun notarytool`, staples the ticket into the bundle, and then asserts
+`spctl --assess --type exec` accepts it — the same assessment a downloader's
+first launch runs.
 
 ### Entitlements
 
@@ -81,10 +119,11 @@ no eligible provisioning profiles found`, then `amfid: ... Error
 Domain=AppleMobileFileIntegrityError Code=-413 "No matching profile found"`
 — and `launchd` reported `Launchd job spawn failed`. `com.apple.developer.*`
 capability entitlements require an embedded provisioning profile issued for
-an App ID with that capability enabled, which plain local "Apple Development"
-signing does not provide. This is expected, is not a blocker for early
-development, and is deferred to a future release-signing task once a paid
-Developer Program account and Developer ID are available.
+an App ID with that capability enabled. Developer ID signing does not supply
+one either, so moving to Developer ID did not change this; adding the
+entitlement would mean provisioning the App ID and embedding the profile.
+Notifications work without it — the entitlement only affects whether they can
+break through Focus.
 
 ## Auto-updates
 

@@ -100,12 +100,22 @@ Scripts/release.sh 0.2.0
 
 What it does:
 1. bumps `MARKETING_VERSION` and `BUILD_VERSION` in `Scripts/config.sh`
-2. runs `Scripts/build-app.sh`
-3. assembles `build/NtfyMe.app`
-4. zips it as `build/NtfyMe-<version>.zip`
-5. signs the zip for Sparkle using `sign_update`
-6. updates `appcast.xml` newest-first
-7. prints the `gh release create` command to run
+2. runs `Scripts/build-app.sh` with `NOTARIZE=1` forced on
+3. assembles `build/NtfyMe.app`, Developer ID signed under the hardened runtime
+4. notarizes it, staples the ticket, and asserts `spctl` accepts the bundle
+5. zips the stapled app as `build/NtfyMe-<version>.zip`
+6. signs the zip for Sparkle using `sign_update`
+7. updates `appcast.xml` newest-first
+8. prints the `gh release create` command to run
+
+The notarization ticket is stapled into the **app**, not the zip, and the zip
+is created afterwards — so the download carries the ticket and launches
+offline. Reversing that order ships an app that Gatekeeper rejects.
+
+Prerequisites (once per machine, see README "Building"): a Developer ID
+Application certificate in the Keychain, and notarization credentials stored
+as `xcrun notarytool store-credentials ntfyme-notary`. `build-app.sh` refuses
+to start a notarizing build if the identity is not Developer ID.
 
 ### After `release.sh`
 Run the printed command, then commit and push:
@@ -133,9 +143,33 @@ open build/NtfyMe.app
 
 `build-app.sh` now also:
 - embeds `Sparkle.framework`
-- signs it
-- signs the app bundle
+- signs Sparkle inside-out — the two XPC services, `Updater.app`, and
+  `Autoupdate` each in their own right, then the framework. `codesign --deep`
+  is *not* used: Apple documents it as unsuitable for distribution, and it
+  passes local verification while the notary service rejects the result.
+- signs the app bundle under the hardened runtime
 - writes `SUFeedURL` and `SUPublicEDKey` into `Info.plist`
+
+A local build is not notarized (`NOTARIZE` defaults to `0`), which is fine for
+running it yourself — Gatekeeper's download check only applies to a bundle
+carrying a quarantine attribute.
+
+## Changing the signing identity and existing installs
+
+Switching from Apple Development to Developer ID changes the app's code
+signing identity, which Sparkle explicitly permits: an update is accepted if
+"old and new Ed(DSA) public keys are the same and valid (it allows change of
+Code Signing identity)" (`SUUpdateValidator.m`). The EdDSA key in
+`SPARKLE_ED_PUBLIC_KEY` is unchanged, so 0.1.1 installs auto-update normally.
+Rotating the EdDSA key *and* the signing identity in the same release would
+strand them.
+
+One user-visible consequence: `KeychainStore` writes generic passwords to the
+file-based login keychain, whose ACLs are bound to the creating app's code
+signature. After updating to a Developer-ID-signed build, macOS asks once per
+credential — "NtfyMe wants to use your confidential information stored in ...
+in your keychain" — and "Always Allow" restores silent access. Nothing is
+lost; the credentials are still there.
 
 ## Public-repo safety
 

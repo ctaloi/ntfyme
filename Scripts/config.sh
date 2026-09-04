@@ -13,17 +13,30 @@ MINIMUM_MACOS="26.0"
 
 # Override in Scripts/local.sh (gitignored) or the environment.
 #
-# "Apple Development" below is a friendly placeholder, not guaranteed to
-# resolve: `codesign --sign` needs an *unambiguous* match, and a keychain
-# with more than one identity sharing a name (even the full common name,
-# e.g. two "Apple Development: <Name> (<TeamID>)" certs from renewal) will
-# make codesign fail with "ambiguous, matches ... and ...". If that happens,
-# run `security find-identity -v -p codesigning` and set SIGN_IDENTITY to
-# the specific SHA-1 hash of the identity to use, via Scripts/local.sh or
-# the environment — never commit a hash tied to a personal certificate here.
-SIGN_IDENTITY="${SIGN_IDENTITY:-Apple Development}"
+# Must be a "Developer ID Application" identity. An "Apple Development"
+# certificate signs a bundle that only runs on the developer's own
+# registered machines: Gatekeeper rejects it everywhere else with "Apple
+# could not verify <app> is free of malware", and notarytool refuses it
+# outright. Developer ID is the only identity Apple will notarize for
+# distribution outside the App Store.
+#
+# The value is passed to `codesign --sign`, which needs an *unambiguous*
+# match. The prefix below resolves as long as the keychain holds exactly
+# one Developer ID Application identity; if `security find-identity -v -p
+# codesigning` lists more than one (renewals leave the old one behind),
+# codesign fails with "ambiguous, matches ... and ...". Set SIGN_IDENTITY
+# to that identity's SHA-1 hash via Scripts/local.sh or the environment —
+# never commit a hash tied to a personal certificate here.
+SIGN_IDENTITY="${SIGN_IDENTITY:-Developer ID Application}"
+
+# Notarization: Apple's malware scan, whose ticket is what actually silences
+# the Gatekeeper dialog. Off for local dev builds (it needs the network and
+# takes minutes); Scripts/release.sh turns it on and refuses to publish
+# without it. NOTARY_PROFILE names a keychain item created once by
+#     xcrun notarytool store-credentials
+# (see README "Building"); the credentials never appear in this file.
 NOTARIZE="${NOTARIZE:-0}"
-NOTARY_PROFILE="${NOTARY_PROFILE:-}"
+NOTARY_PROFILE="${NOTARY_PROFILE:-ntfyme-notary}"
 
 # Auto-update (Sparkle) configuration. The feed is the appcast XML the
 # release script publishes (default: the repository's own raw URL); the

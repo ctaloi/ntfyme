@@ -2,6 +2,13 @@
 # Builds a release, signs it for Sparkle, and (re)generates appcast.xml.
 #
 # One-time setup:
+#   0. Create the notarization credential once (the app-specific password is
+#      made at appleid.apple.com; it is stored in the Keychain, not here):
+#          xcrun notarytool store-credentials ntfyme-notary \
+#              --apple-id <your-apple-id> --team-id 4R4AEU924W
+#      and make sure `security find-identity -v -p codesigning` lists a
+#      "Developer ID Application" identity (Xcode > Settings > Accounts >
+#      Manage Certificates > + > Developer ID Application).
 #   1. Build Sparkle's CLI tools (SPM resolves the framework, Xcode builds
 #      the CLIs):
 #          export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
@@ -51,7 +58,14 @@ sed -i '' \
     "$HERE/config.sh"
 . "$HERE/config.sh"   # reload the bumped values
 
-echo "==> building"
+# A release is by definition a build strangers will download, and macOS
+# refuses to launch a downloaded app that is not notarized. Force it on here
+# rather than defaulting it on in config.sh, so local dev builds stay fast
+# and offline while the published artifact cannot accidentally ship without
+# a ticket.
+export NOTARIZE=1
+
+echo "==> building (Developer ID + notarization)"
 # `build-app.sh` assembles into $APP; source it in a subshell that exports
 # the variable? It doesn't export, so recompute the same path here. (Keep
 # in sync with build-app.sh's definition.)
@@ -61,6 +75,12 @@ APP="$ROOT/build/$PRODUCT_NAME.app"
 ZIP_NAME="$PRODUCT_NAME-$VERSION.zip"
 ZIP="$ROOT/build/$ZIP_NAME"
 DOWNLOAD_URL="https://github.com/$GITHUB_REPO/releases/download/v$VERSION/$ZIP_NAME"
+
+# The zip must be made from the *stapled* bundle, or the download carries no
+# notarization ticket and Gatekeeper rejects it on a machine that cannot
+# reach Apple. build-app.sh staples before returning; assert it rather than
+# trusting the ordering to survive a future edit.
+xcrun stapler validate "$APP"
 
 echo "==> zipping"
 ditto -c -k --keepParent "$APP" "$ZIP"
